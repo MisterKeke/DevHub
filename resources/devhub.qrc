@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/branding">
+        <file alias="devhub.svg">branding/devhub.svg</file>
+        <file alias="tray.svg">branding/tray.svg</file>
+    </qresource>
+</RCC>

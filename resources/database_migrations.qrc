@@ -1,0 +1,10 @@
+<RCC>
+    <qresource prefix="/database/migrations">
+        <file alias="0001_initial_schema.sql">database/migrations/0001_initial_schema.sql</file>
+        <file alias="0002_workspace_account_scope.sql">database/migrations/0002_workspace_account_scope.sql</file>
+        <file alias="0003_workspace_scan_state.sql">database/migrations/0003_workspace_scan_state.sql</file>
+        <file alias="0004_service_lifecycle.sql">database/migrations/0004_service_lifecycle.sql</file>
+        <file alias="0005_notes_state.sql">database/migrations/0005_notes_state.sql</file>
+        <file alias="0006_settings_notifications.sql">database/migrations/0006_settings_notifications.sql</file>
+    </qresource>
+</RCC>

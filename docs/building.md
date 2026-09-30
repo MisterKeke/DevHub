@@ -1,0 +1,58 @@
+# Building DevHub
+
+## Prerequisites
+
+- Windows 11 x64.
+- CMake 3.28 or newer.
+- Ninja.
+- Visual Studio 2022 C++ build tools with v143 14.44 for the CI preset.
+- Qt 6.8.3 or newer, including Qt Svg, for a supported Windows x64 compiler kit, available via `QT_ROOT_DIR` when configuring outside Qt Creator. CI is pinned to Qt 6.8.3 for MSVC 2022 x64.
+- vcpkg checkout matching the baseline in `vcpkg.json`; set `VCPKG_ROOT` and pass its toolchain file when configuring.
+- clang-format and clang-tidy for formatting and static analysis.
+
+## Configure and build
+
+```powershell
+$env:QT_ROOT_DIR = 'C:\Qt\6.11.0\mingw_64'
+$env:VCPKG_ROOT = 'C:\src\vcpkg'
+$env:PATH = 'C:\Qt\Tools\mingw1310_64\bin;' + $env:PATH
+cmake --preset windows-dev -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+cmake --build --preset windows-dev-debug
+ctest --preset windows-dev-debug
+```
+
+Use the compiler paired with the selected Qt kit. The `windows-dev` preset uses the static-library `x64-mingw-static` vcpkg triplet so libsodium is linked into DevHub. For an MSVC Qt kit, use the `windows-ci` preset and its `x64-windows` triplet instead.
+
+For a Qt Creator MinGW kit, use the same triplet when configuring:
+
+```powershell
+cmake -S . -B out/build/qtcreator-mingw -G Ninja `
+  -DCMAKE_PREFIX_PATH='C:/Qt/6.11.0/mingw_64' `
+  -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+  -DVCPKG_TARGET_TRIPLET=x64-mingw-static
+```
+
+Set the same `CMAKE_TOOLCHAIN_FILE` and `VCPKG_TARGET_TRIPLET` in Qt Creator's CMake configuration. The manifest installs libsodium for the selected triplet.
+
+Build configurations are Debug, RelWithDebInfo, and Release. The CI preset turns warnings into errors and pins the MSVC v143 14.44 toolset.
+
+## Formatting and analysis
+
+Run `tools/format-check.ps1` to check C++ formatting with clang-format. Configure `windows-analysis`, then run clang-tidy over the generated compilation database, for example:
+
+```powershell
+cmake --preset windows-analysis -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+clang-tidy -p out/build/windows-analysis src/app/main.cpp tests/smoke_test.cpp
+```
+
+`DEVHUB_ENABLE_SANITIZERS` enables AddressSanitizer and UndefinedBehaviorSanitizer for supported non-MSVC toolchains. MSVC sanitizer builds are not configured.
+
+## Windows release package
+
+Install Inno Setup 6 and set `QT_ROOT_DIR` to the Qt kit used by the `windows-package` preset. The packaging script chooses its paired MinGW compiler (or accept `-CompilerBin` when multiple MinGW toolchains are installed). Then run:
+
+```powershell
+tools/package-windows.ps1
+```
+
+The script builds Release, stages the Qt runtime and QSQLITE plugin, adds vcpkg and Qt notices plus a dependency inventory, creates a portable ZIP and a per-user installer, and writes SHA-256 checksums. Use `tools/package-windows.ps1 -PortableOnly` when Inno Setup is unavailable. The installer is unsigned by default. See [packaging/README.md](../packaging/README.md) for signing hooks and release gates. Do not distribute until Qt license obligations and clean-machine checks have been reviewed.

@@ -1,0 +1,11 @@
+#include "ApplicationLogCategories.h"
+Q_LOGGING_CATEGORY(lcDevHubBootstrap, "devhub.bootstrap")
+Q_LOGGING_CATEGORY(lcDevHubAuthentication, "devhub.authentication")
+Q_LOGGING_CATEGORY(lcDevHubWorkspace, "devhub.workspace")
+Q_LOGGING_CATEGORY(lcDevHubGit, "devhub.git")
+Q_LOGGING_CATEGORY(lcDevHubService, "devhub.service")
+Q_LOGGING_CATEGORY(lcDevHubPorts, "devhub.ports")
+Q_LOGGING_CATEGORY(lcDevHubDatabase, "devhub.database")
+Q_LOGGING_CATEGORY(lcDevHubNotes, "devhub.notes")
+Q_LOGGING_CATEGORY(lcDevHubNotifications, "devhub.notifications")
+Q_LOGGING_CATEGORY(lcDevHubSettings, "devhub.settings")

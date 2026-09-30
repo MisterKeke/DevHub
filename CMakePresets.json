@@ -1,0 +1,69 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-dev",
+      "displayName": "Windows developer (Ninja Multi-Config)",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT_DIR}",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/.tools/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/.tools/vcpkg_installed",
+        "VCPKG_TARGET_TRIPLET": "x64-mingw-static",
+        "DEVHUB_BUILD_TESTS": "ON",
+        "DEVHUB_WARNINGS_AS_ERRORS": "OFF",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "windows-ci",
+      "displayName": "Windows CI (Visual Studio 2022 x64)",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "architecture": "x64",
+      "toolset": "v143,version=14.44.35207",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT_DIR}",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/.tools/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/.tools/vcpkg_installed",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "DEVHUB_BUILD_TESTS": "ON",
+        "DEVHUB_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "windows-analysis",
+      "displayName": "Windows static analysis (Ninja Multi-Config)",
+      "inherits": "windows-dev",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "DEVHUB_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "windows-package",
+      "displayName": "Windows release package (Ninja Multi-Config)",
+      "inherits": "windows-dev",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "DEVHUB_BUILD_TESTS": "OFF",
+        "DEVHUB_ENABLE_PACKAGING": "ON",
+        "DEVHUB_WARNINGS_AS_ERRORS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-dev-debug", "configurePreset": "windows-dev", "configuration": "Debug" },
+    { "name": "windows-dev-relwithdebinfo", "configurePreset": "windows-dev", "configuration": "RelWithDebInfo" },
+    { "name": "windows-dev-release", "configurePreset": "windows-dev", "configuration": "Release" },
+    { "name": "windows-ci-release", "configurePreset": "windows-ci", "configuration": "Release" },
+    { "name": "windows-package-release", "configurePreset": "windows-package", "configuration": "Release" }
+  ],
+  "testPresets": [
+    { "name": "windows-dev-debug", "configurePreset": "windows-dev", "configuration": "Debug", "output": { "outputOnFailure": true } },
+    { "name": "windows-ci-release", "configurePreset": "windows-ci", "configuration": "Release", "output": { "outputOnFailure": true } }
+  ]
+}
