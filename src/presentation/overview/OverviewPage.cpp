@@ -24,10 +24,10 @@ OverviewPage::OverviewPage(application::commands::CommandRegistry& commands, QWi
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(28, 22, 28, 28);
     outer->setSpacing(8);
-    auto* heading = new QLabel(tr("Workspace Overview"), this);
-    heading->setObjectName(QStringLiteral("workspaceOverviewTitle"));
-    QFont font = heading->font(); font.setPointSize(font.pointSize() + 5); font.setBold(true); heading->setFont(font);
-    outer->addWidget(heading);
+    auto* pageHeading = new QLabel(tr("Workspace Overview"), this);
+    pageHeading->setObjectName(QStringLiteral("workspaceOverviewTitle"));
+    QFont font = pageHeading->font(); font.setPointSize(font.pointSize() + 5); font.setBold(true); pageHeading->setFont(font);
+    outer->addWidget(pageHeading);
     auto* description = new QLabel(tr("Your development workspace at a glance."), this);
     description->setObjectName(QStringLiteral("workspaceOverviewDescription"));
     description->setStyleSheet(QStringLiteral("color: %1;").arg(
