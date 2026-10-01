@@ -18,7 +18,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 6.8.3 REQUIRED COMPONENTS Core Gui Widgets Sql Concurrent Svg Network)
+find_package(Qt6 6.8.3 REQUIRED COMPONENTS Core Gui Widgets Sql Concurrent Svg Network Qml Quick QuickControls2)
 # vcpkg's sodium config caches library paths without the triplet in the cache
 # key. Clear paths left by an earlier dynamic/static triplet configuration.
 foreach(_sodium_config DEBUG RELEASE)
@@ -53,6 +53,8 @@ if(DEVHUB_ENABLE_SANITIZERS)
 endif()
 
 configure_file(cmake/version.rc.in "${CMAKE_CURRENT_BINARY_DIR}/version.rc" @ONLY)
+qt_policy(SET QTP0001 NEW)
+qt_policy(SET QTP0004 NEW)
 
 add_library(devhub_core STATIC
     src/application/events/ApplicationEventHub.cpp
@@ -239,7 +241,6 @@ add_executable(devhub WIN32
     src/presentation/workspaces/WorkspaceListView.cpp
     src/presentation/authentication/AuthenticationWidgets.cpp
     src/presentation/authentication/AuthenticationWindow.cpp
-    src/presentation/authentication/ForgotPasswordInformationDialog.cpp
     src/presentation/authentication/ChangePasswordDialog.cpp
     resources/devhub.qrc
     resources/database_migrations.qrc
@@ -261,9 +262,39 @@ target_link_libraries(devhub PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
+    Qt6::Qml
+    Qt6::Quick
+    Qt6::QuickControls2
     Qt6::Svg
     Qt6::Concurrent
 )
+set_source_files_properties(
+    resources/qml/Authentication.qml PROPERTIES QT_RESOURCE_ALIAS Authentication.qml)
+set_source_files_properties(resources/qml/MainShell.qml PROPERTIES QT_RESOURCE_ALIAS MainShell.qml)
+set_source_files_properties(resources/qml/Theme.qml PROPERTIES
+    QT_RESOURCE_ALIAS Theme.qml QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties(resources/qml/BrandMark.qml PROPERTIES QT_RESOURCE_ALIAS BrandMark.qml)
+set_source_files_properties(resources/qml/DarkField.qml PROPERTIES QT_RESOURCE_ALIAS DarkField.qml)
+set_source_files_properties(resources/qml/PinkButton.qml PROPERTIES QT_RESOURCE_ALIAS PinkButton.qml)
+set_source_files_properties(resources/qml/PasswordField.qml PROPERTIES QT_RESOURCE_ALIAS PasswordField.qml)
+set_source_files_properties(resources/qml/LockMark.qml PROPERTIES QT_RESOURCE_ALIAS LockMark.qml)
+set_source_files_properties(resources/qml/ShellButton.qml PROPERTIES QT_RESOURCE_ALIAS ShellButton.qml)
+qt_add_qml_module(devhub
+    URI DevHub
+    VERSION 1.0
+    DEPENDENCIES QtQuick.Controls QtQuick.Layouts
+    QML_FILES
+        resources/qml/Authentication.qml
+        resources/qml/MainShell.qml
+        resources/qml/Theme.qml
+        resources/qml/BrandMark.qml
+        resources/qml/DarkField.qml
+        resources/qml/PinkButton.qml
+        resources/qml/PasswordField.qml
+        resources/qml/LockMark.qml
+        resources/qml/ShellButton.qml
+)
+qt_import_qml_plugins(devhub)
 if(WIN32)
     target_link_libraries(devhub PRIVATE shell32)
 endif()

@@ -138,8 +138,9 @@ void GitPage::setWorkspacePath(QString path, std::optional<QUuid> workspaceId) {
     m_partialErrors->clear();
     m_partialErrors->hide();
     m_state->setText(m_path.isEmpty() ? tr("Select a workspace to inspect its repository.") : tr("Workspace selected. Reading Git status…"));
-    if (isVisible() && !m_path.isEmpty()) refresh();
+    if (!m_path.isEmpty()) refresh();
 }
+void GitPage::refreshNow() { refresh(); }
 void GitPage::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
     if (!m_path.isEmpty() && m_refresh->isEnabled()) refresh();
@@ -151,7 +152,11 @@ void GitPage::setBusy(bool busy) {
 void GitPage::runMutation(QString operation, QStringList arguments) {
     if (m_path.isEmpty()) return;
     application::git::GitExecutableLocator locator; const auto executable = locator.locate();
-    if (!executable) { m_state->setText(executable.error().userMessage); return; }
+    if (!executable) {
+        m_state->setText(executable.error().userMessage);
+        emit overviewUpdated(executable.error().userMessage, {}, tr("Git unavailable"), QStringLiteral("error"));
+        return;
+    }
     const QString path = m_path, executablePath = executable.value().path;
     application::tasks::TaskRequest request; request.moduleKey = QStringLiteral("git-mutation");
     const quint64 generation = ++m_statusGeneration;
@@ -180,7 +185,11 @@ void GitPage::runMutation(QString operation, QStringList arguments) {
 void GitPage::refresh() {
     if (m_path.isEmpty()) { m_state->setText(tr("Select a workspace first.")); return; }
     application::git::GitExecutableLocator locator; const auto executable = locator.locate();
-    if (!executable) { m_state->setText(executable.error().userMessage); return; }
+    if (!executable) {
+        m_state->setText(executable.error().userMessage);
+        emit overviewUpdated(executable.error().userMessage, {}, tr("Git unavailable"), QStringLiteral("error"));
+        return;
+    }
     locator.store(executable.value());
     m_diffTask.cancel();
     ++m_diffGeneration;

@@ -39,6 +39,11 @@ ThemeManager::ThemeManager(QApplication& application)
 {
     m_reducedMotion = QSettings().value(QStringLiteral("appearance/reducedMotion"), false).toBool();
     m_application.setProperty("reducedMotion", m_reducedMotion);
+    applyPalette();
+}
+
+void ThemeManager::applyPalette()
+{
     if (systemHighContrastEnabled()) {
         m_application.setProperty("highContrast", true);
         return;
@@ -101,6 +106,32 @@ ThemeManager::ThemeManager(QApplication& application)
     }
     m_application.setStyleSheet(sheet);
     m_application.setProperty("reducedMotion", m_reducedMotion);
+}
+
+QColor ThemeManager::accent() const { return ThemePalette::color(ColorToken::Accent); }
+QColor ThemeManager::accentHover() const { return ThemePalette::color(ColorToken::AccentHover); }
+QColor ThemeManager::background() const { return ThemePalette::color(ColorToken::WindowBackground); }
+QColor ThemeManager::sidebarSurface() const { return ThemePalette::color(ColorToken::SidebarSurface); }
+QColor ThemeManager::panelSurface() const { return ThemePalette::color(ColorToken::PanelSurface); }
+QColor ThemeManager::raisedSurface() const { return ThemePalette::color(ColorToken::RaisedSurface); }
+QColor ThemeManager::hoverSurface() const { return ThemePalette::color(ColorToken::HoverSurface); }
+QColor ThemeManager::activeSurface() const { return ThemePalette::color(ColorToken::ActiveSurface); }
+QColor ThemeManager::borderSubtle() const { return ThemePalette::color(ColorToken::BorderSubtle); }
+QColor ThemeManager::borderStrong() const { return ThemePalette::color(ColorToken::BorderStrong); }
+QColor ThemeManager::textPrimary() const { return ThemePalette::color(ColorToken::TextPrimary); }
+QColor ThemeManager::textSecondary() const { return ThemePalette::color(ColorToken::TextSecondary); }
+QColor ThemeManager::textMuted() const { return ThemePalette::color(ColorToken::TextMuted); }
+QColor ThemeManager::error() const { return ThemePalette::color(ColorToken::Error); }
+
+void ThemeManager::setVariant(ThemeVariant variant)
+{
+    if (ThemePalette::variant() == variant) return;
+    const QString value = variant == ThemeVariant::DarkBlue ? QStringLiteral("dark-blue")
+                                                              : QStringLiteral("dark-rose");
+    ThemePalette::setVariant(variant);
+    QSettings().setValue(QStringLiteral("appearance/theme"), value);
+    applyPalette();
+    emit themeChanged();
 }
 
 bool ThemeManager::reducedMotion() const noexcept

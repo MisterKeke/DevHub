@@ -212,13 +212,8 @@ private slots:
                     .exists());
     }
 
-    void signInAndUnlockWidgetsKeepTheirIntendedInputs()
+    void lockedWorkspaceKeepsTheAccountIdentityAndPasswordControl()
     {
-        devhub::presentation::authentication::SignInWidget signIn(QStringLiteral("Local User"));
-        QVERIFY(signIn.findChild<QLineEdit*>(QStringLiteral("signInUsername")) != nullptr);
-        QCOMPARE(signIn.username(), QStringLiteral("Local User"));
-        QVERIFY(!signIn.keepSession());
-
         devhub::presentation::authentication::UnlockWidget unlock(QStringLiteral("Local User"));
         QCOMPARE(unlock.findChildren<QLineEdit*>().size(), 1);
         QVERIFY(unlock.findChild<QLabel*>(QStringLiteral("lockedAccountIdentity")) != nullptr);

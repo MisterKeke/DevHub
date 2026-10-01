@@ -70,6 +70,7 @@
 #include <QTimer>
 
 #include <utility>
+#include <algorithm>
 
 namespace devhub::app {
 namespace {
@@ -125,6 +126,12 @@ int ApplicationBootstrapper::run()
     m_application.setApplicationName(QStringLiteral(DEVHUB_APPLICATION_NAME));
     m_application.setApplicationVersion(QStringLiteral(DEVHUB_VERSION));
     m_application.setQuitOnLastWindowClosed(true);
+    const auto arguments = m_application.arguments();
+    if (std::any_of(arguments.cbegin(), arguments.cend(), [](const QString& argument) {
+            return argument.startsWith(QStringLiteral("--capture-auth="));
+        })) {
+        QStandardPaths::setTestModeEnabled(true);
+    }
 
     QElapsedTimer startupTimer;
     startupTimer.start();
@@ -260,7 +267,7 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
     m_application.setQuitOnLastWindowClosed(false);
     presentation::authentication::AuthenticationWindow authenticationWindow(
         initiallySigningIn, initialUsername, authentication, session, nullptr, &startupTimer,
-        settingsService.value(QStringLiteral("security/keepSessionDefault")).toBool());
+        settingsService.value(QStringLiteral("security/keepSessionDefault")).toBool(), themeManager);
     const bool authenticated = authenticationWindow.exec() == QDialog::Accepted
         && session.state() == application::authentication::SessionState::SignedIn;
     if (!authenticated) {
@@ -369,7 +376,7 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
                      &m_application, &QCoreApplication::quit);
     QObject::connect(&mainWindow, &presentation::shell::MainWindow::signOutRequested,
                      &mainWindow, [this, &mainWindow, &session, &accountRepository,
-                                   &authentication, &shutdown, &workspaceContext, &settingsService] {
+                      &authentication, &shutdown, &workspaceContext, &settingsService, themeManager] {
         workspaceContext.clear();
         session.signOut();
         mainWindow.hide();
@@ -381,7 +388,7 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
         m_application.setQuitOnLastWindowClosed(false);
         presentation::authentication::AuthenticationWindow signInWindow(
             true, account.value()->displayUsername().value(), authentication, session, nullptr, nullptr,
-            settingsService.value(QStringLiteral("security/keepSessionDefault")).toBool());
+            settingsService.value(QStringLiteral("security/keepSessionDefault")).toBool(), themeManager);
         const bool signedIn = signInWindow.exec() == QDialog::Accepted
             && session.state() == application::authentication::SessionState::SignedIn;
         if (signedIn) {

@@ -13,6 +13,7 @@ class ThemePalette final
 {
 public:
     static void setVariant(ThemeVariant variant);
+    [[nodiscard]] static ThemeVariant variant();
     [[nodiscard]] static QColor color(ColorToken token);
     [[nodiscard]] static QPalette palette();
 };

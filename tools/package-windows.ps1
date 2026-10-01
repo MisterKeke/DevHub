@@ -113,8 +113,11 @@ try {
     foreach ($runtimeFile in @(
         "bin/Qt6Core.dll", "bin/Qt6Gui.dll", "bin/Qt6Network.dll",
         "bin/Qt6Sql.dll", "bin/Qt6Svg.dll", "bin/Qt6Widgets.dll",
+        "bin/Qt6Qml.dll", "bin/Qt6Quick.dll", "bin/Qt6QuickControls2.dll",
         "bin/libgcc_s_seh-1.dll", "bin/libstdc++-6.dll", "bin/libwinpthread-1.dll",
-        "bin/qt.conf", "plugins/platforms/qwindows.dll", "plugins/sqldrivers/qsqlite.dll"
+        "bin/qt.conf", "plugins/platforms/qwindows.dll", "plugins/sqldrivers/qsqlite.dll",
+        "qml/QtQuick/Controls/qtquickcontrols2plugin.dll",
+        "qml/QtQuick/Controls/Basic/qtquickcontrols2basicstyleplugin.dll"
     )) {
         if (!(Test-Path -LiteralPath (Join-Path $stageDirectory $runtimeFile) -PathType Leaf)) {
             throw "Required portable runtime file was not staged: $runtimeFile"

@@ -16,6 +16,7 @@ public:
     explicit GitPage(application::tasks::TaskScheduler& scheduler, QWidget* parent = nullptr,
                       application::settings::SettingsService* settings = nullptr);
     void setWorkspacePath(QString path, std::optional<QUuid> workspaceId = std::nullopt);
+    void refreshNow();
 signals:
     void operationFailed(QString title, QString message);
     void overviewUpdated(QString summary, QStringList details, QString statusLabel, QString statusTone);

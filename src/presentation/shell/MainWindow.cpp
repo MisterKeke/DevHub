@@ -59,6 +59,10 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QQuickView>
+#include <QQmlContext>
+#include <QDialog>
+#include <QVariantMap>
 
 namespace devhub::presentation::shell {
 namespace {
@@ -258,7 +262,10 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             : row == 5 ? Category::Database : row == 6 ? Category::Notes
             : row == 7 ? Category::Files : row == 8 ? Category::Settings : Category::Navigation;
         m_commandRegistry->addCommand(navigationIds[row], navigationTitles[row], category,
-            [moduleList, row] { moduleList->setCurrentRow(row); }, {},
+            [this, moduleList, row] {
+                if (row == 8) openQuickSettings();
+                else moduleList->setCurrentRow(row);
+            }, {},
             tr("Open the %1 module").arg(navigationTitles[row]), {navigationTitles[row].toLower()});
     }
 
@@ -401,6 +408,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         m_settingsService.value(QStringLiteral("database/pageSize")).toInt(),
         m_settingsService.value(QStringLiteral("database/queryHistoryEnabled")).toBool(),
         m_settingsService.value(QStringLiteral("database/queryHistoryLimit")).toInt());
+    m_databasePage = databasePage;
     connect(databasePage, &devhub::presentation::databases::DatabasePage::databaseOperationFailed, this,
         [this](const QString& message) {
             application::notifications::NotificationDraft draft;
@@ -813,6 +821,40 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         devhub::presentation::settings::SupportBundleDialog dialog(m_supportBundleBuilder, status, this);
         dialog.exec();
     });
+    // The main workspace shell and overview are rendered by Qt Quick. Existing module
+    // controllers remain alive and are hosted in a separate window until their QML
+    // views are migrated, so no workflows or data access paths are dropped.
+    m_moduleWindow = new QDialog(this);
+    m_moduleWindow->setWindowTitle(tr("DevHub — Workspace tools"));
+    m_moduleWindow->resize(1120, 760);
+    m_moduleWindow->setMinimumSize(720, 520);
+    auto* moduleLayout = new QVBoxLayout(m_moduleWindow);
+    moduleLayout->setContentsMargins(0, 0, 0, 0);
+    moduleLayout->addWidget(m_pageHost);
+    connect(m_moduleWindow, &QDialog::finished, this, [this] {
+        if (m_quickModule == 0) return;
+        m_quickModule = 0;
+        emit shellChanged();
+    });
+    m_modulePages = {m_overviewPage, gitPage, servicePage, portPage, logsPage,
+                     databasePage, m_notesPage, filesPage, settingsPage};
+
+    auto* quickView = new QQuickView;
+    quickView->setResizeMode(QQuickView::SizeRootObjectToView);
+    quickView->rootContext()->setContextProperty(QStringLiteral("shellController"), this);
+    quickView->rootContext()->setContextProperty(QStringLiteral("workspaceModel"), m_workspaceModel);
+    quickView->rootContext()->setContextProperty(QStringLiteral("themeController"), &m_themeManager);
+    quickView->setSource(QUrl(QStringLiteral("qrc:/qt/qml/DevHub/MainShell.qml")));
+    m_quickShell = QWidget::createWindowContainer(quickView, m_rootPages);
+    m_quickShell->setObjectName(QStringLiteral("quickMainShell"));
+    m_rootPages->insertWidget(0, m_quickShell);
+    m_rootPages->setCurrentWidget(m_quickShell);
+    connect(m_overviewComposer, &application::overview::OverviewStateComposer::snapshotChanged,
+            this, [this] { emit shellChanged(); });
+    connect(&m_workspaceContext, &application::workspaces::WorkspaceContext::workspaceChanged,
+            this, [this] { emit shellChanged(); });
+    connect(m_workspaceModel, &QAbstractItemModel::modelReset, this, [this] { emit shellChanged(); });
+    statusBar()->hide();
     statusBar()->setSizeGripEnabled(false);
     restoreSafeGeometry();
     updateHeaderForWidth();
@@ -820,12 +862,153 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     reloadWorkspaces();
     const int restoredPage = m_settingsService.value(QStringLiteral("general/restoreLastPage")).toBool()
         ? QSettings().value(QStringLiteral("window/lastPage"), 0).toInt() : 0;
-    if (restoredPage > 0 && restoredPage < m_pageHost->count()) moduleList->setCurrentRow(restoredPage);
+    if (restoredPage > 0 && restoredPage < 8) selectQuickModule(restoredPage);
 }
 
 void MainWindow::restoreWorkspaceSelection()
 {
     reloadWorkspaces();
+}
+
+QString MainWindow::shellWorkspaceTitle() const
+{
+    const auto& active = m_workspaceContext.activeWorkspace();
+    return active ? active->displayName() : tr("DevHub");
+}
+
+QString MainWindow::shellWorkspacePath() const
+{
+    const auto& active = m_workspaceContext.activeWorkspace();
+    return active ? active->path().canonicalPath() : tr("Select a workspace to get started");
+}
+
+QString MainWindow::shellWorkspaceId() const
+{
+    const auto& active = m_workspaceContext.activeWorkspace();
+    return active ? active->id().toString() : QString{};
+}
+
+QVariantList MainWindow::overviewSections() const
+{
+    const auto snapshot = m_overviewComposer->snapshot();
+    const QStringList order{QStringLiteral("git"), QStringLiteral("services"), QStringLiteral("ports"),
+                            QStringLiteral("logs"), QStringLiteral("database"), QStringLiteral("notes")};
+    const QStringList icons{QStringLiteral("⑂"), QStringLiteral("▷"), QStringLiteral("◉"),
+                            QStringLiteral("≡"), QStringLiteral("▤"), QStringLiteral("▧")};
+    const QStringList labels{tr("Git Status"), tr("Services / Run"), tr("Open Ports"),
+                             tr("Recent Logs"), tr("Database (SQLite)"), tr("Notes")};
+    const QStringList actions{tr("Open Git"), tr("Manage Services"), tr("View Ports"),
+                              tr("Open Logs"), tr("Browse Database"), tr("Open Notes")};
+    QVariantList result;
+    for (qsizetype i = 0; i < order.size(); ++i) {
+        QVariantMap item;
+        const auto it = snapshot.sections.constFind(order.at(i));
+        if (it != snapshot.sections.cend()) {
+            item.insert(QStringLiteral("summary"), it->summary);
+            item.insert(QStringLiteral("status"), it->statusLabel);
+            item.insert(QStringLiteral("tone"), it->statusTone);
+            item.insert(QStringLiteral("details"), it->details);
+            item.insert(QStringLiteral("error"), it->error);
+            item.insert(QStringLiteral("updated"), it->updatedAt.isValid()
+                ? tr("Current · updated %1").arg(it->updatedAt.toLocalTime().toString(QStringLiteral("HH:mm:ss"))) : QString{});
+            item.insert(QStringLiteral("loading"), it->loading);
+        }
+        item.insert(QStringLiteral("id"), order.at(i));
+        item.insert(QStringLiteral("title"), labels.at(i));
+        item.insert(QStringLiteral("icon"), icons.at(i));
+        item.insert(QStringLiteral("action"), shellWorkspaceTitle() == tr("DevHub") ? QString{} : actions.at(i));
+        item.insert(QStringLiteral("module"), static_cast<int>(i + 1));
+        result.append(item);
+    }
+    return result;
+}
+
+void MainWindow::selectQuickModule(int index)
+{
+    if (index < 0 || index >= m_modulePages.size()) return;
+    QSettings().setValue(QStringLiteral("window/lastPage"), index);
+    if (index == 8) {
+        openQuickSettings();
+        return;
+    }
+    m_quickModule = index;
+    emit shellChanged();
+    if (index == 0) {
+        m_moduleWindow->hide();
+        return;
+    }
+    m_pageHost->setCurrentWidget(m_modulePages.at(index));
+    m_moduleWindow->setWindowTitle(tr("DevHub — %1").arg(QStringList{
+        tr("Overview"), tr("Git"), tr("Services"), tr("Ports"), tr("Logs"),
+        tr("Database"), tr("Notes"), tr("Files"), tr("Settings")}.at(index)));
+    m_moduleWindow->show();
+    m_moduleWindow->raise();
+    m_moduleWindow->activateWindow();
+}
+
+void MainWindow::activateQuickWorkspace(const QString& id) { activateWorkspace(id); }
+void MainWindow::addQuickWorkspace() { addWorkspace(); }
+void MainWindow::lockQuickSession() { emit manualLockRequested(); }
+
+void MainWindow::openQuickTerminal()
+{
+    const auto active = m_workspaceContext.activeWorkspace();
+    if (!active) { statusBar()->showMessage(tr("Select a workspace first."), 3500); return; }
+    const auto result = m_terminalLauncher.openAt(active->path().canonicalPath());
+    if (!result) QMessageBox::warning(this, tr("Could not open terminal"), result.error().userMessage +
+        QStringLiteral("\n\n") + result.error().technicalMessage);
+}
+
+void MainWindow::restartQuickServices()
+{
+    const auto active = m_workspaceContext.activeWorkspace();
+    if (!active) { statusBar()->showMessage(tr("Select a workspace first."), 3500); return; }
+    int restarted = 0;
+    for (const auto& state : m_serviceCoordinator.states()) {
+        if (state.definition.workspaceId != active->id().toString()) continue;
+        if (state.lifecycle != application::services::ServiceLifecycleState::Running
+            && state.lifecycle != application::services::ServiceLifecycleState::Failed) continue;
+        const auto result = m_serviceCoordinator.restart(state.definition.id, active->path().canonicalPath());
+        if (!result) statusBar()->showMessage(result.error().userMessage, 5000);
+        else ++restarted;
+    }
+    statusBar()->showMessage(restarted == 0 ? tr("No running services to restart.")
+        : tr("Restarting %1 service(s)…").arg(restarted), 4000);
+}
+
+void MainWindow::openQuickFolder()
+{
+    const QString directory = QFileDialog::getExistingDirectory(this, tr("Open workspace folder"));
+    if (directory.isEmpty()) return;
+    const auto selected = m_workspaceManager.validator().validate(directory);
+    if (selected) {
+        const auto registered = m_workspaceManager.list();
+        if (registered) for (const auto& workspace : registered.value())
+            if (application::workspaces::WorkspaceValidator::pathsEqual(
+                    workspace.path().canonicalPath(), selected.value().path.canonicalPath())) {
+                activateWorkspace(workspace.id().toString()); return;
+            }
+    }
+    addWorkspace(directory);
+}
+
+void MainWindow::openQuickSettings()
+{
+    const QString workspaceId = m_workspaceContext.activeWorkspace()
+        ? m_workspaceContext.activeWorkspace()->id().toString() : QString{};
+    devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this);
+    connect(&dialog, &devhub::presentation::settings::SettingsWindow::changePasswordRequested,
+            &dialog, [this] {
+        if (!m_session.account()) return;
+        devhub::presentation::authentication::ChangePasswordDialog passwordDialog(
+            m_session.account()->normalizedUsername(), m_authentication, this);
+        passwordDialog.exec();
+    });
+    if (dialog.exec() == QDialog::Accepted && m_databasePage) {
+        m_databasePage->setQueryHistoryPreferences(
+            m_settingsService.value(QStringLiteral("database/queryHistoryEnabled")).toBool(),
+            m_settingsService.value(QStringLiteral("database/queryHistoryLimit")).toInt());
+    }
 }
 
 void MainWindow::flushNotesForShutdown()
@@ -965,6 +1148,11 @@ void MainWindow::showWorkspaceMenu(const QPoint& position)
 void MainWindow::updateSessionPage(application::authentication::SessionState state)
 {
     if (state == application::authentication::SessionState::Locked) {
+        if (m_moduleWindow) m_moduleWindow->hide();
+        if (m_quickModule != 0) {
+            m_quickModule = 0;
+            emit shellChanged();
+        }
         if (QWidget* focused = QApplication::focusWidget(); focused != nullptr && focused != m_unlockWidget) {
             m_focusBeforeLock = focused;
         }
@@ -976,7 +1164,7 @@ void MainWindow::updateSessionPage(application::authentication::SessionState sta
         if (m_session.account().has_value()) {
             m_unlockWidget->setUsername(m_session.account()->displayUsername().value());
         }
-        m_rootPages->setCurrentWidget(m_mainShell);
+        m_rootPages->setCurrentWidget(m_quickShell ? m_quickShell : m_mainShell);
         m_mainShell->setVisible(true);
         setWindowTitle(QStringLiteral("DevHub"));
         if (!m_focusBeforeLock.isNull() && m_focusBeforeLock->isVisible()) {
@@ -1018,10 +1206,7 @@ void MainWindow::submitUnlock()
 
 void MainWindow::selectPage(int index)
 {
-    if (index >= 0 && index < m_pageHost->count()) {
-        m_pageHost->setCurrentIndex(index);
-        QSettings().setValue(QStringLiteral("window/lastPage"), index);
-    }
+    selectQuickModule(index);
 }
 
 void MainWindow::resizeEvent(QResizeEvent* event)

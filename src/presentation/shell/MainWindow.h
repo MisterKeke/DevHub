@@ -3,6 +3,7 @@
 #include <QMainWindow>
 #include <QPointer>
 #include <QStringList>
+#include <QVariantList>
 
 #include "../../application/workspaces/WorkspaceManager.h"
 #include "../../application/workspaces/WorkspaceContext.h"
@@ -23,6 +24,7 @@ class QLabel;
 class QToolButton;
 class QStackedWidget;
 class QWidget;
+class QDialog;
 class QLineEdit;
 class QListView;
 namespace devhub::application::authentication {
@@ -41,6 +43,7 @@ class UnlockWidget;
 }
 namespace devhub::presentation::workspaces { class WorkspaceListModel; }
 namespace devhub::presentation::notes { class NotesPage; }
+namespace devhub::presentation::databases { class DatabasePage; }
 namespace devhub::application::overview { class OverviewStateComposer; }
 namespace devhub::application::commands { class CommandRegistry; }
 namespace devhub::application::commands { class CachedSearchProvider; }
@@ -56,6 +59,11 @@ namespace devhub::presentation::shell {
 class MainWindow final : public QMainWindow
 {
     Q_OBJECT
+    Q_PROPERTY(QString shellWorkspaceTitle READ shellWorkspaceTitle NOTIFY shellChanged)
+    Q_PROPERTY(QString shellWorkspacePath READ shellWorkspacePath NOTIFY shellChanged)
+    Q_PROPERTY(QString shellWorkspaceId READ shellWorkspaceId NOTIFY shellChanged)
+    Q_PROPERTY(QVariantList overviewSections READ overviewSections NOTIFY shellChanged)
+    Q_PROPERTY(int quickModule READ quickModule NOTIFY shellChanged)
 public:
     MainWindow(application::authentication::SessionController& session,
                application::authentication::AuthenticationService& authentication,
@@ -87,11 +95,27 @@ public:
     void restoreWorkspaceSelection();
     void flushNotesForShutdown();
     void showRecoveryNotice();
+    QString shellWorkspaceTitle() const;
+    QString shellWorkspacePath() const;
+    QString shellWorkspaceId() const;
+    QVariantList overviewSections() const;
+    int quickModule() const noexcept { return m_quickModule; }
+
+public slots:
+    void selectQuickModule(int index);
+    void activateQuickWorkspace(const QString& id);
+    void addQuickWorkspace();
+    void lockQuickSession();
+    void openQuickTerminal();
+    void restartQuickServices();
+    void openQuickFolder();
+    void openQuickSettings();
 
 signals:
     void manualLockRequested();
     void signOutRequested();
     void quitRequested();
+    void shellChanged();
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
@@ -141,9 +165,11 @@ private:
     QLineEdit* m_workspaceSearch = nullptr;
     QStackedWidget* m_rootPages = nullptr;
     QWidget* m_mainShell = nullptr;
+    QWidget* m_quickShell = nullptr;
     QWidget* m_lockPage = nullptr;
     authentication::UnlockWidget* m_unlockWidget = nullptr;
     devhub::presentation::notes::NotesPage* m_notesPage = nullptr;
+    devhub::presentation::databases::DatabasePage* m_databasePage = nullptr;
     application::overview::OverviewStateComposer* m_overviewComposer = nullptr;
     application::commands::CommandRegistry* m_commandRegistry = nullptr;
     devhub::presentation::overview::OverviewPage* m_overviewPage = nullptr;
@@ -156,6 +182,9 @@ private:
     qint64 m_observedLogBytes = 0;
     QStringList m_recentLogLines;
     QPointer<QWidget> m_focusBeforeLock;
+    QDialog* m_moduleWindow = nullptr;
+    QList<QWidget*> m_modulePages;
+    int m_quickModule = 0;
 };
 
 } // namespace devhub::presentation::shell

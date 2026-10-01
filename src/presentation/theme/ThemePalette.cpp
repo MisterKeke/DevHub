@@ -10,6 +10,11 @@ void ThemePalette::setVariant(ThemeVariant variant)
     activeVariant = variant;
 }
 
+ThemeVariant ThemePalette::variant()
+{
+    return activeVariant;
+}
+
 QColor ThemePalette::color(ColorToken token)
 {
     if (activeVariant == ThemeVariant::DarkBlue) {

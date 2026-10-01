@@ -16,6 +16,7 @@ if(WIN32)
         TARGET devhub
         OUTPUT_SCRIPT devhub_deploy_script
         INCLUDE_PLUGINS qsqlite
+        DEPLOY_TOOL_OPTIONS --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/resources/qml"
         NO_UNSUPPORTED_PLATFORM_ERROR)
     install(SCRIPT "${devhub_deploy_script}")
 

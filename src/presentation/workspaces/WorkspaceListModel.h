@@ -19,7 +19,7 @@ public:
     void setWorkspaces(QVector<domain::workspace::Workspace> workspaces);
     [[nodiscard]] const domain::workspace::Workspace* workspaceAt(int row) const;
     [[nodiscard]] int rowForId(const QString& id) const;
-    void setFilter(QString text);
+    Q_INVOKABLE void setFilter(QString text);
 
 private:
     QVector<domain::workspace::Workspace> m_all;

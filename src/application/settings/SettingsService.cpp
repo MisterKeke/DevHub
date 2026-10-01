@@ -32,7 +32,7 @@ SettingsService::SettingsService(ISettingsRepository& repository) : m_repository
         integer(QStringLiteral("security/inactivityTimeoutMinutes"), QStringLiteral("Inactivity lock timeout (minutes)"), QStringLiteral("Account and Security"), 15, 1, 240, SettingScope::Global, true),
         boolean(QStringLiteral("security/keepSessionDefault"), QStringLiteral("Keep session signed in by default"), QStringLiteral("Account and Security"), false, SettingScope::Global, true),
         boolean(QStringLiteral("appearance/reducedMotion"), QStringLiteral("Reduce motion"), QStringLiteral("Appearance"), false),
-        string(QStringLiteral("appearance/theme"), QStringLiteral("Color theme"), QStringLiteral("Appearance"), QStringLiteral("dark-rose"), true),
+        string(QStringLiteral("appearance/theme"), QStringLiteral("Color theme"), QStringLiteral("Appearance"), QStringLiteral("dark-rose")),
         string(QStringLiteral("git/executable"), QStringLiteral("Git executable override"), QStringLiteral("Git"), {}, true, SettingSensitivity::Sensitive),
         integer(QStringLiteral("workspaces/scanLimitMs"), QStringLiteral("Workspace scan limit (ms)"), QStringLiteral("Workspaces"), 5000, 100, 60000, SettingScope::Global, true),
         integer(QStringLiteral("logs/maxLines"), QStringLiteral("Maximum cached log lines"), QStringLiteral("Logs"), 10000, 100, 200000, SettingScope::Global, true),

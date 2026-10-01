@@ -1,6 +1,7 @@
 #include "SettingsWindow.h"
 #include "../../application/settings/SettingsService.h"
 #include "../theme/ThemeManager.h"
+#include "../theme/ThemePalette.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -115,6 +116,10 @@ void SettingsWindow::saveSettings()
             return;
         }
     }
+    const QString theme = m_settings.value(QStringLiteral("appearance/theme")).toString();
+    m_theme.setVariant(theme == QStringLiteral("dark-blue")
+        ? presentation::theme::ThemeVariant::DarkBlue
+        : presentation::theme::ThemeVariant::DarkRose);
     m_theme.setReducedMotion(m_settings.value(QStringLiteral("appearance/reducedMotion")).toBool());
     accept();
 }

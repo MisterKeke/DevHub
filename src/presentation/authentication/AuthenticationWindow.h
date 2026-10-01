@@ -1,22 +1,20 @@
 #pragma once
 
-#include <QDialog>
+#include <QObject>
+#include <QString>
 
-class QStackedWidget;
 class QElapsedTimer;
-class QShowEvent;
+class QWidget;
 
 namespace devhub::application::authentication {
 class AuthenticationService;
 class SessionController;
 }
+namespace devhub::presentation::theme { class ThemeManager; }
 
 namespace devhub::presentation::authentication {
 
-class CreateAccountWidget;
-class SignInWidget;
-
-class AuthenticationWindow final : public QDialog
+class AuthenticationWindow final : public QObject
 {
     Q_OBJECT
 public:
@@ -26,23 +24,19 @@ public:
                          application::authentication::SessionController& session,
                          QWidget* parent = nullptr,
                          QElapsedTimer* startupTimer = nullptr,
-                         bool keepSessionDefault = false);
-
-protected:
-    void showEvent(QShowEvent* event) override;
+                         bool keepSessionDefault = false,
+                         theme::ThemeManager* themeManager = nullptr);
+    [[nodiscard]] int exec();
 
 private:
-    void submitCreateAccount();
-    void submitSignIn();
-    void showForgotPasswordInformation();
-
+    class Flow;
     application::authentication::AuthenticationService& m_authentication;
     application::authentication::SessionController& m_session;
-    CreateAccountWidget* m_createAccount = nullptr;
-    SignInWidget* m_signIn = nullptr;
-    QStackedWidget* m_pages = nullptr;
+    QString m_username;
+    bool m_accountExists = false;
+    bool m_keepSessionDefault = false;
     QElapsedTimer* m_startupTimer = nullptr;
-    bool m_startupTimeReported = false;
+    theme::ThemeManager* m_themeManager = nullptr;
 };
 
 } // namespace devhub::presentation::authentication
