@@ -267,6 +267,10 @@ target_link_libraries(devhub PRIVATE
 if(WIN32)
     target_link_libraries(devhub PRIVATE shell32)
 endif()
+if(MSVC)
+    # The version resource already embeds our custom asInvoker manifest.
+    target_link_options(devhub PRIVATE /MANIFEST:NO)
+endif()
 
 if(DEVHUB_BUILD_TESTS)
     find_package(Qt6 6.8.3 REQUIRED COMPONENTS Test)
