@@ -377,6 +377,7 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
     QObject::connect(&mainWindow, &presentation::shell::MainWindow::signOutRequested,
                      &mainWindow, [this, &mainWindow, &session, &accountRepository,
                       &authentication, &shutdown, &workspaceContext, &settingsService, themeManager] {
+        if (!mainWindow.confirmDatabaseTransition()) return;
         workspaceContext.clear();
         session.signOut();
         mainWindow.hide();

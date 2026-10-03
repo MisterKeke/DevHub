@@ -55,6 +55,6 @@ void QProcessManagedProcess::stop(int timeoutMs) {
 }
 qint64 QProcessManagedProcess::processId() const { return static_cast<qint64>(m_process.processId()); }
 IManagedProcess* QProcessLauncher::launch(const domain::services::ServiceDefinition& definition, QObject* parent) {
-    auto* process = new QProcessManagedProcess(definition, parent); process->start(); return process;
+    return new QProcessManagedProcess(definition, parent);
 }
 }

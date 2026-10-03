@@ -68,3 +68,25 @@ set_tests_properties(devhub.authentication PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;PATH=path_list_prepend:$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin>"
 )
+qt_add_executable(devhub_feature_tests
+    feature_regression_test.cpp
+    ../src/presentation/databases/DatabasePage.cpp
+    ../src/presentation/databases/DatabaseTableModel.cpp
+    ../src/application/settings/SettingsService.cpp
+    ../src/application/support/SupportBundleBuilder.cpp
+)
+target_link_libraries(devhub_feature_tests PRIVATE devhub_services devhub_database
+    Qt6::Core Qt6::Widgets Qt6::Sql Qt6::Test project_options project_warnings)
+add_test(NAME devhub.feature-regressions COMMAND devhub_feature_tests)
+set_tests_properties(devhub.feature-regressions PROPERTIES
+    TIMEOUT 45
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;PATH=path_list_prepend:$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin>"
+)
+
+# Development test folders can contain copied Qt DLLs. Point plugin discovery
+# at the configured Qt kit rather than relying on the DLLs' compiled prefix.
+set_tests_properties(devhub.smoke devhub.database-migrations devhub.account-security
+    devhub.authentication devhub.feature-regressions PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
+)

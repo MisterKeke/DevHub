@@ -41,7 +41,7 @@ QByteArray zipBytes(QVector<ZipEntry> entries)
         const QByteArray name = entry.name.toUtf8();
         out << quint32(0x02014b50) << quint16(20) << quint16(20) << quint16(0x0800) << quint16(0) << quint16(0) << quint16(0x21)
             << entry.crc << quint32(entry.data.size()) << quint32(entry.data.size())
-            << quint16(name.size()) << quint16(0) << quint16(0) << quint16(0) << quint32(0) << entry.offset;
+            << quint16(name.size()) << quint16(0) << quint16(0) << quint16(0) << quint16(0) << quint32(0) << entry.offset;
         out.writeRawData(name.constData(), name.size());
     }
     const quint32 centralSize = static_cast<quint32>(bytes.size()) - centralOffset;

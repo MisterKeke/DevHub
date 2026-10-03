@@ -32,6 +32,7 @@ foreach(_sodium_config DEBUG RELEASE)
     endif()
 endforeach()
 find_package(unofficial-sodium CONFIG REQUIRED)
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
 add_library(project_options INTERFACE)
 target_compile_features(project_options INTERFACE cxx_std_20)
@@ -87,6 +88,7 @@ add_library(devhub_database STATIC
     src/infrastructure/database/QtSqlDatabaseSession.cpp
     src/infrastructure/database/QtSqlDatabaseWorker.cpp
     src/infrastructure/database/QtSqlDatabaseWorker.h
+    src/infrastructure/database/NativeSqliteQueryExecutor.cpp
     src/infrastructure/database/DatabaseConnectionName.cpp
     src/infrastructure/database/InternalDatabaseManager.cpp
     src/infrastructure/database/SqlErrorMapper.cpp
@@ -95,7 +97,7 @@ add_library(devhub_database STATIC
 target_include_directories(devhub_database PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(devhub_database
     PUBLIC project_options devhub_core Qt6::Core Qt6::Sql
-    PRIVATE project_warnings
+    PRIVATE project_warnings unofficial::sqlite3::sqlite3
 )
 
 add_library(devhub_accounts STATIC

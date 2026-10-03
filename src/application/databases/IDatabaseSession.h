@@ -19,6 +19,7 @@ public:
     virtual void requestQuery(QString sql, bool allowScript = false) = 0;
     virtual void requestBackup(QString targetPath) = 0;
     virtual void requestCommit(PendingChanges changes) = 0;
+    virtual void cancelQuery() = 0;
     virtual void close() = 0;
 
 signals:

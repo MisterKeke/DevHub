@@ -32,6 +32,8 @@ private:
     QHash<QString, ServiceRuntimeState> m_states;
     QHash<QString, QPointer<IManagedProcess>> m_processes;
     QHash<QString, int> m_restartAttempts;
+    QHash<QString, quint64> m_restartGeneration;
+    quint64 m_startAllGeneration = 0;
     QStringList m_startOrder;
 };
 }

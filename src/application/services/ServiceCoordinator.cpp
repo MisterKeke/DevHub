@@ -23,6 +23,8 @@ shared::common::Result<void> ServiceCoordinator::start(domain::services::Service
     m_processes.insert(id, process);
     m_startOrder.removeAll(id); m_startOrder.append(id);
     connect(process, &IManagedProcess::started, this, [this, id, process] {
+        if (m_processes.value(id) != process) return;
+        if (m_states.value(id).lifecycle == ServiceLifecycleState::Stopping) return;
         auto current = m_states.value(id); current.lifecycle = ServiceLifecycleState::Running;
         current.processId = process->processId(); current.startedAt = QDateTime::currentDateTimeUtc();
         if (current.definition.expectedPorts.isEmpty()) current.health = ServiceHealthState::Healthy;
@@ -31,30 +33,44 @@ shared::common::Result<void> ServiceCoordinator::start(domain::services::Service
     });
     connect(process, &IManagedProcess::outputAvailable, this,
         [this, id](QByteArray bytes, bool standardError) { emit outputAvailable(id, std::move(bytes), standardError); });
-    connect(process, &IManagedProcess::processError, this, [this, id](const QString& message) {
+    connect(process, &IManagedProcess::processError, this, [this, id, process](const QString& message) {
+        if (m_processes.value(id) != process) return;
         auto current = m_states.value(id); current.error = message;
-        if (current.lifecycle == ServiceLifecycleState::Starting) current.lifecycle = ServiceLifecycleState::Failed;
+        const bool stopping = current.lifecycle == ServiceLifecycleState::Stopping;
+        const bool failedToStart = (current.lifecycle == ServiceLifecycleState::Starting || stopping) && process->processId() == 0;
+        if (failedToStart) {
+            current.lifecycle = stopping ? ServiceLifecycleState::Stopped : ServiceLifecycleState::Failed;
+            m_processes.remove(id);
+            process->deleteLater();
+        }
         setState(id, current);
+        if (failedToStart && !stopping && current.definition.restartPolicy != domain::services::RestartPolicy::Never)
+            scheduleRestart(id);
     });
-    connect(process, &IManagedProcess::finished, this, [this, id](int code, int exitStatus) {
+    connect(process, &IManagedProcess::finished, this, [this, id, process](int code, int exitStatus) {
+        if (m_processes.value(id) != process) return;
         auto current = m_states.value(id); current.exitCode = code; current.exitStatus = exitStatus;
         current.processId = 0;
         const bool expected = current.lifecycle == ServiceLifecycleState::Stopping;
         current.lifecycle = expected ? ServiceLifecycleState::Stopped : (code == 0 ? ServiceLifecycleState::Stopped : ServiceLifecycleState::Failed);
         if (!expected && code != 0) current.error = QStringLiteral("Process exited with code %1.").arg(code);
-        m_processes.remove(id); setState(id, current); sender()->deleteLater();
+        m_processes.remove(id); setState(id, current); process->deleteLater();
         if (!expected && (current.definition.restartPolicy == domain::services::RestartPolicy::Always
             || (current.definition.restartPolicy == domain::services::RestartPolicy::OnFailure && code != 0))) scheduleRestart(id);
     });
-    QTimer::singleShot(15000, this, [this, id, process] {
-        if (m_states.value(id).lifecycle == ServiceLifecycleState::Starting && process->processId() == 0) {
+    QTimer::singleShot(15000, this, [this, id, process = QPointer<IManagedProcess>(process)] {
+        if (process && m_processes.value(id) == process
+            && m_states.value(id).lifecycle == ServiceLifecycleState::Starting && process->processId() == 0) {
             auto current = m_states.value(id); current.lifecycle = ServiceLifecycleState::Failed;
-            current.error = QStringLiteral("Process did not start within 15 seconds."); setState(id, current); process->stop(100);
+            current.error = QStringLiteral("Process did not start within 15 seconds.");
+            m_processes.remove(id); process->stop(100); process->deleteLater(); setState(id, current);
         }
     });
+    process->start();
     return shared::common::Result<void>::success();
 }
 shared::common::Result<void> ServiceCoordinator::stop(const QString& serviceId) {
+    ++m_restartGeneration[serviceId];
     auto process = m_processes.value(serviceId);
     if (!process) return shared::common::Result<void>::success();
     auto state = m_states.value(serviceId); state.lifecycle = ServiceLifecycleState::Stopping; setState(serviceId, state);
@@ -67,13 +83,14 @@ shared::common::Result<void> ServiceCoordinator::restart(const QString& serviceI
         QStringLiteral("Service definition was not found."), serviceId, QStringLiteral("restart service")));
     auto definition = it->definition;
     if (m_processes.contains(serviceId) && m_processes.value(serviceId)) {
-        auto stopped = stop(serviceId); if (!stopped) return stopped;
+        const quint64 generation = m_restartGeneration.value(serviceId) + 1;
         connect(m_processes.value(serviceId), &IManagedProcess::finished, this,
-            [this, definition, workspaceRoot](int, int) mutable {
+            [this, definition, workspaceRoot, generation](int, int) mutable {
+                if (m_restartGeneration.value(definition.id) != generation) return;
                 const auto result=start(std::move(definition), std::move(workspaceRoot));
                 if (!result) qWarning().noquote()<<result.error().technicalMessage;
             }, Qt::SingleShotConnection);
-        return shared::common::Result<void>::success();
+        return stop(serviceId);
     }
     return start(std::move(definition), std::move(workspaceRoot));
 }
@@ -89,7 +106,9 @@ void ServiceCoordinator::scheduleRestart(const QString& id) {
     if (attempts >= 5) return;
     m_restartAttempts.insert(id, attempts+1);
     const int delay = qMin(30000, 1000 * (1 << attempts));
-    QTimer::singleShot(delay, this, [this,id] {
+    const quint64 generation = ++m_restartGeneration[id];
+    QTimer::singleShot(delay, this, [this,id,generation] {
+        if (m_restartGeneration.value(id) != generation) return;
         if (m_processes.contains(id) && m_processes.value(id)) return;
         const auto state=m_states.value(id); const auto result=start(state.definition, state.definition.workingDirectory);
         if (!result) qWarning().noquote()<<result.error().technicalMessage;
@@ -100,11 +119,15 @@ void ServiceCoordinator::startAll(QVector<domain::services::ServiceDefinition> d
     auto pending=std::make_shared<QVector<domain::services::ServiceDefinition>>(std::move(definitions));
     auto pump=std::make_shared<std::function<void()>>();
     std::weak_ptr<std::function<void()>> weakPump=pump;
-    *pump=[this,pending,weakPump,workspaceRoot=std::move(workspaceRoot),maximumConcurrent]() mutable {
+    const quint64 generation = ++m_startAllGeneration;
+    *pump=[this,pending,weakPump,workspaceRoot=std::move(workspaceRoot),maximumConcurrent,generation]() mutable {
+        if (m_startAllGeneration != generation) return;
         int active=0; for (auto it=m_states.cbegin();it!=m_states.cend();++it)
-            if(it->lifecycle==ServiceLifecycleState::Starting||it->lifecycle==ServiceLifecycleState::Running)++active;
+            if(it->lifecycle==ServiceLifecycleState::Starting)++active;
         while(active<maximumConcurrent&&!pending->isEmpty()) {
-            auto definition=pending->takeFirst(); const auto result=start(std::move(definition),workspaceRoot);
+            auto definition=pending->takeFirst();
+            if (m_processes.value(definition.id)) continue;
+            const auto result=start(std::move(definition),workspaceRoot);
             if(!result) qWarning().noquote()<<result.error().technicalMessage; else ++active;
         }
         if(!pending->isEmpty()) {
@@ -114,7 +137,9 @@ void ServiceCoordinator::startAll(QVector<domain::services::ServiceDefinition> d
     (*pump)();
 }
 void ServiceCoordinator::stopAll() {
-    for(auto it=m_startOrder.crbegin();it!=m_startOrder.crend();++it) {
+    ++m_startAllGeneration;
+    const auto startOrder = m_startOrder;
+    for(auto it=startOrder.crbegin();it!=startOrder.crend();++it) {
         const auto result=stop(*it); if(!result) qWarning().noquote()<<result.error().technicalMessage;
     }
 }

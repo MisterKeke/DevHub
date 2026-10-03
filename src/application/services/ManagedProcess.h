@@ -31,6 +31,7 @@ private:
 class IProcessLauncher {
 public:
     virtual ~IProcessLauncher() = default;
+    // Return an unstarted process so callers can connect lifecycle signals first.
     [[nodiscard]] virtual IManagedProcess* launch(const domain::services::ServiceDefinition& definition,
                                                   QObject* parent) = 0;
 };

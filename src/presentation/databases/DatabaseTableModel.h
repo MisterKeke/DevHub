@@ -23,7 +23,9 @@ public:
     [[nodiscard]] bool hasStableIdentity() const noexcept { return !m_primaryKeyColumns.isEmpty(); }
     [[nodiscard]] bool hasEditMode() const noexcept { return m_editMode; }
     [[nodiscard]] QString tableName() const { return m_tableName; }
+    [[nodiscard]] QVector<application::databases::DatabaseColumn> columnMetadata() const { return m_columns; }
     [[nodiscard]] int pageOffset() const noexcept { return m_offset; }
+    [[nodiscard]] int nextPageOffset() const noexcept { return m_nextOffset; }
     [[nodiscard]] bool hasMore() const noexcept { return m_hasMore; }
     [[nodiscard]] bool hasPendingChanges() const noexcept;
     void appendBlankRow();
@@ -43,6 +45,7 @@ private:
     QVector<application::databases::PendingCellEdit> m_edits;
     QVector<application::databases::PendingRowDelete> m_deletes;
     int m_offset = 0;
+    int m_nextOffset = 0;
     bool m_hasMore = false;
     bool m_editMode = false;
 };

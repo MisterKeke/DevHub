@@ -99,6 +99,7 @@ void DatabaseTableModel::setPage(QString tableName, DatabasePageResult page, QVe
     m_tableName = std::move(tableName); m_headers = std::move(page.columns); m_rows = std::move(page.rows);
     m_originalRows = m_rows; m_primaryKeyColumns = std::move(page.primaryKeyColumns); m_columns = std::move(columns);
     m_offset = page.offset; m_hasMore = page.hasMore; m_insertRows.clear();
+    m_nextOffset = page.offset + static_cast<int>(m_rows.size());
     m_insertRows.resize(m_rows.size()); std::fill(m_insertRows.begin(), m_insertRows.end(), false);
     m_edits.clear(); m_deletes.clear();
     endResetModel();

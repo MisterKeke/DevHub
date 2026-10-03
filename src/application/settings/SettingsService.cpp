@@ -38,7 +38,7 @@ SettingsService::SettingsService(ISettingsRepository& repository) : m_repository
         integer(QStringLiteral("logs/maxLines"), QStringLiteral("Maximum cached log lines"), QStringLiteral("Logs"), 10000, 100, 200000, SettingScope::Global, true),
         integer(QStringLiteral("logs/maxBytes"), QStringLiteral("Maximum cached log bytes"), QStringLiteral("Logs"), 4194304, 65536, 67108864, SettingScope::Global, true),
         integer(QStringLiteral("ports/refreshIntervalSeconds"), QStringLiteral("Port refresh interval (seconds)"), QStringLiteral("Services"), 30, 5, 3600, SettingScope::Global, true),
-        integer(QStringLiteral("database/pageSize"), QStringLiteral("Database page size"), QStringLiteral("Database"), 250, 25, 5000, SettingScope::Global, true),
+        integer(QStringLiteral("database/pageSize"), QStringLiteral("Database page size"), QStringLiteral("Database"), 250, 25, 500, SettingScope::Global, true),
         boolean(QStringLiteral("database/queryHistoryEnabled"), QStringLiteral("Keep query history for this session"), QStringLiteral("Database"), false, SettingScope::Session),
         integer(QStringLiteral("database/queryHistoryLimit"), QStringLiteral("Query history limit"), QStringLiteral("Database"), 20, 1, 200),
         integer(QStringLiteral("notifications/retentionDays"), QStringLiteral("Notification retention (days)"), QStringLiteral("Notifications"), 90, 1, 3650, SettingScope::Global, true),

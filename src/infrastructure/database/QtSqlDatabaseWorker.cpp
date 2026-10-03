@@ -52,28 +52,11 @@ QStringList splitSqlStatements(const QString& source)
     return statements;
 }
 
-QVariant boundedValue(QVariant value, qint64* bytes)
-{
-    if (value.metaType().id() == QMetaType::QByteArray) {
-        const QByteArray blob = value.toByteArray();
-        *bytes += qMin<qsizetype>(blob.size(), 128);
-        if (blob.size() > 128) return QStringLiteral("[BLOB, %1 bytes — preview capped]").arg(blob.size());
-        return value;
-    }
-    if (value.metaType().id() == QMetaType::QString) {
-        QString text = value.toString();
-        if (text.size() > 4096) text = text.left(4096) + QStringLiteral(" … [truncated]");
-        *bytes += text.toUtf8().size();
-        return text;
-    }
-    *bytes += 16;
-    return value;
-}
-
 QString sqlError(const QSqlQuery& query) { return query.lastError().text(); }
 }
 
-QtSqlDatabaseWorker::QtSqlDatabaseWorker(QString connectionName) : m_connectionName(std::move(connectionName)) {}
+QtSqlDatabaseWorker::QtSqlDatabaseWorker(QString connectionName, std::shared_ptr<SqliteQueryControl> control)
+    : m_connectionName(std::move(connectionName)), m_queryExecutor(std::move(control)) {}
 
 QString QtSqlDatabaseWorker::errorText(const QString& operation) const
 {
@@ -116,6 +99,13 @@ void QtSqlDatabaseWorker::open(QString path, DatabaseOpenMode mode)
         return;
     }
     configure.exec(QStringLiteral("PRAGMA foreign_keys = ON"));
+    const QString nativeError = m_queryExecutor.open(m_filePath, mode);
+    if (!nativeError.isEmpty()) {
+        configure.finish();
+        close();
+        emit openFinished(false, nativeError, mode);
+        return;
+    }
     emit openFinished(true, {}, mode);
 }
 
@@ -180,9 +170,9 @@ void QtSqlDatabaseWorker::loadColumns(QString tableName)
     emit columnsReady(std::move(tableName), columns, withoutRowId);
 }
 
-void QtSqlDatabaseWorker::loadPage(QString tableName, int offset, int pageSize, QString sortColumn, bool ascending)
+void QtSqlDatabaseWorker::loadPage(QString tableName, int offset, int pageSize, QString sortColumn, bool ascending, quint64 generation)
 {
-    pageSize = qBound(100, pageSize, 500);
+    pageSize = qBound(25, pageSize, 500);
     bool withoutRowId = false;
     const QVector<DatabaseColumn> columns = columnsFor(tableName, &withoutRowId);
     if (columns.isEmpty()) { emit operationFailed(QStringLiteral("Could not read columns for %1.").arg(tableName)); return; }
@@ -207,57 +197,31 @@ void QtSqlDatabaseWorker::loadPage(QString tableName, int offset, int pageSize, 
     else if (!withoutRowId) order.append(QStringLiteral("rowid ASC"));
     if (!order.isEmpty()) sql += QStringLiteral(" ORDER BY ") + order.join(QLatin1Char(','));
     sql += QStringLiteral(" LIMIT ? OFFSET ?");
-    QSqlQuery query(m_database); query.prepare(sql); query.addBindValue(pageSize + 1); query.addBindValue(page.offset);
-    if (!query.exec()) { emit operationFailed(sqlError(query)); return; }
-    qint64 retained = 0;
-    while (query.next() && page.rows.size() <= pageSize) {
-        QVector<QVariant> row; row.reserve(query.record().count());
-        for (int col = 0; col < query.record().count(); ++col) row.append(boundedValue(query.value(col), &retained));
-        if (retained > 16 * 1024 * 1024) { page.hasMore = true; break; }
-        page.rows.append(std::move(row));
+    auto result = m_queryExecutor.run({sql}, generation, {pageSize + 1, page.offset}, pageSize + 1);
+    if (!result.message.isEmpty()) { emit operationFailed(result.message); return; }
+    if (result.columns.size() != page.columns.size()) {
+        emit operationFailed(QStringLiteral("This table exceeds the 256-column preview limit.")); return;
     }
+    page.rows = std::move(result.rows);
+    page.hasMore = result.truncated;
     if (page.rows.size() > pageSize) { page.rows.removeLast(); page.hasMore = true; }
     emit pageReady(std::move(tableName), std::move(page));
 }
 
-void QtSqlDatabaseWorker::countRows(QString tableName)
+void QtSqlDatabaseWorker::countRows(QString tableName, quint64 generation)
 {
-    QSqlQuery query(m_database);
-    query.prepare(QStringLiteral("SELECT COUNT(*) FROM %1").arg(quoteIdentifier(tableName)));
-    if (!query.exec() || !query.next()) { emit operationFailed(sqlError(query)); return; }
-    emit rowCountReady(std::move(tableName), query.value(0).toLongLong());
+    const auto result = m_queryExecutor.run({QStringLiteral("SELECT COUNT(*) FROM %1").arg(quoteIdentifier(tableName))}, generation);
+    if (!result.message.isEmpty() || result.rows.isEmpty()) { emit operationFailed(result.message); return; }
+    emit rowCountReady(std::move(tableName), result.rows.first().first().toLongLong());
 }
 
-void QtSqlDatabaseWorker::executeQuery(QString sql, bool allowScript)
+void QtSqlDatabaseWorker::executeQuery(QString sql, bool allowScript, quint64 generation)
 {
     DatabaseQueryResult result;
     const QStringList statements = splitSqlStatements(sql);
     if (statements.isEmpty()) { result.message = QStringLiteral("Enter a SQL statement first."); emit queryReady(std::move(result)); return; }
     if (!allowScript && statements.size() > 1) { result.message = QStringLiteral("This contains multiple statements. Use Run Script and review its warning."); emit queryReady(std::move(result)); return; }
-    QElapsedTimer timer; timer.start();
-    constexpr qsizetype MaxRows = 10000;
-    constexpr qint64 MaxBytes = 16 * 1024 * 1024;
-    for (const QString& statement : statements) {
-        QSqlQuery query(m_database);
-        if (!query.exec(statement)) { result.message = query.lastError().text(); break; }
-        if (query.isSelect()) {
-            const int columns = qMin(query.record().count(), 256);
-            if (query.record().count() > columns) result.truncated = true;
-            result.columns.clear(); result.rows.clear(); qint64 retained = 0;
-            for (int col = 0; col < columns; ++col) result.columns.append(query.record().fieldName(col));
-            while (query.next()) {
-                if (result.rows.size() >= MaxRows || retained >= MaxBytes) { result.truncated = true; break; }
-                QVector<QVariant> row; row.reserve(columns);
-                for (int col = 0; col < columns; ++col) row.append(boundedValue(query.value(col), &retained));
-                result.rows.append(std::move(row));
-            }
-            if (result.truncated) break;
-        } else {
-            result.affectedRows = query.numRowsAffected();
-            result.columns.clear(); result.rows.clear();
-        }
-    }
-    result.durationMs = timer.elapsed();
+    result = m_queryExecutor.run(statements, generation);
     emit queryReady(std::move(result));
 }
 
@@ -333,6 +297,7 @@ void QtSqlDatabaseWorker::commit(PendingChanges changes)
 
 void QtSqlDatabaseWorker::close()
 {
+    m_queryExecutor.close();
     if (m_registered) {
         if (m_database.isOpen()) m_database.close();
         m_database = QSqlDatabase();

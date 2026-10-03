@@ -94,6 +94,7 @@ public:
                QWidget* parent = nullptr);
     void restoreWorkspaceSelection();
     void flushNotesForShutdown();
+    [[nodiscard]] bool confirmDatabaseTransition();
     void showRecoveryNotice();
     QString shellWorkspaceTitle() const;
     QString shellWorkspacePath() const;

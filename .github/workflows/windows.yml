@@ -27,7 +27,7 @@ jobs:
           host: windows
           target: desktop
           arch: win64_msvc2022_64
-          archives: qtbase qtsvg
+          archives: qtbase qtsvg qtdeclarative
           cache: true
 
       - name: Bootstrap vcpkg

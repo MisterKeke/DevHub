@@ -60,6 +60,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QQuickView>
+#include <QSignalBlocker>
 #include <QQmlContext>
 #include <QDialog>
 #include <QVariantMap>
@@ -759,7 +760,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     connect(m_unlockWidget, &devhub::presentation::authentication::UnlockWidget::signOutRequested,
             this, &MainWindow::signOutRequested);
     connect(m_unlockWidget, &devhub::presentation::authentication::UnlockWidget::quitRequested,
-            this, &MainWindow::quitRequested);
+            this, [this] { close(); });
     connect(&m_authentication, &application::authentication::AuthenticationService::busyChanged,
             m_unlockWidget, &devhub::presentation::authentication::UnlockWidget::setBusy);
     connect(&m_authentication, &application::authentication::AuthenticationService::retryDelayChanged,
@@ -1017,6 +1018,11 @@ void MainWindow::flushNotesForShutdown()
         statusBar()->showMessage(tr("Note changes were written to the recovery journal because the save failed."), 6000);
 }
 
+bool MainWindow::confirmDatabaseTransition()
+{
+    return !m_databasePage || m_databasePage->confirmDiscardPendingChanges();
+}
+
 void MainWindow::showRecoveryNotice()
 {
     statusBar()->showMessage(tr("DevHub recovered after an unexpected exit. Git and SQL operations were not replayed, and managed services were not restarted. Check Ports for processes that may still be running; open a note to check for a recovery copy."), 20000);
@@ -1078,6 +1084,12 @@ void MainWindow::addWorkspace(QString initialPath)
 void MainWindow::activateWorkspace(const QString& id)
 {
     if (id.isEmpty()) return;
+    const auto& active = m_workspaceContext.activeWorkspace();
+    if (active && active->id().toString() != id && !confirmDatabaseTransition()) {
+        const QSignalBlocker blocker(m_workspaceList->selectionModel());
+        m_workspaceList->setCurrentIndex(m_workspaceModel->index(m_workspaceModel->rowForId(active->id().toString()), 0));
+        return;
+    }
     auto workspaceId = domain::workspace::WorkspaceId::fromString(id);
     if (!workspaceId) return;
     auto result = m_workspaceManager.activate(workspaceId.value());
@@ -1135,6 +1147,7 @@ void MainWindow::showWorkspaceMenu(const QPoint& position)
         const auto answer = QMessageBox::question(this, tr("Remove Workspace"),
             tr("Remove “%1” from DevHub? Its project files will not be deleted.").arg(name));
         if (answer == QMessageBox::Yes) {
+            if (!confirmDatabaseTransition()) return;
             auto r = m_workspaceManager.removeMetadata(id);
             if (!r) QMessageBox::warning(this, tr("Remove failed"), r.error().userMessage);
             else if (m_workspaceContext.activeWorkspace() && m_workspaceContext.activeWorkspace()->id() == id) {
@@ -1230,6 +1243,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
         event->ignore(); return;
     }
     m_closeAfterServicesStop=false;
+    if (!confirmDatabaseTransition()) { event->ignore(); return; }
     flushNotesForShutdown();
     if (!isMaximized() && !isMinimized()) {
         QSettings().setValue(QStringLiteral("window/normalGeometry"), normalGeometry());

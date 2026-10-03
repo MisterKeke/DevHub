@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../application/databases/DatabaseTypes.h"
+#include "NativeSqliteQueryExecutor.h"
 
 #include <QObject>
 #include <QSqlDatabase>
@@ -11,15 +12,16 @@ class QtSqlDatabaseWorker final : public QObject
 {
     Q_OBJECT
 public:
-    explicit QtSqlDatabaseWorker(QString connectionName);
+    explicit QtSqlDatabaseWorker(QString connectionName,
+        std::shared_ptr<SqliteQueryControl> control = std::make_shared<SqliteQueryControl>());
 
 public slots:
     void open(QString path, devhub::application::databases::DatabaseOpenMode mode);
     void loadSchema();
     void loadColumns(QString tableName);
-    void loadPage(QString tableName, int offset, int pageSize, QString sortColumn, bool ascending);
-    void countRows(QString tableName);
-    void executeQuery(QString sql, bool allowScript);
+    void loadPage(QString tableName, int offset, int pageSize, QString sortColumn, bool ascending, quint64 generation = 0);
+    void countRows(QString tableName, quint64 generation = 0);
+    void executeQuery(QString sql, bool allowScript, quint64 generation = 0);
     void backup(QString targetPath);
     void commit(devhub::application::databases::PendingChanges changes);
     void close();
@@ -42,6 +44,7 @@ private:
     QString m_connectionName;
     QString m_filePath;
     QSqlDatabase m_database;
+    NativeSqliteQueryExecutor m_queryExecutor;
     bool m_registered = false;
     devhub::application::databases::DatabaseOpenMode m_mode = devhub::application::databases::DatabaseOpenMode::ReadOnly;
 };

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../application/databases/IDatabaseSession.h"
+#include "NativeSqliteQueryExecutor.h"
 
 #include <QThread>
 
@@ -22,10 +23,12 @@ public:
     void requestQuery(QString sql, bool allowScript = false) override;
     void requestBackup(QString targetPath) override;
     void requestCommit(application::databases::PendingChanges changes) override;
+    void cancelQuery() override;
     void close() override;
 
 private:
     QThread m_thread;
+    std::shared_ptr<SqliteQueryControl> m_queryControl = std::make_shared<SqliteQueryControl>();
     QtSqlDatabaseWorker* m_worker = nullptr;
     bool m_threadStarted = false;
 };

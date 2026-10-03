@@ -10,7 +10,7 @@ using namespace application::databases;
 
 QtSqlDatabaseSession::QtSqlDatabaseSession(QObject* parent)
     : IDatabaseSession(parent), m_worker(new QtSqlDatabaseWorker(
-          QStringLiteral("devhub-workspace-db-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces))))
+          QStringLiteral("devhub-workspace-db-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)), m_queryControl))
 {
     qRegisterMetaType<DatabaseOpenMode>();
     qRegisterMetaType<QVector<DatabaseSchemaObject>>();
@@ -38,6 +38,7 @@ QtSqlDatabaseSession::QtSqlDatabaseSession(QObject* parent)
 QtSqlDatabaseSession::~QtSqlDatabaseSession()
 {
     if (m_threadStarted && m_thread.isRunning()) {
+        cancelQuery();
         QMetaObject::invokeMethod(m_worker, "close", Qt::BlockingQueuedConnection);
         m_thread.quit();
         m_thread.wait();
@@ -52,18 +53,22 @@ void QtSqlDatabaseSession::requestColumns(QString name)
 { QMetaObject::invokeMethod(m_worker, "loadColumns", Qt::QueuedConnection, Q_ARG(QString, std::move(name))); }
 void QtSqlDatabaseSession::requestPage(QString table, int offset, int size, QString sort, bool ascending)
 {
-    size = qBound(100, size, 500);
+    size = qBound(25, size, 500);
     QMetaObject::invokeMethod(m_worker, "loadPage", Qt::QueuedConnection,
-        Q_ARG(QString, std::move(table)), Q_ARG(int, qMax(0, offset)), Q_ARG(int, size), Q_ARG(QString, std::move(sort)), Q_ARG(bool, ascending));
+        Q_ARG(QString, std::move(table)), Q_ARG(int, qMax(0, offset)), Q_ARG(int, size), Q_ARG(QString, std::move(sort)), Q_ARG(bool, ascending), Q_ARG(quint64, m_queryControl->generation.load()));
 }
 void QtSqlDatabaseSession::requestCountRows(QString table)
-{ QMetaObject::invokeMethod(m_worker, "countRows", Qt::QueuedConnection, Q_ARG(QString, std::move(table))); }
+{ QMetaObject::invokeMethod(m_worker, "countRows", Qt::QueuedConnection, Q_ARG(QString, std::move(table)), Q_ARG(quint64, m_queryControl->generation.load())); }
 void QtSqlDatabaseSession::requestQuery(QString sql, bool allowScript)
-{ QMetaObject::invokeMethod(m_worker, "executeQuery", Qt::QueuedConnection, Q_ARG(QString, std::move(sql)), Q_ARG(bool, allowScript)); }
+{ QMetaObject::invokeMethod(m_worker, "executeQuery", Qt::QueuedConnection, Q_ARG(QString, std::move(sql)), Q_ARG(bool, allowScript), Q_ARG(quint64, m_queryControl->generation.load())); }
 void QtSqlDatabaseSession::requestBackup(QString path)
 { QMetaObject::invokeMethod(m_worker, "backup", Qt::QueuedConnection, Q_ARG(QString, std::move(path))); }
 void QtSqlDatabaseSession::requestCommit(PendingChanges changes)
 { QMetaObject::invokeMethod(m_worker, "commit", Qt::QueuedConnection, Q_ARG(PendingChanges, std::move(changes))); }
-void QtSqlDatabaseSession::close() { if (m_worker) QMetaObject::invokeMethod(m_worker, "close", Qt::QueuedConnection); }
+void QtSqlDatabaseSession::cancelQuery() { ++m_queryControl->generation; }
+void QtSqlDatabaseSession::close() {
+    cancelQuery();
+    if (m_worker) QMetaObject::invokeMethod(m_worker, "close", Qt::QueuedConnection);
+}
 
 } // namespace devhub::infrastructure::database

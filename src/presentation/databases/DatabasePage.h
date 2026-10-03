@@ -31,6 +31,7 @@ public:
                  bool queryHistoryEnabled = false, int queryHistoryLimit = 20);
     void setWorkspace(QString workspaceId, QString workspacePath);
     void setQueryHistoryPreferences(bool enabled, int limit);
+    [[nodiscard]] bool confirmDiscardPendingChanges();
     [[nodiscard]] int referenceCount() const { return static_cast<int>(m_databaseReferences.size()); }
     [[nodiscard]] QStringList referenceNames() const;
 
@@ -46,7 +47,7 @@ private:
     void connectSession();
     void loadSchema(QVector<application::databases::DatabaseSchemaObject> objects);
     void selectTable(const QString& tableName);
-    void requestPage(int offset);
+    void requestPage(int offset, bool discardConfirmed = false);
     void runQuery(bool script);
     void enableEditMode();
     void leaveEditMode();
@@ -90,6 +91,9 @@ private:
     bool m_withoutRowId = false;
     bool m_queryHistoryEnabled = false;
     int m_queryHistoryLimit = 20;
+    int m_pageSizeIndex = 0;
+    bool m_loadingTable = false;
+    bool m_commitPending = false;
 };
 
 } // namespace devhub::presentation::databases

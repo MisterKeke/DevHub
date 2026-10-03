@@ -8,11 +8,13 @@ SQL history is held in memory for the current application session, capped at 500
 
 Visual editing requires explicit activation on a table with a declared primary key. DevHub offers a separate `VACUUM INTO` backup before switching that session to read/write. Grid edits, inserts, and deletes stay pending until Commit Changes. Each commit is a transaction using prepared statements and primary-key predicates; a row count other than one causes the full transaction to roll back. Roll Back Pending discards the current grid changes.
 
+Paging supports 25, 50, 100, 250, and 500 rows. Leaving a grid with pending changes, including switching workspaces, signing out, or closing DevHub, requires confirmation before discarding them. Grid input is disabled while a page or commit is in flight, and editing an existing cell updates the Commit Changes button immediately.
+
 ## Current limits
 
-- Query cancellation and stopping a long-running SQLite statement are not exposed yet. The query executes off the UI thread, and closing the session abandons queued work but cannot interrupt a currently uninterruptible SQLite call.
+- SQL execution, counting, and paging use a native SQLite connection on the session worker. A progress callback supports Cancel SQL and enforces a ten-second execution deadline. Closing the session cancels these operations before joining the worker. Qt SQL continues to handle metadata, backups, and visual commits.
 - BLOBs are shown as a size marker; preview and export actions are not implemented.
 - Grid sorting is not exposed yet, though the worker accepts a quoted sort column.
 - Query history persistence is intentionally absent; there is no setting that opts into storing SQL text.
 - Mutating SQL asks for confirmation but does not automatically make a second backup. The visual edit-mode backup is separate and does not guarantee recovery from every failure.
-- The Overview shows the saved database reference count and names. Database-specific CommandRegistry actions, cancellation coverage, and database integration tests remain follow-up work.
+- The Overview shows the saved database reference count and names. Database-specific CommandRegistry actions remain follow-up work.

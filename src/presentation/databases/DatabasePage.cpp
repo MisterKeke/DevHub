@@ -99,9 +99,10 @@ DatabasePage::DatabasePage(IDatabaseReferenceRepository& references, ISqliteConn
     dataLayout->setContentsMargins(0, 0, 0, 0);
     auto* dataToolbar = new QHBoxLayout();
     m_pageSize = new QComboBox(dataPane);
-    for (const int size : {25, 50, 100, 250, 500, 1000, 2500, 5000}) m_pageSize->addItem(QString::number(size), size);
+    for (const int size : {25, 50, 100, 250, 500}) m_pageSize->addItem(QString::number(size), size);
     const int pageSizeIndex = m_pageSize->findData(pageSize);
     m_pageSize->setCurrentIndex(pageSizeIndex >= 0 ? pageSizeIndex : 1);
+    m_pageSizeIndex = m_pageSize->currentIndex();
     m_pageSize->setAccessibleName(tr("Rows per page"));
     m_previousPage = new QPushButton(tr("Previous"), dataPane);
     m_nextPage = new QPushButton(tr("Next"), dataPane);
@@ -134,6 +135,7 @@ DatabasePage::DatabasePage(IDatabaseReferenceRepository& references, ISqliteConn
     m_table->setSortingEnabled(false);
     dataLayout->addWidget(m_table, 1);
     connect(m_table->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this] { updateModeUi(); });
+    connect(m_tableModel, &QAbstractItemModel::dataChanged, this, [this] { updateModeUi(); });
     schemaSplit->addWidget(m_schemaTree);
     schemaSplit->addWidget(dataPane);
     schemaSplit->setStretchFactor(1, 1);
@@ -145,6 +147,7 @@ DatabasePage::DatabasePage(IDatabaseReferenceRepository& references, ISqliteConn
     auto* queryActions = new QHBoxLayout();
     auto* run = new QPushButton(tr("Run Statement"), queryTab);
     auto* runScript = new QPushButton(tr("Run Script…"), queryTab);
+    auto* cancelQuery = new QPushButton(tr("Cancel SQL"), queryTab);
     m_queryHistory = new QComboBox(queryTab);
     m_queryHistory->setObjectName(QStringLiteral("databaseQueryHistory"));
     m_queryHistory->setAccessibleName(tr("Session query history"));
@@ -154,6 +157,7 @@ DatabasePage::DatabasePage(IDatabaseReferenceRepository& references, ISqliteConn
     auto* clearHistory = new QPushButton(tr("Clear History"), queryTab);
     queryActions->addWidget(run);
     queryActions->addWidget(runScript);
+    queryActions->addWidget(cancelQuery);
     queryActions->addWidget(m_queryHistory, 1);
     queryActions->addWidget(clearHistory);
     queryActions->addStretch();
@@ -180,7 +184,7 @@ DatabasePage::DatabasePage(IDatabaseReferenceRepository& references, ISqliteConn
     connect(add, &QPushButton::clicked, this, &DatabasePage::addReference);
     connect(remove, &QPushButton::clicked, this, &DatabasePage::removeReference);
     connect(open, &QPushButton::clicked, this, &DatabasePage::openSelected);
-    connect(close, &QPushButton::clicked, this, &DatabasePage::closeSession);
+    connect(close, &QPushButton::clicked, this, [this] { if (confirmDiscardPendingChanges()) closeSession(); });
     connect(m_databaseCombo, &QComboBox::currentIndexChanged, this, [this] { updateModeUi(); });
     connect(m_schemaTree, &QTreeView::clicked, this, [this](const QModelIndex& index) {
         if (index.data(ObjectKindRole).toInt() == static_cast<int>(DatabaseObjectKind::Table))
@@ -190,9 +194,17 @@ DatabasePage::DatabasePage(IDatabaseReferenceRepository& references, ISqliteConn
         requestPage(qMax(0, m_tableModel->pageOffset() - m_pageSize->currentData().toInt()));
     });
     connect(m_nextPage, &QPushButton::clicked, this, [this] {
-        requestPage(m_tableModel->pageOffset() + m_pageSize->currentData().toInt());
+        requestPage(m_tableModel->nextPageOffset());
     });
-    connect(m_pageSize, &QComboBox::currentIndexChanged, this, [this] { if (!m_selectedTable.isEmpty()) requestPage(0); });
+    connect(m_pageSize, &QComboBox::currentIndexChanged, this, [this] {
+        if (!confirmDiscardPendingChanges()) {
+            const QSignalBlocker blocker(m_pageSize);
+            m_pageSize->setCurrentIndex(m_pageSizeIndex);
+            return;
+        }
+        m_pageSizeIndex = m_pageSize->currentIndex();
+        if (!m_selectedTable.isEmpty()) requestPage(0, true);
+    });
     connect(count, &QPushButton::clicked, this, [this] { if (m_session && m_sessionOpen && !m_selectedTable.isEmpty()) m_session->requestCountRows(m_selectedTable); });
     connect(m_addRowButton, &QPushButton::clicked, this, [this] { m_tableModel->appendBlankRow(); updateModeUi(); });
     connect(m_deleteRowsButton, &QPushButton::clicked, this, [this] {
@@ -217,19 +229,28 @@ DatabasePage::DatabasePage(IDatabaseReferenceRepository& references, ISqliteConn
     });
     connect(m_editModeButton, &QPushButton::clicked, this, [this] {
         if (m_tableModel->hasEditMode()) {
-            if (m_tableModel->hasPendingChanges() && QMessageBox::question(this, tr("Discard pending edits?"),
-                    tr("Pending edits, inserts, and deletes will be discarded.")) != QMessageBox::Yes) return;
+            if (!confirmDiscardPendingChanges()) return;
             m_tableModel->setEditMode(false);
-            if (!m_selectedTable.isEmpty()) requestPage(m_tableModel->pageOffset());
+            if (!m_selectedTable.isEmpty()) requestPage(m_tableModel->pageOffset(), true);
             updateModeUi();
         } else enableEditMode();
     });
     connect(m_commitButton, &QPushButton::clicked, this, [this] {
-        if (m_session && m_tableModel->hasPendingChanges()) m_session->requestCommit(m_tableModel->pendingChanges());
+        if (m_session && !m_commitPending && m_tableModel->hasPendingChanges()) {
+            m_commitPending = true;
+            updateModeUi();
+            m_session->requestCommit(m_tableModel->pendingChanges());
+        }
     });
-    connect(m_rollbackButton, &QPushButton::clicked, this, [this] { leaveEditMode(); if (!m_selectedTable.isEmpty()) requestPage(m_tableModel->pageOffset()); });
+    connect(m_rollbackButton, &QPushButton::clicked, this, [this] { leaveEditMode(); });
     connect(run, &QPushButton::clicked, this, [this] { runQuery(false); });
     connect(runScript, &QPushButton::clicked, this, [this] { runQuery(true); });
+    connect(cancelQuery, &QPushButton::clicked, this, [this] {
+        if (m_session) {
+            m_session->cancelQuery();
+            m_status->setText(tr("Cancelling SQL operation…"));
+        }
+    });
     connect(m_queryHistory, &QComboBox::currentTextChanged, this, [this](const QString& sql) {
         if (!sql.isEmpty()) m_sqlEditor->setPlainText(sql);
     });
@@ -302,7 +323,10 @@ void DatabasePage::removeReference()
 {
     const QString id = selectedReferenceId();
     if (id.isEmpty()) return;
-    if (m_currentReference && m_currentReference->id == id) closeSession();
+    if (m_currentReference && m_currentReference->id == id) {
+        if (!confirmDiscardPendingChanges()) return;
+        closeSession();
+    }
     const auto result = m_references.remove(id, m_workspaceId);
     if (!result) { QMessageBox::warning(this, tr("Could not remove reference"), result.error().userMessage); return; }
     reloadReferences();
@@ -312,6 +336,7 @@ void DatabasePage::openSelected()
 {
     const auto it = std::find_if(m_databaseReferences.cbegin(), m_databaseReferences.cend(), [this](const auto& reference) { return reference.id == selectedReferenceId(); });
     if (it == m_databaseReferences.cend()) return;
+    if (!confirmDiscardPendingChanges()) return;
     closeSession();
     m_currentReference = *it;
     m_session = m_factory.createSession(this);
@@ -324,6 +349,12 @@ void DatabasePage::openSelected()
 void DatabasePage::connectSession()
 {
     connect(m_session, &IDatabaseSession::operationFailed, this, [this](const QString& message) {
+        if (m_loadingTable) {
+            m_selectedTable = m_tableModel->tableName();
+            m_currentColumns = m_tableModel->columnMetadata();
+        }
+        m_loadingTable = false;
+        updateModeUi();
         m_status->setText(message);
         emit databaseOperationFailed(message);
     });
@@ -338,11 +369,12 @@ void DatabasePage::connectSession()
     connect(m_session, &IDatabaseSession::schemaReady, this, &DatabasePage::loadSchema);
     connect(m_session, &IDatabaseSession::columnsReady, this, [this](const QString& table, const QVector<DatabaseColumn>& columns, bool withoutRowId) {
         if (table != m_selectedTable) return;
-        m_currentColumns = columns; m_withoutRowId = withoutRowId; requestPage(0);
+        m_currentColumns = columns; m_withoutRowId = withoutRowId; requestPage(0, true);
     });
     connect(m_session, &IDatabaseSession::pageReady, this, [this](const QString& table, const DatabasePageResult& page) {
         if (table != m_selectedTable) return;
         m_tableModel->setPage(table, page, m_currentColumns);
+        m_loadingTable = false;
         if (page.primaryKeyColumns.isEmpty())
             m_status->setText(page.withoutRowId
                 ? tr("Page loaded. This table has no stable row key; paging can shift when another application changes it.")
@@ -372,8 +404,12 @@ void DatabasePage::connectSession()
         m_session->close();
     });
     connect(m_session, &IDatabaseSession::commitFinished, this, [this](bool success, const QString& message) {
+        m_commitPending = false;
         m_status->setText(message);
-        if (success && !m_selectedTable.isEmpty()) { m_session->requestSchema(); m_session->requestColumns(m_selectedTable); }
+        if (success && !m_selectedTable.isEmpty()) {
+            m_loadingTable = true;
+            m_session->requestSchema(); m_session->requestColumns(m_selectedTable);
+        }
         updateModeUi();
     });
 }
@@ -387,6 +423,7 @@ void DatabasePage::closeSession()
         m_session = nullptr;
     }
     m_sessionOpen = false; m_readWrite = false; m_currentReference.reset(); m_selectedTable.clear();
+    m_loadingTable = false; m_commitPending = false;
     m_tableModel->setEditMode(false);
     m_schemaModel->clear(); m_tableModel->setPage({}, {}, {}); m_queryModel->clear();
     m_status->setText(tr("Database connection closed."));
@@ -412,15 +449,21 @@ void DatabasePage::loadSchema(QVector<DatabaseSchemaObject> objects)
 
 void DatabasePage::selectTable(const QString& tableName)
 {
-    if (!m_session || !m_sessionOpen) return;
+    if (!m_session || !m_sessionOpen || m_loadingTable || !confirmDiscardPendingChanges()) return;
+    m_loadingTable = true;
     m_selectedTable = tableName; m_session->requestColumns(tableName);
+    updateModeUi();
     m_status->setText(tr("Loading table %1…").arg(tableName));
 }
 
-void DatabasePage::requestPage(int offset)
+void DatabasePage::requestPage(int offset, bool discardConfirmed)
 {
-    if (m_session && m_sessionOpen && !m_selectedTable.isEmpty())
+    if (m_session && m_sessionOpen && !m_selectedTable.isEmpty()) {
+        if (!discardConfirmed && !confirmDiscardPendingChanges()) return;
+        m_loadingTable = true;
+        updateModeUi();
         m_session->requestPage(m_selectedTable, offset, m_pageSize->currentData().toInt(), m_sortColumn, m_sortAscending);
+    }
 }
 
 void DatabasePage::runQuery(bool script)
@@ -466,24 +509,38 @@ void DatabasePage::enableEditMode()
 void DatabasePage::leaveEditMode()
 {
     m_tableModel->setEditMode(false);
-    if (m_tableModel->hasPendingChanges()) requestPage(m_tableModel->pageOffset());
+    if (m_tableModel->hasPendingChanges()) requestPage(m_tableModel->pageOffset(), true);
     updateModeUi();
 }
 
 void DatabasePage::updateModeUi()
 {
-    const bool canEdit = m_sessionOpen && !m_selectedTable.isEmpty() && m_tableModel->hasStableIdentity();
+    const bool busy = m_loadingTable || m_commitPending;
+    m_table->setEnabled(!busy);
+    const bool canEdit = m_sessionOpen && !busy && !m_selectedTable.isEmpty() && m_tableModel->hasStableIdentity();
     m_modeBadge->setText(!m_sessionOpen ? tr("Closed") : m_readWrite ? tr("Read/Write") : tr("Read-Only"));
     m_editModeButton->setEnabled(canEdit);
     m_editModeButton->setText(m_tableModel->hasEditMode() ? tr("Disable Edit Mode") : tr("Enable Edit Mode…"));
     m_addRowButton->setEnabled(m_tableModel->hasEditMode() && canEdit);
     m_deleteRowsButton->setEnabled(m_tableModel->hasEditMode() && canEdit && !m_table->selectionModel()->selectedRows().isEmpty());
-    m_commitButton->setEnabled(m_sessionOpen && m_readWrite && m_tableModel->hasPendingChanges());
-    m_rollbackButton->setEnabled(m_tableModel->hasPendingChanges());
-    m_previousPage->setEnabled(m_sessionOpen && m_tableModel->pageOffset() > 0);
-    m_nextPage->setEnabled(m_sessionOpen && m_tableModel->hasMore());
-    m_pageSize->setEnabled(m_sessionOpen);
+    m_commitButton->setEnabled(m_sessionOpen && !busy && m_readWrite && m_tableModel->hasPendingChanges());
+    m_rollbackButton->setEnabled(!busy && m_tableModel->hasPendingChanges());
+    m_previousPage->setEnabled(m_sessionOpen && !busy && m_tableModel->pageOffset() > 0);
+    m_nextPage->setEnabled(m_sessionOpen && !busy && m_tableModel->hasMore());
+    m_pageSize->setEnabled(m_sessionOpen && !busy);
     m_databaseCombo->setEnabled(!m_sessionOpen || !m_currentReference);
+}
+
+bool DatabasePage::confirmDiscardPendingChanges()
+{
+    if (m_commitPending) {
+        m_status->setText(tr("Wait for the current commit to finish before leaving this table."));
+        return false;
+    }
+    if (!m_tableModel->hasPendingChanges()) return true;
+    return QMessageBox::warning(this, tr("Discard pending database changes?"),
+        tr("This action will discard your pending edits, inserts, and deletes. Commit them first to keep them."),
+        QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Discard;
 }
 
 } // namespace devhub::presentation::databases
