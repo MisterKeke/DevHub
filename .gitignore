@@ -7,6 +7,9 @@
 compile_commands.json
 CMakeUserPresets.json
 
+# Local assistant planning
+/CODEX_ASSISTANT_IMPLEMENTATION_PLAN.md
+
 # Editor and IDE state
 /.qtcreator/
 /.vs/

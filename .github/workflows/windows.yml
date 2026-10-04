@@ -46,7 +46,8 @@ jobs:
         run: ctest --preset windows-ci-release
 
       - name: Stage Release runtime
-        run: cmake --install out/build/windows-ci --config Release --prefix out/ci-runtime
+        shell: pwsh
+        run: cmake --install out/build/windows-ci --config Release --prefix "$env:GITHUB_WORKSPACE/out/ci-runtime"
 
       - name: Test packaged SQLite and QML startup
         shell: pwsh
