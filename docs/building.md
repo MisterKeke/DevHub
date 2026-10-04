@@ -55,4 +55,13 @@ Install Inno Setup 6 and set `QT_ROOT_DIR` to the Qt kit used by the `windows-pa
 tools/package-windows.ps1
 ```
 
-The script builds Release, stages the Qt runtime and QSQLITE plugin, adds vcpkg and Qt notices plus a dependency inventory, creates a portable ZIP and a per-user installer, and writes SHA-256 checksums. Use `tools/package-windows.ps1 -PortableOnly` when Inno Setup is unavailable. The installer is unsigned by default. See [packaging/README.md](../packaging/README.md) for signing hooks and release gates. Do not distribute until Qt license obligations and clean-machine checks have been reviewed.
+The script builds Release, stages the Qt runtime and QSQLITE plugin, validates SQLite and both QML entry views, adds vcpkg and Qt notices plus a dependency inventory, creates a portable ZIP and a per-user installer, and writes SHA-256 checksums. Use `tools/package-windows.ps1 -PortableOnly` when Inno Setup is unavailable. The installer is unsigned by default. See [packaging/README.md](../packaging/README.md) for signing hooks and release gates. Do not distribute until Qt license obligations and clean-machine checks have been reviewed.
+
+CTest includes failure tests for notes recovery, profile reset rollback, export collisions, background-worker shutdown, and QML imports. Windows CI also installs the Release runtime into an isolated staging folder and checks it with development Qt environment variables cleared. It verifies that removing either a QML plugin or QSQLITE causes failure with useful diagnostics, then restores the plugin. To repeat the positive check manually:
+
+```powershell
+tools/check-packaged-runtime.ps1 -Executable out/portable-stage/bin/devhub.exe `
+  -ReportPath out/runtime-check.txt
+```
+
+The `--check-runtime` executable mode opens only an in-memory SQLite database and instantiates authentication (sign-in and account creation) and the main shell with populated presentation models. It exits nonzero for failed roots or QML warnings; `--check-runtime-report=<path>` records diagnostics. It does not authenticate or open the local profile. This smoke check complements interactive testing on a clean Windows machine.

@@ -55,6 +55,7 @@
 #include <QMessageBox>
 #include <QDir>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QToolButton>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -246,6 +247,9 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::Settings,
                                                               ThemePalette::color(ColorToken::TextSecondary),
                                                               18), tr("Settings")));
+    moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::Notes,
+                                                              ThemePalette::color(ColorToken::TextSecondary),
+                                                              18), tr("Quick Ask")));
     moduleList->setCurrentRow(0);
     navigationLayout->addWidget(moduleList, 1);
 
@@ -253,9 +257,9 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     const QStringList navigationIds{QStringLiteral("nav.overview"), QStringLiteral("nav.git"),
         QStringLiteral("nav.services"), QStringLiteral("nav.ports"), QStringLiteral("nav.logs"),
         QStringLiteral("nav.database"), QStringLiteral("nav.notes"), QStringLiteral("nav.files"),
-        QStringLiteral("nav.settings")};
+        QStringLiteral("nav.settings"), QStringLiteral("nav.quickAsk")};
     const QStringList navigationTitles{tr("Overview"), tr("Git"), tr("Services"), tr("Ports"),
-        tr("Logs"), tr("Database"), tr("Notes"), tr("Files"), tr("Settings")};
+        tr("Logs"), tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Quick Ask")};
     for (int row = 0; row < navigationIds.size(); ++row) {
         using Category = application::commands::CommandCategory;
         const auto category = row == 1 ? Category::Git : row == 2 ? Category::Services
@@ -454,6 +458,54 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     settingsLayout->addWidget(supportBundleButton, 0, Qt::AlignLeft);
     settingsLayout->addStretch();
     m_pageHost->addWidget(settingsPage);
+    auto* quickAskPage = new QWidget(m_pageHost);
+    quickAskPage->setObjectName(QStringLiteral("quickAskPage"));
+    auto* quickAskLayout = new QVBoxLayout(quickAskPage);
+    quickAskLayout->setContentsMargins(32, 28, 32, 28);
+    quickAskLayout->setSpacing(ThemeTokens::spacing(devhub::presentation::theme::SpaceToken::Three));
+    auto* quickAskTitle = new QLabel(tr("Quick Ask"), quickAskPage);
+    quickAskTitle->setFont(ThemeTokens::font(devhub::presentation::theme::TypographyToken::PageTitle));
+    auto* quickAskPrompt = new QLineEdit(quickAskPage);
+    quickAskPrompt->setObjectName(QStringLiteral("quickAskPrompt"));
+    quickAskPrompt->setAccessibleName(tr("Quick Ask prompt"));
+    quickAskPrompt->setPlaceholderText(tr("Ask something..."));
+    quickAskPrompt->setClearButtonEnabled(true);
+    quickAskPrompt->setMaximumWidth(680);
+    auto* quickAskButtons = new QHBoxLayout();
+    auto* quickAskStatus = new QLabel(quickAskPage);
+    quickAskStatus->setWordWrap(true);
+    quickAskStatus->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    struct QuickAskProvider { QString name; QString url; QString promptParameter; };
+    const QuickAskProvider quickAskProviders[]{
+        {QStringLiteral("ChatGPT"), QStringLiteral("https://chatgpt.com/"), QStringLiteral("q")},
+        {QStringLiteral("Gemini"), QStringLiteral("https://gemini.google.com/app"), {}},
+        {QStringLiteral("DeepSeek"), QStringLiteral("https://chat.deepseek.com/"), {}}
+    };
+    for (const auto& provider : quickAskProviders) {
+        auto* button = new devhub::presentation::widgets::SecondaryButton(provider.name, quickAskPage);
+        quickAskButtons->addWidget(button);
+        connect(button, &QPushButton::clicked, this, [quickAskPrompt, quickAskStatus, provider] {
+            quickAskStatus->clear();
+            const QString prompt = quickAskPrompt->text().trimmed();
+            if (prompt.isEmpty()) return;
+            QUrl url(provider.url);
+            if (!provider.promptParameter.isEmpty()) {
+                QUrlQuery query;
+                // Encode literal '+' and '%' as well as query delimiters before adding the value.
+                query.addQueryItem(provider.promptParameter, QString::fromLatin1(QUrl::toPercentEncoding(prompt)));
+                url.setQuery(query);
+            }
+            if (!QDesktopServices::openUrl(url))
+                quickAskStatus->setText(tr("The system could not open the browser."));
+        });
+    }
+    quickAskButtons->addStretch();
+    quickAskLayout->addWidget(quickAskTitle);
+    quickAskLayout->addWidget(quickAskPrompt);
+    quickAskLayout->addLayout(quickAskButtons);
+    quickAskLayout->addWidget(quickAskStatus);
+    quickAskLayout->addStretch();
+    m_pageHost->addWidget(quickAskPage);
     m_commandPalette = new devhub::presentation::commands::CommandPaletteDialog(*m_commandRegistry, this);
     m_workspaceSearchProvider = new application::commands::WorkspaceSearchProvider();
     m_servicesSearchProvider = new application::commands::ServiceSearchProvider();
@@ -838,7 +890,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         emit shellChanged();
     });
     m_modulePages = {m_overviewPage, gitPage, servicePage, portPage, logsPage,
-                     databasePage, m_notesPage, filesPage, settingsPage};
+                     databasePage, m_notesPage, filesPage, settingsPage, quickAskPage};
 
     auto* quickView = new QQuickView;
     quickView->setResizeMode(QQuickView::SizeRootObjectToView);
@@ -863,7 +915,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     reloadWorkspaces();
     const int restoredPage = m_settingsService.value(QStringLiteral("general/restoreLastPage")).toBool()
         ? QSettings().value(QStringLiteral("window/lastPage"), 0).toInt() : 0;
-    if (restoredPage > 0 && restoredPage < 8) selectQuickModule(restoredPage);
+    if ((restoredPage > 0 && restoredPage < 8) || restoredPage == 9) selectQuickModule(restoredPage);
 }
 
 void MainWindow::restoreWorkspaceSelection()
@@ -941,7 +993,7 @@ void MainWindow::selectQuickModule(int index)
     m_pageHost->setCurrentWidget(m_modulePages.at(index));
     m_moduleWindow->setWindowTitle(tr("DevHub — %1").arg(QStringList{
         tr("Overview"), tr("Git"), tr("Services"), tr("Ports"), tr("Logs"),
-        tr("Database"), tr("Notes"), tr("Files"), tr("Settings")}.at(index)));
+        tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Quick Ask")}.at(index)));
     m_moduleWindow->show();
     m_moduleWindow->raise();
     m_moduleWindow->activateWindow();
@@ -1012,14 +1064,18 @@ void MainWindow::openQuickSettings()
     }
 }
 
-void MainWindow::flushNotesForShutdown()
+bool MainWindow::flushNotesForShutdown()
 {
-    if (m_notesPage && !m_notesPage->flushPendingSave())
-        statusBar()->showMessage(tr("Note changes were written to the recovery journal because the save failed."), 6000);
+    return !m_notesPage || m_notesPage->prepareForTransition();
 }
 
 bool MainWindow::confirmDatabaseTransition()
 {
+    if (!flushNotesForShutdown()) {
+        QMessageBox::warning(this, tr("Note changes are not saved"),
+            tr("DevHub could not save your note or its recovery copy. Keep this workspace open and retry saving before switching, signing out, or closing."));
+        return false;
+    }
     return !m_databasePage || m_databasePage->confirmDiscardPendingChanges();
 }
 
@@ -1244,7 +1300,6 @@ void MainWindow::closeEvent(QCloseEvent* event)
     }
     m_closeAfterServicesStop=false;
     if (!confirmDatabaseTransition()) { event->ignore(); return; }
-    flushNotesForShutdown();
     if (!isMaximized() && !isMinimized()) {
         QSettings().setValue(QStringLiteral("window/normalGeometry"), normalGeometry());
     }

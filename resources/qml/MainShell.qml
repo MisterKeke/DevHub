@@ -113,19 +113,20 @@ Rectangle {
                 anchors.fill: parent; anchors.margins: 12; spacing: 5
                 Text { text: qsTr("MODULES"); color: root.muted; font.pixelSize: 10; font.letterSpacing: 1.1; font.weight: Font.DemiBold; Layout.bottomMargin: 8 }
                 Repeater {
-                    model: [qsTr("Overview"), qsTr("Git"), qsTr("Services"), qsTr("Ports"), qsTr("Logs"), qsTr("Database"), qsTr("Notes"), qsTr("Files")]
+                    model: [qsTr("Overview"), qsTr("Git"), qsTr("Services"), qsTr("Ports"), qsTr("Logs"), qsTr("Database"), qsTr("Notes"), qsTr("Files"), qsTr("Quick Ask")]
                     delegate: Rectangle {
                         required property string modelData
                         required property int index
+                        readonly property int moduleIndex: index < 8 ? index : index + 1
                         Layout.fillWidth: true; height: 40; radius: 8
-                        color: root.selectedModule === index ? root.activeSurface : navHover.hovered ? root.hoverSurface : "transparent"
+                        color: root.selectedModule === moduleIndex ? root.activeSurface : navHover.hovered ? root.hoverSurface : "transparent"
                         RowLayout {
                             anchors.fill: parent; anchors.leftMargin: 11; spacing: 10
-                            Text { text: ["⌂","⑂","▷","◉","≡","▤","▧","▱","⚙"][index]; color: root.selectedModule === index ? root.accent : root.secondary; font.pixelSize: 18; Layout.preferredWidth: 21 }
-                            Text { text: modelData; color: root.selectedModule === index ? root.accent : root.text; font.pixelSize: 12 }
+                            Text { text: ["⌂","⑂","▷","◉","≡","▤","▧","▱","?"][index]; color: root.selectedModule === moduleIndex ? root.accent : root.secondary; font.pixelSize: 18; Layout.preferredWidth: 21 }
+                            Text { text: modelData; color: root.selectedModule === moduleIndex ? root.accent : root.text; font.pixelSize: 12 }
                         }
                         HoverHandler { id: navHover }
-                        TapHandler { onTapped: shellController.selectQuickModule(index) }
+                        TapHandler { onTapped: shellController.selectQuickModule(moduleIndex) }
                     }
                 }
                 Item { Layout.fillHeight: true }

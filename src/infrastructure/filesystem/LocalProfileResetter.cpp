@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QUuid>
+#include <utility>
 
 namespace devhub::infrastructure::filesystem {
 namespace {
@@ -19,29 +20,23 @@ shared::common::Result<void> resetFailure(const QString& details)
         QStringLiteral("reset local profile")));
 }
 
-bool moveIfPresent(const QString& from, const QString& to)
+bool removeIfPresent(const QString& path)
 {
-    if (!QFileInfo::exists(from)) {
-        return true;
-    }
-    return QFile::rename(from, to);
-}
-
-void removeIfPresent(const QString& path)
-{
-    if (QFileInfo::exists(path)) {
-        QFile::remove(path);
-    }
+    return !QFileInfo::exists(path) || QFile::remove(path);
 }
 
 } // namespace
 
 LocalProfileResetter::LocalProfileResetter(QString localDataDirectory,
                                            QString usersDirectory,
-                                           database::InternalDatabaseManager& database)
+                                           database::InternalDatabaseManager& database,
+                                           MovePath movePath)
     : m_localDataDirectory(QDir(std::move(localDataDirectory)).absolutePath()),
       m_usersDirectory(QDir(std::move(usersDirectory)).absolutePath()),
-      m_database(database)
+      m_database(database),
+      m_movePath(movePath ? std::move(movePath) : MovePath([](const QString& from, const QString& to) {
+          return QFileInfo(from).isDir() ? QDir().rename(from, to) : QFile::rename(from, to);
+      }))
 {
 }
 
@@ -77,7 +72,7 @@ shared::common::Result<void> LocalProfileResetter::resetProfile(const domain::ac
     bool shmMoved = false;
 
     if (QFileInfo::exists(userDirectory)) {
-        userDirectoryMoved = QDir(m_usersDirectory).rename(userDirectory, archivedUserDirectory);
+        userDirectoryMoved = m_movePath(userDirectory, archivedUserDirectory);
         if (!userDirectoryMoved) {
             auto reopened = m_database.open();
             QDir(recoveryPath).removeRecursively();
@@ -87,29 +82,39 @@ shared::common::Result<void> LocalProfileResetter::resetProfile(const domain::ac
             return resetFailure(QStringLiteral("The local user directory could not be preserved."));
         }
     }
-    databaseMoved = QFile::rename(databaseFile, archivedDatabase);
+    databaseMoved = m_movePath(databaseFile, archivedDatabase);
+    bool preserved = databaseMoved;
     if (databaseMoved) {
-        walMoved = moveIfPresent(databaseFile + QStringLiteral("-wal"), archivedWal);
-        shmMoved = moveIfPresent(databaseFile + QStringLiteral("-shm"), archivedShm);
+        if (QFileInfo::exists(databaseFile + QStringLiteral("-wal"))) {
+            walMoved = m_movePath(databaseFile + QStringLiteral("-wal"), archivedWal);
+            preserved = preserved && walMoved;
+        }
+        if (QFileInfo::exists(databaseFile + QStringLiteral("-shm"))) {
+            shmMoved = m_movePath(databaseFile + QStringLiteral("-shm"), archivedShm);
+            preserved = preserved && shmMoved;
+        }
     }
-    if (!databaseMoved || !walMoved || !shmMoved) {
-        if (userDirectoryMoved) {
-            QDir(recoveryPath).rename(archivedUserDirectory, userDirectory);
-        }
-        if (databaseMoved) {
-            QFile::rename(archivedDatabase, databaseFile);
-        }
-        if (walMoved) {
-            QFile::rename(archivedWal, databaseFile + QStringLiteral("-wal"));
-        }
-        if (shmMoved) {
-            QFile::rename(archivedShm, databaseFile + QStringLiteral("-shm"));
-        }
+    const auto restoreProfile = [&] {
+        // Attempt every restoration, retaining anything that could not be
+        // moved back. Never open/recreate the database after a partial rollback.
+        const bool shmRestored = !shmMoved || m_movePath(archivedShm, databaseFile + QStringLiteral("-shm"));
+        const bool walRestored = !walMoved || m_movePath(archivedWal, databaseFile + QStringLiteral("-wal"));
+        const bool dbRestored = !databaseMoved || m_movePath(archivedDatabase, databaseFile);
+        const bool userRestored = !userDirectoryMoved || m_movePath(archivedUserDirectory, userDirectory);
+        return shmRestored && walRestored && dbRestored && userRestored;
+    };
+    const auto incompleteRollback = [&] {
+        auto error = resetFailure(QStringLiteral("Profile rollback was incomplete. Recovery files were kept at %1.").arg(recoveryPath));
+        error.error().userMessage = QStringLiteral("DevHub could not restore the entire profile. Recovery files were kept at %1.").arg(recoveryPath);
+        return error;
+    };
+    if (!preserved) {
+        if (!restoreProfile()) return incompleteRollback();
         auto reopened = m_database.open();
-        QDir(recoveryPath).removeRecursively();
         if (!reopened) {
             return resetFailure(QStringLiteral("The old database could not be reopened after profile preservation failed."));
         }
+        QDir(recoveryPath).removeRecursively();
         return resetFailure(QStringLiteral("The local profile database could not be preserved."));
     }
 
@@ -120,18 +125,12 @@ shared::common::Result<void> LocalProfileResetter::resetProfile(const domain::ac
         if (!closedAgain) {
             return resetFailure(QStringLiteral("The new database could not be closed while restoring the old profile."));
         }
-        removeIfPresent(databaseFile);
-        removeIfPresent(databaseFile + QStringLiteral("-wal"));
-        removeIfPresent(databaseFile + QStringLiteral("-shm"));
-        const bool dbRestored = QFile::rename(archivedDatabase, databaseFile);
-        const bool walRestored = !walMoved || QFile::rename(archivedWal, databaseFile + QStringLiteral("-wal"));
-        const bool shmRestored = !shmMoved || QFile::rename(archivedShm, databaseFile + QStringLiteral("-shm"));
-        const bool userRestored = !userDirectoryMoved
-            || QDir(recoveryPath).rename(archivedUserDirectory, userDirectory);
+        const bool removedDb = removeIfPresent(databaseFile);
+        const bool removedWal = removeIfPresent(databaseFile + QStringLiteral("-wal"));
+        const bool removedShm = removeIfPresent(databaseFile + QStringLiteral("-shm"));
+        if (!removedDb || !removedWal || !removedShm) return incompleteRollback();
+        if (!restoreProfile()) return incompleteRollback();
         auto reopened = m_database.open();
-        if (!dbRestored || !walRestored || !shmRestored || !userRestored) {
-            return resetFailure(QStringLiteral("The new database failed to initialize and profile rollback was incomplete."));
-        }
         if (!reopened) {
             return resetFailure(QStringLiteral("The old profile was restored but its database could not be reopened."));
         }

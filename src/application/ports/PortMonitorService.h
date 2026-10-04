@@ -13,6 +13,7 @@ class PortMonitorService final : public QObject
     Q_OBJECT
 public:
     PortMonitorService(IPortProvider& provider, IProcessInspector& inspector, QObject* parent = nullptr);
+    ~PortMonitorService() override;
     [[nodiscard]] bool refresh();
     [[nodiscard]] bool isRefreshing() const noexcept { return m_watcher.isRunning(); }
     [[nodiscard]] QVector<PortRecord> records() const { return m_records; }

@@ -65,6 +65,13 @@ PortMonitorService::PortMonitorService(IPortProvider& provider, IProcessInspecto
     });
 }
 
+PortMonitorService::~PortMonitorService()
+{
+    // QFutureWatcher destruction does not wait for QtConcurrent::run. The
+    // provider and inspector must remain alive until their job has returned.
+    m_watcher.waitForFinished();
+}
+
 bool PortMonitorService::refresh()
 {
     if (m_watcher.isRunning()) return false;

@@ -84,9 +84,36 @@ set_tests_properties(devhub.feature-regressions PROPERTIES
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;PATH=path_list_prepend:$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin>"
 )
 
+qt_add_executable(devhub_reliability_tests
+    reliability_test.cpp
+    ../src/presentation/notes/NotesPage.cpp
+    ../src/application/notes/NoteFolderExporter.cpp
+    ../resources/database_migrations.qrc
+)
+target_link_libraries(devhub_reliability_tests PRIVATE devhub_accounts devhub_ports
+    Qt6::Widgets Qt6::Test project_options project_warnings)
+add_test(NAME devhub.reliability COMMAND devhub_reliability_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/reliability-tests.txt,txt")
+set_tests_properties(devhub.reliability PROPERTIES TIMEOUT 45
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;PATH=path_list_prepend:$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin>"
+)
+
+qt_add_executable(devhub_runtime_tests runtime_check_test.cpp)
+target_link_libraries(devhub_runtime_tests PRIVATE Qt6::Core Qt6::Test project_options project_warnings)
+target_compile_definitions(devhub_runtime_tests PRIVATE
+    DEVHUB_TEST_EXECUTABLE="$<TARGET_FILE:devhub>"
+    DEVHUB_TEST_QML_SOURCE="${CMAKE_SOURCE_DIR}/resources/qml"
+)
+add_dependencies(devhub_runtime_tests devhub)
+add_test(NAME devhub.qml-runtime COMMAND devhub_runtime_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/qml-runtime-tests.txt,txt")
+set_tests_properties(devhub.qml-runtime PROPERTIES TIMEOUT 45
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;PATH=path_list_prepend:$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin>"
+)
+
 # Development test folders can contain copied Qt DLLs. Point plugin discovery
 # at the configured Qt kit rather than relying on the DLLs' compiled prefix.
 set_tests_properties(devhub.smoke devhub.database-migrations devhub.account-security
-    devhub.authentication devhub.feature-regressions PROPERTIES
+    devhub.authentication devhub.feature-regressions devhub.reliability devhub.qml-runtime PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
 )

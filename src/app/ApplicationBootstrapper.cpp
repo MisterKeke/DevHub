@@ -226,6 +226,9 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
 
     application::events::ApplicationEventHub eventHub;
     application::lifecycle::ApplicationLifecycle lifecycle(eventHub);
+    // Declared before the scheduler so its workers finish before the hasher
+    // is destroyed, including when the authentication window is closed early.
+    infrastructure::account::SodiumPasswordHasher passwordHasher;
     application::tasks::TaskScheduler scheduler(m_idGenerator);
     application::notifications::NotificationService notifications(m_clock, m_idGenerator, eventHub);
     infrastructure::notifications::SqlNotificationRepository notificationRepository(database, redactor);
@@ -233,7 +236,6 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
     application::lifecycle::ShutdownCoordinator shutdown(m_application, lifecycle, scheduler, eventHub);
 
     infrastructure::account::SqlAccountRepository accountRepository(database, m_idGenerator);
-    infrastructure::account::SodiumPasswordHasher passwordHasher;
     infrastructure::filesystem::LocalUserDirectoryProvisioner directoryProvisioner(paths.usersDirectory);
     infrastructure::filesystem::LocalProfileResetter profileResetter(
         paths.localDataDirectory, paths.usersDirectory, database);
@@ -373,7 +375,7 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
             mainWindow.statusBar()->showMessage(message, success ? 5000 : 8000);
         });
     QObject::connect(&mainWindow, &presentation::shell::MainWindow::quitRequested,
-                     &m_application, &QCoreApplication::quit);
+                     &mainWindow, [&mainWindow] { mainWindow.close(); });
     QObject::connect(&mainWindow, &presentation::shell::MainWindow::signOutRequested,
                      &mainWindow, [this, &mainWindow, &session, &accountRepository,
                       &authentication, &shutdown, &workspaceContext, &settingsService, themeManager] {

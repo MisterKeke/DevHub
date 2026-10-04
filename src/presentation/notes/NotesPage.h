@@ -27,10 +27,11 @@ class NotesPage final : public QWidget
 public:
     NotesPage(application::notes::INotesRepository& repository, QString accountId, QString recoveryRoot,
               QWidget* parent = nullptr);
-    void setWorkspace(QString workspaceId);
+    bool setWorkspace(QString workspaceId);
     [[nodiscard]] int nodeCount() const { return static_cast<int>(m_nodes.size()); }
     [[nodiscard]] QStringList previewTitles(int limit = 3) const;
     [[nodiscard]] bool flushPendingSave();
+    [[nodiscard]] bool prepareForTransition();
 
 private:
     void reloadTree();
@@ -47,7 +48,7 @@ private:
     void exportNote();
     void exportFolder();
     void scheduleSave();
-    void writeRecoveryJournal();
+    bool writeRecoveryJournal();
     bool saveNow();
     void updatePreview();
     void showTextCompare(const QString& title, const QString& text);

@@ -93,7 +93,7 @@ public:
                const shared::security::RedactionService& redactor,
                QWidget* parent = nullptr);
     void restoreWorkspaceSelection();
-    void flushNotesForShutdown();
+    bool flushNotesForShutdown();
     [[nodiscard]] bool confirmDatabaseTransition();
     void showRecoveryNotice();
     QString shellWorkspaceTitle() const;

@@ -199,6 +199,7 @@ add_executable(devhub WIN32
     src/app/ApplicationBootstrapper.cpp
     src/app/RecoveryModeWindow.cpp
     src/app/main.cpp
+    src/app/RuntimeCheck.cpp
     src/presentation/theme/ThemeManager.cpp
     src/presentation/theme/ThemePalette.cpp
     src/presentation/theme/ThemeProxyStyle.cpp
@@ -225,6 +226,7 @@ add_executable(devhub WIN32
     src/presentation/files/FileBrowserController.cpp
     src/presentation/files/FileBrowserPage.cpp
     src/infrastructure/notes/NotesRepository.cpp
+    src/application/notes/NoteFolderExporter.cpp
     src/infrastructure/files/WindowsTrashService.cpp
     src/infrastructure/files/QProcessExternalEditorLauncher.cpp
     src/infrastructure/settings/SqlSettingsRepository.cpp

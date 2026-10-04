@@ -1,4 +1,5 @@
 #include "NotesPage.h"
+#include "../../application/notes/NoteFolderExporter.h"
 
 #include <QCryptographicHash>
 #include <QCheckBox>
@@ -159,17 +160,17 @@ NotesPage::NotesPage(INotesRepository& repository, QString accountId, QString re
     connect(m_showTrash, &QCheckBox::toggled, this, [this](bool enabled) { m_includeTrash = enabled; reloadTree(); });
 }
 
-void NotesPage::setWorkspace(QString workspaceId)
+bool NotesPage::setWorkspace(QString workspaceId)
 {
-    if (m_workspaceId == workspaceId) return;
+    if (m_workspaceId == workspaceId) return true;
+    if (!prepareForTransition()) return false;
     ++m_searchGeneration;
-    const bool saved = flushPendingSave();
-    Q_UNUSED(saved);
     m_saveTimer.stop(); m_journalTimer.stop();
     if (m_searchCancellation) m_searchCancellation->store(true);
     m_workspaceId = std::move(workspaceId); m_currentNoteId.clear(); m_currentContentHash.clear();
     m_dirty = false;
     m_editor->clear(); m_preview->clear(); reloadTree();
+    return true;
 }
 
 bool NotesPage::flushPendingSave()
@@ -177,6 +178,12 @@ bool NotesPage::flushPendingSave()
     m_saveTimer.stop();
     if (!m_dirty) return true;
     return saveNow();
+}
+
+bool NotesPage::prepareForTransition()
+{
+    if (flushPendingSave()) return true;
+    return writeRecoveryJournal();
 }
 
 void NotesPage::reloadTree()
@@ -236,7 +243,7 @@ void NotesPage::openItem(QTreeWidgetItem* item)
     const QString id = item->data(0, NodeIdRole).toString();
     if (id.isEmpty() || !m_nodes.contains(id) || m_nodes.value(id).kind == NoteNodeKind::Folder) return;
     if (id == m_currentNoteId) return;
-    if (!flushPendingSave()) { selectNodeInTree(m_currentNoteId); m_status->setText(tr("The current note could not be saved; its recovery journal was kept.")); return; }
+    if (!flushPendingSave()) { selectNodeInTree(m_currentNoteId); return; }
     const NoteNode node = m_nodes.value(id);
     auto contentResult = m_repository.readContent(m_workspaceId, id);
     if (!contentResult) { m_status->setText(contentResult.error().userMessage); return; }
@@ -406,44 +413,11 @@ void NotesPage::exportNote()
 void NotesPage::exportFolder()
 {
     const auto selected = selectedNode(); if (!selected || selected->kind != NoteNodeKind::Folder) return;
+    if (!flushPendingSave()) return;
     const QString destination = QFileDialog::getExistingDirectory(this, tr("Export Folder")); if (destination.isEmpty()) return;
-    const auto listed = m_repository.list(m_workspaceId, false);
-    if (!listed) { QMessageBox::warning(this, tr("Export failed"), listed.error().userMessage); return; }
-    QHash<QString, QString> relative;
-    const auto safeSegment = [](QString value) {
-        value.replace(QRegularExpression(QStringLiteral("[<>:\"/\\\\|?*]")), QStringLiteral("_"));
-        while (value.endsWith(QLatin1Char('.')) || value.endsWith(QLatin1Char(' '))) value.chop(1);
-        if (value.isEmpty()) value = QStringLiteral("Untitled");
-        return value;
-    };
-    const QString exportRoot = QDir(destination).filePath(safeSegment(selected->title));
-    if (QFileInfo::exists(exportRoot)) { QMessageBox::warning(this, tr("Export path exists"), tr("Choose a destination where “%1” does not already exist.").arg(safeSegment(selected->title))); return; }
-    relative.insert(selected->id, safeSegment(selected->title));
-    for (int pass = 0; pass < listed.value().size(); ++pass) {
-        bool changed = false;
-        for (const auto& node : listed.value()) {
-            if (relative.contains(node.id) || !relative.contains(node.parentId)) continue;
-            relative.insert(node.id, QDir(relative.value(node.parentId)).filePath(safeSegment(node.title)));
-            changed = true;
-        }
-        if (!changed) break;
-    }
-    for (const auto& node : listed.value()) {
-        if (node.kind != NoteNodeKind::Folder || !relative.contains(node.id)) continue;
-        const QString path = QDir(destination).filePath(relative.value(node.id));
-        if (!QDir().mkpath(path)) { m_status->setText(tr("Folder export stopped: could not create %1").arg(path)); return; }
-    }
-    for (const auto& node : listed.value()) {
-        if (!relative.contains(node.id)) continue;
-        const QString path = QDir(destination).filePath(relative.value(node.id) + (node.kind == NoteNodeKind::Note ? QStringLiteral(".md") : QString()));
-        if (node.kind == NoteNodeKind::Note) {
-            const auto content = m_repository.readContent(m_workspaceId, node.id);
-            if (!content) { m_status->setText(content.error().userMessage); return; }
-            QSaveFile file(path); const QByteArray bytes = content.value().toUtf8();
-            if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) { m_status->setText(tr("Folder export stopped: %1").arg(file.errorString())); return; }
-        }
-    }
-    m_status->setText(tr("Exported folder “%1” to %2.").arg(selected->title, destination));
+    const auto result = exportNoteFolder(m_repository, m_workspaceId, selected->id, destination);
+    if (!result) { QMessageBox::warning(this, tr("Export failed"), result.error().userMessage); return; }
+    m_status->setText(tr("Exported folder “%1” to %2.").arg(selected->title, result.value()));
 }
 
 void NotesPage::scheduleSave()
@@ -487,20 +461,31 @@ void NotesPage::applySearchResults(const QStringList& contentMatches, const QStr
     for (int i = 0; i < m_tree->topLevelItemCount(); ++i) visit(visit, m_tree->topLevelItem(i));
 }
 
-void NotesPage::writeRecoveryJournal()
+bool NotesPage::writeRecoveryJournal()
 {
-    if (!m_dirty || m_currentNoteId.isEmpty()) return;
+    if (!m_dirty || m_currentNoteId.isEmpty()) return true;
     const QString path = journalPath(m_currentNoteId);
-    QDir().mkpath(QFileInfo(path).absolutePath());
+    if (!QDir().mkpath(QFileInfo(path).absolutePath())) {
+        m_status->setText(tr("Could not create a note recovery copy. Keep this workspace open and retry saving."));
+        return false;
+    }
     QSaveFile file(path);
-    if (file.open(QIODevice::WriteOnly)) { file.write(m_editor->toPlainText().toUtf8()); file.commit(); }
+    const QByteArray bytes = m_editor->toPlainText().toUtf8();
+    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
+        m_status->setText(tr("Could not write the note recovery copy: %1. Keep this workspace open.").arg(file.errorString()));
+        return false;
+    }
+    return true;
 }
 
 bool NotesPage::saveNow()
 {
     if (!m_dirty || m_currentNoteId.isEmpty()) return true;
     const auto result = m_repository.saveContent(m_workspaceId, m_currentNoteId, m_editor->toPlainText(), m_currentContentHash);
-    if (!result) { writeRecoveryJournal(); m_status->setText(result.error().userMessage); return false; }
+    if (!result) {
+        if (writeRecoveryJournal()) m_status->setText(result.error().userMessage + tr(" Pending edits are preserved in a recovery copy."));
+        return false;
+    }
     m_currentContentHash = result.value(); m_dirty = false; QFile::remove(journalPath(m_currentNoteId));
     if (m_nodes.contains(m_currentNoteId)) m_nodes[m_currentNoteId].contentHash = m_currentContentHash;
     m_status->setText(tr("Saved at %1").arg(QTime::currentTime().toString())); return true;

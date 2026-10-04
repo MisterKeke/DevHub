@@ -135,20 +135,8 @@ try {
     }
     if ($forbidden) { throw "Development artifacts were found in the staging folder: $($forbidden.FullName -join ', ')" }
 
-    # Launch only Qt's platform and SQLite plugins. This exits before DevHub
-    # opens Local AppData, so an existing user session is left untouched.
-    $originalPath = $env:PATH
-    try {
-        $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-        $runtimeCheck = Start-Process -FilePath $stagedExecutable -ArgumentList "--check-runtime" `
-            -WorkingDirectory (Split-Path $stagedExecutable -Parent) -WindowStyle Hidden -PassThru -Wait
-        if ($runtimeCheck.ExitCode -ne 0) {
-            throw "The staged DevHub executable did not start with only its packaged runtime (exit $($runtimeCheck.ExitCode))."
-        }
-    }
-    finally {
-        $env:PATH = $originalPath
-    }
+    & (Join-Path $PSScriptRoot 'check-packaged-runtime.ps1') -Executable $stagedExecutable `
+        -ReportPath (Join-Path $repoRoot 'out/package-runtime-check.txt')
 
     $shareRoot = Join-Path $repoRoot ".tools/vcpkg_installed/$configuredTriplet/share"
     $qtLicenseDirectory = Join-Path $qtBaseDirectory "Licenses"
