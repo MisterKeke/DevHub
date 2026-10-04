@@ -12,11 +12,12 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/README.md"
     DESTINATION "packaging")
 
 if(WIN32)
+    # INCLUDE_PLUGINS requires Qt 6.10; pass the windeployqt option for Qt 6.8.3.
     qt_generate_deploy_app_script(
         TARGET devhub
         OUTPUT_SCRIPT devhub_deploy_script
-        INCLUDE_PLUGINS qsqlite
-        DEPLOY_TOOL_OPTIONS --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/resources/qml"
+        DEPLOY_TOOL_OPTIONS --include-plugins qsqlite
+            --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/resources/qml"
         NO_UNSUPPORTED_PLATFORM_ERROR)
     install(SCRIPT "${devhub_deploy_script}")
 
