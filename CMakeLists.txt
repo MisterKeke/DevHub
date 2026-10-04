@@ -297,6 +297,18 @@ qt_add_qml_module(devhub
         resources/qml/ShellButton.qml
 )
 qt_import_qml_plugins(devhub)
+
+# Qt's generated QML cache code can instantiate unreachable branches in Qt
+# headers under MSVC /O2. Keep /W4 and /WX for application sources and suppress
+# only C4702 in the generated cache compilation units.
+get_target_property(_devhub_sources devhub SOURCES)
+foreach(_devhub_source IN LISTS _devhub_sources)
+    if(_devhub_source MATCHES "/\\.rcc/qmlcache/.*\\.cpp$")
+        set_property(SOURCE "${_devhub_source}" APPEND PROPERTY COMPILE_OPTIONS
+            "$<$<CXX_COMPILER_ID:MSVC>:/wd4702>")
+    endif()
+endforeach()
+
 if(WIN32)
     target_link_libraries(devhub PRIVATE shell32)
 endif()
