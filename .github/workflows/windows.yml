@@ -43,7 +43,18 @@ jobs:
         run: cmake --build --preset windows-ci-release --parallel
 
       - name: Test
-        run: ctest --preset windows-ci-release
+        shell: pwsh
+        run: |
+          ctest --preset windows-ci-release
+          $ctestExitCode = $LASTEXITCODE
+          if ($ctestExitCode -ne 0) {
+            Get-ChildItem -Path out/build/windows-ci/tests/Release -Filter '*-tests.txt' | ForEach-Object {
+              Write-Host ('::group::' + $_.Name)
+              Get-Content -LiteralPath $_.FullName
+              Write-Host '::endgroup::'
+            }
+          }
+          exit $ctestExitCode
 
       - name: Stage Release runtime
         shell: pwsh

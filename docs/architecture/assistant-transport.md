@@ -19,10 +19,16 @@ fallback. It rejects directories, relative paths and script wrappers. It runs
 `--version` directly through QProcess, accepts only the tested version 0.160.1,
 caps each probe channel at 4 KiB, and cancels/kills a probe after five seconds.
 Windows launch and version probes use CREATE_NO_WINDOW.
-Paths with spaces and Unicode are covered by a copied native fixture. Probe
-results carry the caller's generation; cancellation completes child cleanup
-before another probe is admitted. No path, credentials or version cache is
+Paths with spaces and Unicode are covered by a copied native fixture. Explicit
+override tests retain Unicode paths; the separate PATH fixture uses an ASCII
+directory with spaces because its byte-based environment setter cannot represent
+İ on every Windows code page. Probe results carry the caller's generation;
+cancellation completes child cleanup before another probe is admitted.
+No path, credentials or version cache is
 persisted. A new backend should request another probe.
+
+CI prints the saved Qt test reports on failure, while retaining the original
+CTest exit status and uploaded reports.
 
 The process receives a value snapshot of executable, structured arguments,
 absolute scratch directory, explicit environment and generation. It never finds
