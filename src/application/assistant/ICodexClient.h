@@ -17,6 +17,7 @@ public:
     virtual shared::common::Result<qint64> cancelLogin() = 0;
     virtual shared::common::Result<qint64> listModels(const QString& cursor = {}) = 0;
     virtual shared::common::Result<qint64> startThread(const QString& model) = 0;
+    virtual shared::common::Result<qint64> resumeThread(const CodexThreadBinding&) = 0;
     virtual shared::common::Result<qint64> readThread(const CodexThreadBinding&) = 0;
     virtual shared::common::Result<qint64> startTurn(const QString& text) = 0;
     virtual shared::common::Result<qint64> interruptTurn() = 0;

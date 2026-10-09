@@ -37,6 +37,7 @@ SettingsService::SettingsService(ISettingsRepository& repository) : m_repository
         string(QStringLiteral("git/executable"), QStringLiteral("Git executable override"), QStringLiteral("Git"), {}, true, SettingSensitivity::Sensitive),
         string(QStringLiteral("assistant/executable"), QStringLiteral("Native Codex executable override"), QStringLiteral("Assistant"), {}, false, SettingSensitivity::Sensitive),
         string(QStringLiteral("assistant/model"), QStringLiteral("Preferred text model"), QStringLiteral("Assistant"), {}, false, SettingSensitivity::Sensitive),
+        boolean(QStringLiteral("assistant/restoreConversation"), QStringLiteral("Restore last DevHub conversation"), QStringLiteral("Assistant"), true),
         integer(QStringLiteral("workspaces/scanLimitMs"), QStringLiteral("Workspace scan limit (ms)"), QStringLiteral("Workspaces"), 5000, 100, 60000, SettingScope::Global, true),
         integer(QStringLiteral("logs/maxLines"), QStringLiteral("Maximum cached log lines"), QStringLiteral("Logs"), 10000, 100, 200000, SettingScope::Global, true),
         integer(QStringLiteral("logs/maxBytes"), QStringLiteral("Maximum cached log bytes"), QStringLiteral("Logs"), 4194304, 65536, 67108864, SettingScope::Global, true),

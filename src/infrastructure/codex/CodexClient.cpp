@@ -2,6 +2,7 @@
 #include "CodexRuntimeProfile.h"
 #include <QCryptographicHash>
 #include <QDir>
+#include <QCryptographicHash>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -185,9 +186,11 @@ Result<void> CodexClient::verifyRuntime()
 }
 bool CodexClient::bindingMatches(const CodexThreadBinding& binding) const
 {
+    const QString homeKey = QString::fromLatin1(QCryptographicHash::hash(m_initializeInfo.codexHome.toUtf8(), QCryptographicHash::Sha256).toHex());
     return m_initialized && m_profileVerified && stringId(binding.threadId) && m_account.mode == CodexAccountMode::ChatGpt
         && m_account.requiresOpenaiAuth && !m_account.identityFingerprint.isEmpty()
-        && binding.accountFingerprint == m_account.identityFingerprint && binding.codexHome == m_initializeInfo.codexHome
+        && binding.accountFingerprint == m_account.identityFingerprint
+        && (binding.codexHome == m_initializeInfo.codexHome || (!binding.codexHomeKey.isEmpty() && binding.codexHomeKey == homeKey))
         && binding.scratchDirectory == m_scratch && binding.profileFingerprint == m_profileFingerprint;
 }
 Result<qint64> CodexClient::startThread(const QString& model)
@@ -461,7 +464,7 @@ bool CodexClient::decodeThread(const QJsonObject& value, CodexThread& thread) co
         || QJsonDocument(value).toJson(QJsonDocument::Compact).size() > m_limits.historyBytes) return false;
     const auto turns = value.value("turns").toArray();
     if (turns.size() > m_limits.historyTurns) return false;
-    thread.binding = {id, m_account.identityFingerprint, m_initializeInfo.codexHome, m_scratch, m_profileFingerprint};
+    thread.binding = {id, m_account.identityFingerprint, m_initializeInfo.codexHome, {}, m_scratch, m_profileFingerprint};
     QSet<QString> ids;
     for (const auto& record : turns) {
         CodexTurn turn;

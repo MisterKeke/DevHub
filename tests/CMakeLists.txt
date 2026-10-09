@@ -58,6 +58,16 @@ set_tests_properties(devhub.assistant-controller devhub.assistant-ui PROPERTIES 
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
 )
+qt_add_executable(devhub_assistant_conversation_repository_tests
+    assistant_conversation_repository_test.cpp
+    ../src/domain/account/AccountId.cpp
+    ../resources/database_migrations.qrc)
+target_link_libraries(devhub_assistant_conversation_repository_tests PRIVATE
+    devhub_assistant devhub_database Qt6::Core Qt6::Sql Qt6::Test project_options project_warnings)
+add_test(NAME devhub.assistant-conversation-repository COMMAND devhub_assistant_conversation_repository_tests)
+set_tests_properties(devhub.assistant-conversation-repository PROPERTIES
+    TIMEOUT 45 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(devhub_assistant_settings_tests assistant_settings_test.cpp
     ../src/application/settings/SettingsService.cpp

@@ -35,6 +35,7 @@
 #include "../infrastructure/database/SqlDatabaseReferenceRepository.h"
 #include "../infrastructure/database/QtSqlConnectionFactory.h"
 #include "../infrastructure/notes/NotesRepository.h"
+#include "../infrastructure/assistant/SqlConversationRepository.h"
 #include "../infrastructure/files/WindowsTrashService.h"
 #include "../infrastructure/files/QProcessExternalEditorLauncher.h"
 #include "../application/services/ManagedProcess.h"
@@ -58,7 +59,6 @@
 #include "../infrastructure/codex/CodexProcess.h"
 #include "../infrastructure/codex/CodexExecutableLocator.h"
 #include "../infrastructure/codex/CodexRuntimeProfile.h"
-#include <QTemporaryDir>
 
 #include <QApplication>
 #include <QDateTime>
@@ -363,15 +363,26 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
                 if (active && active->id().toString() == workspaceId) scanService.schedule(*active);
             });
         });
-    QTemporaryDir assistantScratch(QDir(paths.cacheDirectory).filePath(QStringLiteral("assistant-XXXXXX")));
+    const QString assistantScratch = QDir(paths.cacheDirectory).filePath(QStringLiteral("assistant"));
+    const bool scratchCreated = QDir().mkpath(assistantScratch);
+    const QString canonicalScratch = QFileInfo(assistantScratch).canonicalFilePath();
+    const QString expectedScratch = QDir::cleanPath(QFileInfo(assistantScratch).absoluteFilePath());
+    const bool assistantScratchReady = scratchCreated && !canonicalScratch.isEmpty()
+        && QString::compare(QDir::cleanPath(canonicalScratch), expectedScratch, Qt::CaseInsensitive) == 0;
+    if (!assistantScratchReady) {
+        qWarning().noquote() << "Assistant is unavailable because its isolated cache directory could not be prepared.";
+    }
     infrastructure::codex::CodexProcess assistantProcess;
     infrastructure::codex::CodexClient assistantClient(assistantProcess);
     infrastructure::codex::CodexExecutableLocator assistantLocator;
     infrastructure::codex::CodexExecutableLocator assistantSetupLocator;
+    infrastructure::assistant::SqlConversationRepository assistantConversationRepository(database, session.account()->id());
     application::assistant::AssistantController assistantController(assistantClient, m_clock, m_idGenerator,
-        assistantScratch.path(), infrastructure::codex::CodexRuntimeProfile::launchArguments().value(),
-        application::assistant::codexBaseEnvironment(QProcessEnvironment::systemEnvironment()));
+        assistantScratchReady ? canonicalScratch : QString{}, infrastructure::codex::CodexRuntimeProfile::launchArguments().value(),
+        application::assistant::codexBaseEnvironment(QProcessEnvironment::systemEnvironment()), &assistantConversationRepository);
     assistantController.applyConfiguration({settingsService.value(QStringLiteral("assistant/executable")).toString(), settingsService.value(QStringLiteral("assistant/model")).toString()});
+    assistantController.setPersistenceContext(session.account()->id().toString(),
+        settingsService.value(QStringLiteral("assistant/restoreConversation")).toBool());
     QObject::connect(&assistantController, &application::assistant::AssistantController::executableProbeRequested,
         &assistantLocator, [&assistantLocator](const QString& path, quint64 generation) { assistantLocator.locate(path, generation); });
     QObject::connect(&assistantController, &application::assistant::AssistantController::cancelProbeRequested,

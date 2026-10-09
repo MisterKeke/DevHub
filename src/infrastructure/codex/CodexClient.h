@@ -22,7 +22,7 @@ public:
     [[nodiscard]] shared::common::Result<qint64> listModels(const QString& cursor = {}) override;
     [[nodiscard]] shared::common::Result<void> verifyRuntime();
     [[nodiscard]] shared::common::Result<qint64> startThread(const QString& model) override;
-    [[nodiscard]] shared::common::Result<qint64> resumeThread(const application::assistant::CodexThreadBinding& binding);
+    [[nodiscard]] shared::common::Result<qint64> resumeThread(const application::assistant::CodexThreadBinding& binding) override;
     [[nodiscard]] shared::common::Result<qint64> readThread(const application::assistant::CodexThreadBinding& binding) override;
     [[nodiscard]] shared::common::Result<qint64> startTurn(const QString& text) override;
     [[nodiscard]] shared::common::Result<qint64> interruptTurn() override;

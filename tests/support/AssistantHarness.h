@@ -2,6 +2,28 @@
 #include "CodexTestSession.h"
 #include "application/assistant/AssistantController.h"
 namespace devhub::tests::assistant {
+class MemoryConversationRepository final : public application::assistant::IConversationRepository {
+public:
+    shared::common::Result<QList<application::assistant::AssistantConversationMetadata>> list(const QString& accountId, int limit) override {
+        if (failList) return shared::common::Result<QList<application::assistant::AssistantConversationMetadata>>::failure(
+            domain::errors::AppError::failure(domain::errors::ErrorCode::AssistantHistoryUnavailable,
+                domain::errors::ErrorCategory::Persistence, QStringLiteral("fixture list failure"), {}, QStringLiteral("test list")));
+        QList<application::assistant::AssistantConversationMetadata> result;
+        for (auto it = rows.crbegin(); it != rows.crend() && result.size() < limit; ++it)
+            if (it->devhubAccountId == accountId) result.append(*it);
+        return shared::common::Result<QList<application::assistant::AssistantConversationMetadata>>::success(result);
+    }
+    shared::common::Result<void> save(const application::assistant::AssistantConversationMetadata& metadata) override {
+        if (failSave) return shared::common::Result<void>::failure(domain::errors::AppError::failure(
+            domain::errors::ErrorCode::DatabaseQueryFailed, domain::errors::ErrorCategory::Persistence,
+            QStringLiteral("fixture save failure"), {}, QStringLiteral("test save")));
+        for (auto& row : rows) if (row.conversation.id == metadata.conversation.id) { row = metadata; return shared::common::Result<void>::success(); }
+        rows.append(metadata); return shared::common::Result<void>::success();
+    }
+    QList<application::assistant::AssistantConversationMetadata> rows;
+    bool failList = false;
+    bool failSave = false;
+};
 class FixedClock final : public shared::time::IApplicationClock {
 public:
     QDateTime utcNow() const override { return QDateTime::fromString(QStringLiteral("2026-10-09T12:00:00Z"), Qt::ISODate); }
@@ -16,8 +38,9 @@ struct Harness : codex::Session {
     FixedClock clock;
     SequenceIds ids;
     application::assistant::AssistantController controller;
-    explicit Harness(application::assistant::AssistantLimits limits = {}, application::assistant::CodexClientLimits clientLimits = {})
-        : codex::Session(clientLimits), controller(client, clock, ids, scratch.path(), infrastructure::codex::CodexRuntimeProfile::launchArguments().value(), {}, nullptr, nullptr, limits)
+    explicit Harness(application::assistant::AssistantLimits limits = {}, application::assistant::CodexClientLimits clientLimits = {},
+        application::assistant::IConversationRepository* repository = nullptr)
+        : codex::Session(clientLimits), controller(client, clock, ids, scratch.path(), infrastructure::codex::CodexRuntimeProfile::launchArguments().value(), {}, repository, nullptr, limits)
     {
         QObject::connect(&controller, &application::assistant::AssistantController::executableProbeRequested, &controller,
             [this](const QString&, quint64 generation) { controller.executableFound({"C:/fixture/codex.exe", "0.160.1"}, generation); });

@@ -17,3 +17,11 @@ Opening the validated authorization page requires an explicit button click;
 ordinary chat stays in DevHub. Completing authorization can change Codex's shared
 account used by other applications. Sign-in and the model catalog do not bypass
 the native text/scope safety gate. See [Assistant setup](../architecture/assistant-settings.md).
+
+DevHub restores only thread IDs it previously associated in its own account-
+scoped database. Each association is checked against the current Codex account,
+Codex home fingerprint, compatibility profile, and DevHub workspace binding.
+The Codex working directory is a stable isolated cache subdirectory; this path is
+not a workspace grant. Local conversation metadata does not include message
+bodies. Disabling `assistant/restoreConversation` prevents new association
+saves and automatic restore without erasing existing metadata or Codex history.

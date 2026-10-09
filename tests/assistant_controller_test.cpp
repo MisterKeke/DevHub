@@ -1,10 +1,13 @@
 #include "support/AssistantHarness.h"
+#include <QCryptographicHash>
 #include <QSignalSpy>
 #include <QTest>
 using namespace devhub::application::assistant;
 using namespace devhub::tests::assistant;
 using namespace devhub::tests::codex;
 using devhub::domain::errors::ErrorCode;
+using devhub::domain::errors::AppError;
+using devhub::domain::errors::ErrorCategory;
 class AssistantControllerTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -18,6 +21,99 @@ private slots:
         QCOMPARE(h.controller.messages().front().delivery, AssistantDelivery::Queued);
         h.reply("turn/start", {{"turn", turn()}}); QCOMPARE(h.controller.messages().front().delivery, AssistantDelivery::Accepted);
         QVERIFY(!h.controller.messages().front().id.isNull()); QVERIFY(h.controller.messages().front().id != h.controller.conversation().id);
+    }
+    void metadataSavedAfterThreadIsConfirmedAndSqlFailureKeepsChatLive()
+    {
+        MemoryConversationRepository repository; Harness h({}, {}, &repository);
+        h.controller.setPersistenceContext(QStringLiteral("local-account"), true);
+        QVERIFY(h.readyController()); QVERIFY(h.controller.send("persist this title"));
+        QVERIFY(repository.rows.isEmpty());
+        h.reply("thread/start", h.threadResult());
+        QCOMPARE(repository.rows.size(), 1); QCOMPARE(repository.rows.front().binding.threadId, QStringLiteral("thread-1"));
+        QCOMPARE(repository.rows.front().conversation.title, QStringLiteral("persist this title"));
+        QVERIFY(repository.rows.front().createdAtUtc.isValid());
+        QVERIFY(h.controller.operation() == AssistantOperation::Submitting);
+
+        MemoryConversationRepository failedRepository; failedRepository.failSave = true;
+        Harness live({}, {}, &failedRepository); live.controller.setPersistenceContext(QStringLiteral("local-account"), true);
+        QVERIFY(live.readyController()); QVERIFY(live.controller.send("keep live chat")); live.reply("thread/start", live.threadResult());
+        QCOMPARE(live.controller.operation(), AssistantOperation::Submitting);
+        QCOMPARE(live.controller.messages().front().source, QStringLiteral("keep live chat"));
+        QVERIFY(!live.controller.errorText().isEmpty());
+        live.reply("turn/start", {{"turn", turn()}}); QCOMPARE(live.controller.operation(), AssistantOperation::Streaming);
+    }
+    void restoreHydratesThreadHistoryOnceAndRejectsIncompatibleProfile()
+    {
+        MemoryConversationRepository repository;
+        {
+            Harness original({}, {}, &repository); original.controller.setPersistenceContext(QStringLiteral("local-account"), true);
+            original.controller.setContext({"workspace-x", "Original workspace label", "C:/fixture/workspace"});
+            QVERIFY(original.readyController()); QVERIFY(original.controller.send("first restored question"));
+            original.reply("thread/start", original.threadResult()); original.reply("turn/start", {{"turn", turn()}});
+            original.finish("completed", QJsonArray{agent("agent-1", "restored answer")});
+            QCOMPARE(repository.rows.size(), 1);
+        }
+        auto& stored = repository.rows.front();
+        stored.conversation.context.name.clear(); // SQL stores workspace identity/root, not its mutable display label.
+        Harness restored({}, {}, &repository); stored.binding.codexHomeKey = QString::fromLatin1(
+            QCryptographicHash::hash(restored.scratch.path().toUtf8(), QCryptographicHash::Sha256).toHex());
+        restored.controller.setContext({"workspace-x", "Renamed workspace", "c:/FIXTURE/workspace"});
+        restored.controller.setPersistenceContext(QStringLiteral("local-account"), true); QVERIFY(restored.readyController());
+        QCOMPARE(restored.controller.operation(), AssistantOperation::Restoring);
+        QVERIFY(!restored.controller.canSend());
+        const QJsonObject user{{"type", "userMessage"}, {"id", "user-1"}, {"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "first restored question"}}}}};
+        restored.reply("thread/resume", restored.threadResult(restored.thread("thread-1", QJsonArray{
+            turn("turn-1", "completed", QJsonArray{user, agent("agent-1", "restored answer")})})));
+        QCOMPARE(restored.controller.operation(), AssistantOperation::Idle);
+        QCOMPARE(restored.controller.messages().size(), 2);
+        QCOMPARE(restored.controller.messages().front().source, QStringLiteral("first restored question"));
+        QCOMPARE(restored.controller.messages().last().source, QStringLiteral("restored answer"));
+        QVERIFY(restored.controller.canSend());
+
+        MemoryConversationRepository incompatible = repository;
+        incompatible.rows.front().binding.profileFingerprint += QStringLiteral("-old");
+        Harness denied({}, {}, &incompatible); incompatible.rows.front().binding.codexHomeKey = QString::fromLatin1(
+            QCryptographicHash::hash(denied.scratch.path().toUtf8(), QCryptographicHash::Sha256).toHex());
+        denied.controller.setPersistenceContext(QStringLiteral("local-account"), true); QVERIFY(denied.readyController());
+        QVERIFY(denied.transport.lastRequest("thread/resume").isEmpty());
+        QVERIFY(denied.controller.messages().isEmpty()); QVERIFY(!denied.controller.errorText().isEmpty());
+
+        MemoryConversationRepository deleted = repository;
+        Harness missing({}, {}, &deleted); deleted.rows.front().binding.codexHomeKey = QString::fromLatin1(
+            QCryptographicHash::hash(missing.scratch.path().toUtf8(), QCryptographicHash::Sha256).toHex());
+        missing.controller.setPersistenceContext(QStringLiteral("local-account"), true); QVERIFY(missing.readyController());
+        const auto resumeId = missing.requestId("thread/resume"); QVERIFY(resumeId > 0);
+        missing.transport.deliver({{"id", resumeId}, {"error", QJsonObject{{"code", -32603}, {"message", "thread missing"}}}});
+        QCOMPARE(missing.controller.operation(), AssistantOperation::Idle);
+        QVERIFY(missing.controller.messages().isEmpty()); QCOMPARE(deleted.rows.size(), 1);
+        QVERIFY(!missing.controller.canSend()); const auto missingConversationId = missing.controller.conversation().id;
+        missing.controller.newChat(); QVERIFY(missing.controller.canSend());
+        QVERIFY(missing.controller.conversation().id != missingConversationId); QCOMPARE(deleted.rows.size(), 1);
+
+        MemoryConversationRepository oversized = repository;
+        CodexClientLimits tinyHistory; tinyHistory.historyBytes = 64;
+        Harness bounded({}, tinyHistory, &oversized); oversized.rows.front().binding.codexHomeKey = QString::fromLatin1(
+            QCryptographicHash::hash(bounded.scratch.path().toUtf8(), QCryptographicHash::Sha256).toHex());
+        bounded.controller.setPersistenceContext(QStringLiteral("local-account"), true); QVERIFY(bounded.readyController());
+        const auto boundedResumeId = bounded.requestId("thread/resume"); QVERIFY(boundedResumeId > 0);
+        bounded.reply("thread/resume", bounded.threadResult(bounded.thread("thread-1", QJsonArray{
+            turn("turn-1", "completed", QJsonArray{user, agent("agent-1", "history larger than the cap")})})));
+        QVERIFY(bounded.controller.messages().isEmpty());
+        QVERIFY(!bounded.controller.errorText().isEmpty());
+    }
+    void partiallyAcceptedSendPersistsUncertaintyWithoutReplay()
+    {
+        MemoryConversationRepository repository; Harness h({}, {}, &repository);
+        h.controller.setPersistenceContext(QStringLiteral("local-account"), true);
+        QVERIFY(h.readyController()); QVERIFY(h.controller.send("may have been accepted")); h.reply("thread/start", h.threadResult());
+        h.reply("turn/start", {{"turn", turn()}});
+        QCOMPARE(repository.rows.size(), 1); QCOMPARE(repository.rows.front().lastTurnStatus, QStringLiteral("accepted"));
+        const auto requests = h.transport.sent.size();
+        emit h.transport.failed(AppError::failure(ErrorCode::CodexConnectionLost,
+            ErrorCategory::Process, QStringLiteral("fixture disconnect"), {}, QStringLiteral("test")), h.transport.generation);
+        QCOMPARE(h.controller.operation(), AssistantOperation::Uncertain);
+        QCOMPARE(repository.rows.front().lastTurnStatus, QStringLiteral("uncertain"));
+        QCOMPARE(h.transport.sent.size(), requests);
     }
     void nativeGateBeforeThreadCreation()
     {

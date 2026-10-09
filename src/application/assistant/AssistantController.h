@@ -35,6 +35,7 @@ public:
     void newChat();
     void retry(const QUuid& messageId);
     void setContext(AssistantContext context);
+    void setPersistenceContext(QString accountId, bool restoreEnabled);
     void setSessionAllowed(bool allowed, bool clearTranscript = false);
     [[nodiscard]] bool canSend() const;
     [[nodiscard]] bool busy() const;
@@ -74,6 +75,9 @@ private:
     void setError(domain::errors::ErrorCode code, const QString& text);
     void exceededLimit();
     void selectModel();
+    void maybeRestoreConversation();
+    void persistCurrent(const QString& turnStatus = {});
+    void hydrateConversation(const AssistantConversationMetadata&, const CodexThread&);
     void applyPendingConfiguration();
     AssistantMessage* mutableMessage(const QUuid&);
     qsizetype transcriptBytes() const;
@@ -82,6 +86,7 @@ private:
     shared::identifiers::IIdGenerator& m_ids;
     IConversationRepository* m_repository;
     QString m_scratch;
+    QString m_accountId;
     QStringList m_arguments;
     QProcessEnvironment m_environment;
     AssistantLimits m_limits;
@@ -101,10 +106,12 @@ private:
     QUuid m_pendingUser;
     QUuid m_retryMessage;
     QString m_model;
+    QDateTime m_conversationCreatedAtUtc;
     QString m_runtimeVersion;
     QString m_loginStatus;
     AssistantConfiguration m_configuration;
     std::optional<AssistantConfiguration> m_pendingConfiguration;
+    std::optional<AssistantConversationMetadata> m_restoreMetadata;
     std::optional<CodexLoginChallenge> m_challenge;
     QList<CodexModel> m_models;
     bool m_loginPending = false;
@@ -120,5 +127,8 @@ private:
     bool m_limitReached = false;
     bool m_modelsRequested = false;
     bool m_threadOwned = false;
+    bool m_restoreEnabled = true;
+    bool m_restoreAttempted = false;
+    bool m_restoreUnavailable = false;
 };
 }

@@ -84,6 +84,8 @@ add_library(devhub_assistant STATIC
     src/application/assistant/ICodexExecutableProbe.h
     src/application/assistant/ICodexClient.h
     src/application/assistant/IConversationRepository.h
+    src/infrastructure/assistant/SqlConversationRepository.h
+    src/infrastructure/assistant/SqlConversationRepository.cpp
     src/application/assistant/AssistantController.h
     src/application/assistant/AssistantController.cpp
     src/application/assistant/AssistantTypes.h
@@ -106,7 +108,7 @@ add_library(devhub_assistant STATIC
 )
 target_include_directories(devhub_assistant PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(devhub_assistant PUBLIC project_options devhub_core Qt6::Core
-    PRIVATE project_warnings)
+    PRIVATE project_warnings devhub_database Qt6::Sql)
 
 add_library(devhub_database STATIC
     src/application/databases/DatabaseTypes.cpp

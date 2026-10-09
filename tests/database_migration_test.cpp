@@ -28,9 +28,10 @@ private slots:
         QVERIFY(query.exec(QStringLiteral(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN "
             "('accounts', 'workspaces', 'service_definitions', 'log_sources', 'database_references', "
-            "'note_nodes', 'note_tags', 'notifications', 'ui_state')")));
+            "'note_nodes', 'note_tags', 'notifications', 'ui_state', 'assistant_conversations')")));
         QVERIFY(query.next());
-        QCOMPARE(query.value(0).toInt(), 9);
+        QCOMPARE(query.value(0).toInt(), 10);
+        QCOMPARE(manager.currentSchemaVersion(), 7);
     }
 
     void currentDatabaseIsUnchanged()
@@ -61,7 +62,7 @@ private slots:
         QVERIFY(QDir().mkpath(migrationsPath));
         QFile migration(QDir(migrationsPath).filePath(QStringLiteral("0001_broken_migration.sql")));
         QVERIFY(migration.open(QIODevice::WriteOnly | QIODevice::Text));
-        migration.write("CREATE TABLE should_rollback (id INTEGER PRIMARY KEY);\n"
+        migration.write("CREATE TABLE assistant_conversations (id INTEGER PRIMARY KEY);\n"
                         "THIS IS NOT VALID SQL;\n");
         migration.close();
 
@@ -73,7 +74,7 @@ private slots:
         QVERIFY(!result);
         QSqlQuery query(manager.database());
         QVERIFY(query.exec(QStringLiteral(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'should_rollback'")));
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'assistant_conversations'")));
         QVERIFY(query.next());
         QCOMPARE(query.value(0).toInt(), 0);
         QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM schema_migrations")));

@@ -834,6 +834,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this, &m_assistantController, &m_assistantSetupProbe);
         connect(&dialog, &devhub::presentation::settings::SettingsWindow::settingsApplied, &m_assistantController, [this] {
             m_assistantController.applyConfiguration({m_settingsService.value(QStringLiteral("assistant/executable")).toString(), m_settingsService.value(QStringLiteral("assistant/model")).toString()});
+            if (m_session.account()) m_assistantController.setPersistenceContext(m_session.account()->id().toString(),
+                m_settingsService.value(QStringLiteral("assistant/restoreConversation")).toBool());
         });
         connect(&dialog, &devhub::presentation::settings::SettingsWindow::changePasswordRequested,
                 &dialog, [this] {
@@ -1038,6 +1040,8 @@ void MainWindow::openQuickSettings()
     devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this, &m_assistantController, &m_assistantSetupProbe);
     connect(&dialog, &devhub::presentation::settings::SettingsWindow::settingsApplied, &m_assistantController, [this] {
         m_assistantController.applyConfiguration({m_settingsService.value(QStringLiteral("assistant/executable")).toString(), m_settingsService.value(QStringLiteral("assistant/model")).toString()});
+        if (m_session.account()) m_assistantController.setPersistenceContext(m_session.account()->id().toString(),
+            m_settingsService.value(QStringLiteral("assistant/restoreConversation")).toBool());
     });
     connect(&dialog, &devhub::presentation::settings::SettingsWindow::changePasswordRequested,
             &dialog, [this] {

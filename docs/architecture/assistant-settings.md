@@ -8,6 +8,10 @@ request explicit actions.
 
 The global preferences `assistant/executable` and `assistant/model` are empty
 by default and classified Sensitive. Support settings exports exclude them.
+`assistant/restoreConversation` defaults to true and controls whether DevHub
+saves and restores local conversation associations. Turning it off stops new
+association writes and automatic resume; it does not delete saved metadata or
+Codex-owned history.
 There are no API key, token, authorization URL, device code, credential-home or
 runtime-status settings.
 
@@ -33,8 +37,9 @@ new transactional batch API. Cancel does not save the draft.
 Preferences set before first connection preserve lazy startup. An opened
 Assistant reconnects on idle changes; changes during a turn, history check or
 sign-in wait for completion. Latest pending preferences win. Reconnect preserves
-transcript and composer; an old accepted thread requires New Chat until Phase 5
-restoration exists. No message is replayed.
+the transcript and composer; it never replays a message. On a new app session,
+Phase 5 resumes only compatible conversations associated by DevHub. An unavailable
+or incompatible association requires New Chat.
 
 ## Status and models
 

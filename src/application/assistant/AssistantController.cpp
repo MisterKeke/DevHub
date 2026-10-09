@@ -1,10 +1,18 @@
 #include "AssistantController.h"
 #include "CodexLoginPolicy.h"
 #include <algorithm>
+#include <QDir>
 #include <utility>
 
 namespace devhub::application::assistant {
 using domain::errors::ErrorCode;
+namespace {
+bool sameContextBinding(const AssistantContext& left, const AssistantContext& right)
+{
+    return left.workspaceId == right.workspaceId
+        && QString::compare(QDir::cleanPath(left.canonicalRoot), QDir::cleanPath(right.canonicalRoot), Qt::CaseInsensitive) == 0;
+}
+}
 AssistantController::AssistantController(ICodexClient& client, shared::time::IApplicationClock& clock,
     shared::identifiers::IIdGenerator& ids, QString scratchDirectory, QStringList launchArguments,
     QProcessEnvironment environment, IConversationRepository* repository, QObject* parent, AssistantLimits limits)
@@ -26,6 +34,7 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
     connect(&client, &ICodexClient::modelsReceived, this, [this](const CodexModelPage& page) {
         m_models = page.models; selectModel();
         if (m_loginStatus == tr("ChatGPT sign-in verified. Checking available models…")) m_loginStatus = tr("ChatGPT sign-in verified.");
+        maybeRestoreConversation();
         refreshConnection();
     });
     connect(&client, &ICodexClient::loginChallenge, this, [this](const CodexLoginChallenge& challenge) {
@@ -44,10 +53,12 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
             m_refreshModelsAfterLogin = false; m_models.clear(); m_model.clear(); m_loginStatus = tr("ChatGPT sign-in verified. Checking available models…");
             const auto result = m_client.listModels(); if (!result) setError(result.error().code, result.error().userMessage);
         }
+        maybeRestoreConversation();
         refreshConnection();
     });
     connect(&client, &ICodexClient::profileChecked, this, [this](bool accepted) {
         if (!accepted) setError(ErrorCode::AssistantPermissionDenied, tr("The Codex profile does not meet this Assistant's restrictions."));
+        else maybeRestoreConversation();
         refreshConnection();
     });
     connect(&client, &ICodexClient::threadReceived, this, &AssistantController::receivedThread);
@@ -56,6 +67,7 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
         if (auto* user = mutableMessage(m_pendingUser)) {
             user->delivery = AssistantDelivery::Accepted; user->threadId = threadId; user->turnId = turnId; emit messageChanged(user->id);
         }
+        persistCurrent(QStringLiteral("accepted"));
         if (m_operation == AssistantOperation::Cancelling) {
             const auto interrupted = m_client.interruptTurn(); Q_UNUSED(interrupted);
         } else m_operation = AssistantOperation::Streaming;
@@ -69,9 +81,14 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
         if (generation != m_processGeneration) return;
         m_loginPending = false; m_challenge.reset();
         m_connection = m_reconnectWanted ? AssistantConnectionState::Stopping : AssistantConnectionState::Disconnected;
-        if (busy()) {
+        if (m_operation == AssistantOperation::Restoring) {
+            m_operation = AssistantOperation::Idle; m_threadOwned = false; m_restoreMetadata.reset();
+            m_restoreUnavailable = true;
+            setError(ErrorCode::AssistantHistoryUnavailable, tr("The saved conversation could not be reached. Start a new chat."));
+        } else if (busy()) {
             if (auto* user = mutableMessage(m_pendingUser)) { user->delivery = AssistantDelivery::Uncertain; user->final = true; emit messageChanged(user->id); }
             m_operation = AssistantOperation::Uncertain;
+            persistCurrent(QStringLiteral("uncertain"));
         }
         emit stateChanged();
     });
@@ -91,6 +108,7 @@ void AssistantController::open()
 }
 void AssistantController::beginProbe()
 {
+    m_restoreAttempted = false;
     m_connection = AssistantConnectionState::Probing; m_modelsRequested = false; m_model.clear(); m_models.clear(); m_runtimeVersion.clear(); m_error = {};
     m_loginStatus.clear(); m_refreshModelsAfterLogin = false;
     emit stateChanged(); emit executableProbeRequested(m_configuration.executablePath, ++m_probeGeneration);
@@ -133,7 +151,8 @@ bool AssistantController::canStop() const
 }
 bool AssistantController::canNewChat() const
 {
-    return m_allowed && m_operation != AssistantOperation::Cancelling && m_operation != AssistantOperation::Reconciling;
+    return m_allowed && m_operation != AssistantOperation::Cancelling && m_operation != AssistantOperation::Reconciling
+        && m_operation != AssistantOperation::Restoring;
 }
 bool AssistantController::canReconnect() const
 {
@@ -141,7 +160,8 @@ bool AssistantController::canReconnect() const
 }
 bool AssistantController::canSend() const
 {
-    return m_allowed && !busy() && !loginActive() && !m_pendingConfiguration && m_operation != AssistantOperation::Uncertain && !m_contextBlocked && !m_limitReached
+    return m_allowed && !busy() && !loginActive() && !m_pendingConfiguration && m_operation != AssistantOperation::Uncertain
+        && !m_restoreUnavailable && !m_contextBlocked && !m_limitReached
         && !m_model.isEmpty() && (!m_threadOwned ? m_client.canStartConversation() : m_client.canSend());
 }
 QString AssistantController::statusText() const
@@ -153,6 +173,7 @@ QString AssistantController::statusText() const
     if (m_operation == AssistantOperation::Cancelling) return tr("Stopping…");
     if (m_operation == AssistantOperation::Uncertain) return tr("Delivery is uncertain. Reconnect and check history, or start a new chat.");
     if (m_operation == AssistantOperation::CreatingThread) return tr("Creating conversation…");
+    if (m_operation == AssistantOperation::Restoring) return tr("Restoring the last DevHub conversation…");
     if (m_operation == AssistantOperation::Submitting) return tr("Sending…");
     if (m_operation == AssistantOperation::Streaming) return tr("Codex is responding…");
     if (m_operation == AssistantOperation::Reconciling) return tr("Checking accepted history…");
@@ -199,6 +220,7 @@ bool AssistantController::send(const QString& text)
         QString safeTitle;
         for (const auto ch : title) if (!ch.isNull() && ch.category() != QChar::Other_Control) safeTitle.append(ch);
         m_conversation.title = safeTitle.left(80);
+        m_conversationCreatedAtUtc = m_clock.utcNow();
     }
     const bool create = !m_threadOwned;
     m_operation = create ? AssistantOperation::CreatingThread : AssistantOperation::Submitting;
@@ -215,7 +237,27 @@ void AssistantController::admitPendingMessage()
 }
 void AssistantController::receivedThread(const CodexThread& thread)
 {
-    if (m_operation == AssistantOperation::CreatingThread) { m_binding = thread.binding; m_threadOwned = true; m_operation = AssistantOperation::Submitting; submit(); }
+    if (m_operation == AssistantOperation::CreatingThread) {
+        m_binding = thread.binding; m_threadOwned = true; m_operation = AssistantOperation::Submitting;
+        persistCurrent(); submit();
+    } else if (m_operation == AssistantOperation::Restoring) {
+        if (!m_restoreMetadata) {
+            m_operation = AssistantOperation::Idle;
+            m_restoreUnavailable = true;
+            setError(ErrorCode::AssistantHistoryUnavailable, tr("The saved conversation is unavailable. Start a new chat."));
+            emit stateChanged(); return;
+        }
+        const auto& metadata = *m_restoreMetadata;
+        if (thread.binding.threadId != metadata.binding.threadId
+            || thread.binding.accountFingerprint != metadata.binding.accountFingerprint) {
+            m_operation = AssistantOperation::Idle;
+            m_restoreUnavailable = true;
+            setError(ErrorCode::AssistantHistoryUnavailable, tr("The saved conversation did not match its DevHub association. Start a new chat."));
+            emit stateChanged(); return;
+        }
+        hydrateConversation(metadata, thread);
+        m_restoreMetadata.reset();
+    }
     else if (m_operation == AssistantOperation::Reconciling) {
         const auto* user = message(m_retryMessage); bool terminalFound = false;
         if (user && user->threadId == thread.binding.threadId) for (const auto& turn : thread.turns)
@@ -286,6 +328,10 @@ void AssistantController::finishedTurn(const CodexTurn& turn)
     }
     m_operation = turn.status == CodexTurnStatus::Uncertain ? AssistantOperation::Uncertain : AssistantOperation::Idle;
     if (turn.hasError) m_error = turn.error;
+    const QString turnStatus = turn.status == CodexTurnStatus::Completed ? QStringLiteral("completed")
+        : turn.status == CodexTurnStatus::Interrupted ? QStringLiteral("interrupted")
+        : turn.status == CodexTurnStatus::Uncertain ? QStringLiteral("uncertain") : QStringLiteral("failed");
+    persistCurrent(turnStatus);
     flushMessages(); emit stateChanged();
     if (std::exchange(m_newChatWanted, false)) resetConversation();
     QTimer::singleShot(0, this, &AssistantController::applyPendingConfiguration);
@@ -315,15 +361,21 @@ void AssistantController::resetConversation(bool retainAssociation)
     if (retainAssociation && m_threadOwned && !m_binding.threadId.isEmpty() && !m_messages.isEmpty()) {
         AssistantConversationMetadata previous;
         previous.conversation = m_conversation; previous.binding = m_binding;
-        previous.createdAtUtc = m_messages.first().createdAtUtc; previous.updatedAtUtc = m_clock.utcNow();
+        previous.createdAtUtc = m_conversationCreatedAtUtc.isValid() ? m_conversationCreatedAtUtc : m_messages.first().createdAtUtc;
+        previous.updatedAtUtc = m_clock.utcNow(); previous.lastOpenedAtUtc = previous.updatedAtUtc;
+        previous.devhubAccountId = m_accountId; previous.lastTurnId = m_messages.last().turnId;
+        previous.lastTurnStatus = QStringLiteral("closed");
         if (m_sessionConversations.size() >= 100) m_sessionConversations.removeFirst();
         m_sessionConversations.append(previous);
+        if (m_restoreEnabled && m_repository && !m_accountId.isEmpty()) (void)m_repository->save(previous);
     }
     m_renderTimer.stop(); m_changed.clear(); m_reconciled.clear(); m_messages.clear(); m_itemMessages.clear();
     m_pendingUser = QUuid{}; m_retryMessage = QUuid{}; m_operation = AssistantOperation::Idle; m_contextBlocked = false; m_limitReached = false; m_error = {};
     m_threadOwned = false;
+    m_restoreUnavailable = false;
     m_binding = {};
     m_conversation = {}; m_conversation.id = m_ids.create(); m_conversation.context = m_selectedContext;
+    m_conversationCreatedAtUtc = {};
     emit transcriptReset(); emit stateChanged();
 }
 bool AssistantController::canRetry(const QUuid& id) const
@@ -355,8 +407,14 @@ void AssistantController::setContext(AssistantContext context)
     if (context == m_selectedContext) return;
     m_selectedContext = std::move(context);
     if (m_messages.isEmpty()) m_conversation.context = m_selectedContext;
-    else if (!(m_selectedContext == m_conversation.context)) { m_contextBlocked = true; stopTurn(); }
+    else if (!sameContextBinding(m_selectedContext, m_conversation.context)) { m_contextBlocked = true; stopTurn(); }
     emit stateChanged();
+}
+void AssistantController::setPersistenceContext(QString accountId, bool restoreEnabled)
+{
+    if (m_accountId != accountId) m_restoreAttempted = false;
+    m_accountId = std::move(accountId); m_restoreEnabled = restoreEnabled;
+    maybeRestoreConversation();
 }
 void AssistantController::setSessionAllowed(bool allowed, bool clearTranscript)
 {
@@ -373,6 +431,12 @@ void AssistantController::setSessionAllowed(bool allowed, bool clearTranscript)
 }
 void AssistantController::failedRequest(const QString& method, const domain::errors::AppError& error)
 {
+    if (method == "thread/resume" && m_operation == AssistantOperation::Restoring) {
+        m_operation = AssistantOperation::Idle; m_threadOwned = false; m_restoreMetadata.reset();
+        m_restoreUnavailable = true;
+        setError(ErrorCode::AssistantHistoryUnavailable, tr("The saved conversation is missing or incompatible. Start a new chat."));
+        emit stateChanged(); QTimer::singleShot(0, this, &AssistantController::applyPendingConfiguration); return;
+    }
     if (method == "thread/start" && m_operation == AssistantOperation::CreatingThread) {
         m_operation = error.code == ErrorCode::CodexRequestTimeout || error.code == ErrorCode::CodexConnectionLost ? AssistantOperation::Uncertain : AssistantOperation::Idle;
         if (auto* value = mutableMessage(m_pendingUser)) {
@@ -382,6 +446,7 @@ void AssistantController::failedRequest(const QString& method, const domain::err
     } else if (method == "turn/start" && (m_operation == AssistantOperation::Submitting || m_operation == AssistantOperation::Cancelling)) {
         if (auto* value = mutableMessage(m_pendingUser)) { value->delivery = AssistantDelivery::Uncertain; value->final = true; emit messageChanged(value->id); }
         m_operation = AssistantOperation::Uncertain;
+        persistCurrent(QStringLiteral("uncertain"));
     } else if (method == "thread/read" && m_operation == AssistantOperation::Reconciling) m_operation = AssistantOperation::Idle;
     if (method == "account/login/start" || method == "account/login/cancel") { m_loginPending = false; m_challenge.reset(); m_loginStatus = tr("Sign-in could not be completed. Recheck the connection and try again."); }
     setError(error.code, error.userMessage);
@@ -457,5 +522,88 @@ shared::common::Result<QList<AssistantConversationMetadata>> AssistantController
     return shared::common::Result<QList<AssistantConversationMetadata>>::failure(domain::errors::AppError::failure(
         ErrorCode::AssistantHistoryUnavailable, domain::errors::ErrorCategory::Persistence,
         tr("Saved Assistant conversations are not available in this session-only version."), {}, QStringLiteral("assistant.history")));
+}
+
+void AssistantController::persistCurrent(const QString& turnStatus)
+{
+    if (!m_restoreEnabled || !m_repository || m_accountId.isEmpty() || !m_threadOwned || m_binding.threadId.isEmpty()) return;
+    AssistantConversationMetadata metadata;
+    metadata.conversation = m_conversation; metadata.devhubAccountId = m_accountId; metadata.binding = m_binding;
+    if (!m_conversationCreatedAtUtc.isValid()) m_conversationCreatedAtUtc = m_clock.utcNow();
+    metadata.createdAtUtc = m_conversationCreatedAtUtc;
+    metadata.updatedAtUtc = m_clock.utcNow(); metadata.lastOpenedAtUtc = metadata.updatedAtUtc;
+    metadata.lastTurnId = m_messages.isEmpty() ? QString{} : m_messages.last().turnId;
+    metadata.lastTurnStatus = turnStatus;
+    const auto result = m_repository->save(metadata);
+    if (!result) setError(result.error().code, tr("The live conversation is continuing, but its local resume information could not be saved."));
+}
+
+void AssistantController::maybeRestoreConversation()
+{
+    if (m_restoreAttempted || !m_restoreEnabled || !m_repository || m_accountId.isEmpty() || !m_allowed
+        || !m_client.isInitialized() || !m_client.profileVerified() || m_client.account().mode != CodexAccountMode::ChatGpt
+        || !m_client.account().requiresOpenaiAuth || m_client.account().identityFingerprint.isEmpty()
+        || m_model.isEmpty() || !m_messages.isEmpty() || m_operation != AssistantOperation::Idle) return;
+    m_restoreAttempted = true;
+    const auto saved = m_repository->list(m_accountId, 100);
+    if (!saved) { setError(saved.error().code, tr("The live chat is available, but saved conversation metadata could not be read.")); return; }
+    if (saved.value().isEmpty()) return;
+    const auto metadata = saved.value().first();
+    if (metadata.devhubAccountId != m_accountId || metadata.binding.accountFingerprint != m_client.account().identityFingerprint
+        || metadata.binding.threadId.isEmpty()) {
+        m_restoreUnavailable = true;
+        setError(ErrorCode::AssistantHistoryUnavailable, tr("The saved conversation belongs to a different Codex account. Start a new chat.")); return;
+    }
+    m_restoreMetadata = metadata;
+    m_conversation = metadata.conversation; m_conversationCreatedAtUtc = metadata.createdAtUtc;
+    m_binding = metadata.binding; m_binding.scratchDirectory = m_scratch; m_binding.codexHome.clear();
+    m_threadOwned = true; m_operation = AssistantOperation::Restoring;
+    const auto result = m_client.resumeThread(m_binding);
+    if (!result) {
+        m_restoreMetadata.reset(); m_threadOwned = false; m_operation = AssistantOperation::Idle;
+        m_restoreUnavailable = true;
+        setError(ErrorCode::AssistantHistoryUnavailable, tr("The saved conversation is incompatible or no longer available. Start a new chat."));
+    }
+    emit stateChanged();
+}
+
+void AssistantController::hydrateConversation(const AssistantConversationMetadata& metadata, const CodexThread& thread)
+{
+    m_messages.clear(); m_itemMessages.clear(); m_binding = thread.binding; m_threadOwned = true;
+    m_conversation = metadata.conversation; m_conversationCreatedAtUtc = metadata.createdAtUtc;
+    QList<AssistantMessage> hydrated;
+    for (const auto& turn : thread.turns) for (const auto& item : turn.items) {
+        if (item.type != QStringLiteral("userMessage") && item.type != QStringLiteral("agentMessage")) continue;
+        if (item.text.isEmpty()) continue;
+        AssistantMessage message; message.id = m_ids.create();
+        message.role = item.type == QStringLiteral("userMessage") ? AssistantRole::User : AssistantRole::Assistant;
+        message.source = item.text; message.threadId = item.threadId; message.turnId = item.turnId; message.itemId = item.id;
+        message.createdAtUtc = m_clock.utcNow(); message.final = true;
+        message.delivery = turn.status == CodexTurnStatus::Completed ? AssistantDelivery::Completed
+            : turn.status == CodexTurnStatus::Interrupted ? AssistantDelivery::Interrupted : AssistantDelivery::Failed;
+        if (metadata.lastTurnStatus == QStringLiteral("uncertain") && turn.id == metadata.lastTurnId
+            && message.role == AssistantRole::User && turn.status != CodexTurnStatus::Completed)
+            m_reconciled.insert(message.id);
+        hydrated.append(std::move(message));
+    }
+    while (hydrated.size() > m_limits.messages) hydrated.removeFirst();
+    qsizetype bytes = 0;
+    for (const auto& message : hydrated) bytes += message.source.toUtf8().size();
+    while (!hydrated.isEmpty() && bytes > m_limits.transcriptBytes) {
+        bytes -= hydrated.first().source.toUtf8().size(); hydrated.removeFirst();
+    }
+    for (auto& message : hydrated) {
+        if (message.role == AssistantRole::Assistant && message.source.toUtf8().size() > m_limits.assistantBytes) {
+            QByteArray bounded = message.source.toUtf8().left(m_limits.assistantBytes);
+            while (!bounded.isEmpty() && QString::fromUtf8(bounded).toUtf8() != bounded) bounded.chop(1);
+            message.source = QString::fromUtf8(bounded); message.truncated = true;
+        }
+        m_messages.append(message); emit messageAdded(message.id);
+    }
+    m_operation = AssistantOperation::Idle;
+    m_restoreUnavailable = false;
+    m_contextBlocked = !sameContextBinding(m_selectedContext, m_conversation.context);
+    if (!m_contextBlocked) m_conversation.context.name = m_selectedContext.name;
+    persistCurrent(metadata.lastTurnStatus); emit stateChanged();
 }
 }

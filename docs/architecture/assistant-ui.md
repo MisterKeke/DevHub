@@ -11,8 +11,9 @@ does not add a selectable row. Ordinary Send has no browser or external-chat pat
 Bootstrap owns one native transport, typed client, locator and controller for the
 DevHub session. The controller survives hiding the module dialog. Opening
 Assistant starts an asynchronous PATH/version probe; threads are created only
-when an admitted message is submitted. An empty `QTemporaryDir` under the app
-cache is the process cwd. The environment and arguments use the Phase 2 allowlist
+when an admitted message is submitted. A stable, isolated `cache/assistant`
+directory is the process cwd so Codex can validate associated threads across
+restarts. The environment and arguments use the Phase 2 allowlist
 and canonical restricted profile; no credentials or user configuration are copied.
 Executable selection/settings and sign-in UX are documented in the
 [Phase 4 setup report](assistant-settings.md).
@@ -30,9 +31,9 @@ page/controller; no native sign-in or model turn was performed for Phase 3.
 
 The controller owns conversation/message UUIDs, UTC timestamps, source text,
 opaque thread/turn/item associations and delivery state. The page owns documents
-and card widgets only. `IConversationRepository` declares metadata-only storage;
-bootstrap supplies null until Phase 5. Listing saved conversations returns a
-typed unavailable result rather than opening another database.
+and card widgets only. `IConversationRepository` stores metadata only in the
+existing DevHub SQLite database. It never stores transcript bodies or imports
+Codex's global thread list. See [conversation restoration](assistant-conversations.md).
 
 Locking stops the backend and preserves transcript/draft behind the existing
 opaque lock UI. Sign-out clears the controller transcript and page draft. Workspace
@@ -61,17 +62,17 @@ closes the connection rather than inventing an interrupt ID. A five-second
 cancellation watchdog closes a backend that never reaches terminal state.
 New Chat during generation waits for cancellation/completion before clearing the
 view and allocating a new conversation; its next Send creates a new thread.
-Prior associations are retained as bounded metadata in the controller for the
-current DevHub session (up to 100), without transcript bodies or another
-repository. Sign-out clears them. Neither action deletes Codex's durable history.
+Prior associations are retained in bounded account-scoped metadata, without
+transcript bodies. Sign-out clears the in-memory session; it does not delete
+these rows or Codex's durable history.
 
 Copy writes the message source only on an explicit click. Retry of a demonstrably
 unsent message is an explicit Send. Accepted failed/interrupted messages first
 request scoped `thread/read`; only a confirmed terminal turn enables a separate
 "Send again as new turn" click. Checking history does not send. Unknown delivery
-is not automatically replayed. Reconnect retains the transcript; an old accepted
-conversation without a current binding requires New Chat in this session-only
-MVP. Restoring accepted conversations across backend restarts belongs to Phase 5.
+is not automatically replayed. Reconnect retains the transcript. Accepted turns
+are reconciled through scoped Codex history before an explicit retry can start a
+new turn.
 
 ## Rendering and interaction
 

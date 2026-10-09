@@ -14,7 +14,7 @@ namespace devhub::application::assistant {
 
 enum class AssistantConnectionState { Disconnected, Probing, Starting, Ready, Stopping, Failed };
 enum class AssistantTurnState { Idle, Starting, Running, Cancelling, Completed, Interrupted, Failed };
-enum class AssistantOperation { Idle, CreatingThread, Submitting, Streaming, Cancelling, Reconciling, Uncertain };
+enum class AssistantOperation { Idle, CreatingThread, Restoring, Submitting, Streaming, Cancelling, Reconciling, Uncertain };
 enum class AssistantRole { User, Assistant };
 enum class AssistantDelivery { NotSent, Queued, Accepted, Completed, Failed, Interrupted, Uncertain };
 struct AssistantConfiguration final {
@@ -112,6 +112,8 @@ struct CodexThreadBinding final {
     QString threadId;
     QString accountFingerprint;
     QString codexHome;
+    // Persisted form is a one-way home identity key; raw home paths stay transient.
+    QString codexHomeKey;
     QString scratchDirectory;
     QString profileFingerprint;
 };
