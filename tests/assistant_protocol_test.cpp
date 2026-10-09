@@ -68,7 +68,7 @@ private slots:
         QTest::newRow("fractional id") << QByteArray("{\"id\":1.5,\"result\":null}\n") << false;
         QTest::newRow("null id") << QByteArray("{\"id\":null,\"result\":null}\n") << false;
         QTest::newRow("unsafe integer") << QByteArray("{\"id\":9007199254740992,\"result\":null}\n") << false;
-        QTest::newRow("invalid utf8") << QByteArray("{\"method\":\"") + char(0xff) + "\"}\n" << false;
+        QTest::newRow("invalid utf8") << QByteArray("{\"method\":\"") + QByteArray::fromHex("ff") + "\"}\n" << false;
     }
     void envelopes()
     {
