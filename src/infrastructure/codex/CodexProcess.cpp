@@ -125,7 +125,7 @@ void CodexProcess::flushWrites()
 {
     if (m_process.state() != QProcess::Running) return;
     const auto accepted = m_writeQueue.flush([this](const char* bytes, qint64 size) {
-        return m_process.write(bytes, std::min(size, m_limits.writeChunkBytes));
+        return m_process.write(bytes, (std::min)(size, m_limits.writeChunkBytes));
     });
     if (!accepted) {
         m_writeQueue.clear(); m_writeRetryTimer.stop();
