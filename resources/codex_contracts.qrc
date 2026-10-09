@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/codex/0.160.1">
+    <file alias="experimental.json">../tests/fixtures/codex/0.160.1/experimental.json</file>
+  </qresource>
+</RCC>

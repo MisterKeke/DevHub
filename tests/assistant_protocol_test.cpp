@@ -1,6 +1,7 @@
 #include "infrastructure/codex/CodexProtocolCodec.h"
 #include "infrastructure/codex/CodexWriteQueue.h"
 #include "application/assistant/ICodexTransport.h"
+#include "support/MemoryCodexTransport.h"
 #include <QSignalSpy>
 #include <QTest>
 #include <type_traits>
@@ -19,19 +20,7 @@ static_assert(std::is_const_v<decltype(CodexLaunchSpec::processGeneration)>);
 static_assert(std::is_copy_constructible_v<CodexExecutable> && std::is_copy_constructible_v<CodexLaunchSpec>);
 static_assert(!std::is_copy_assignable_v<CodexExecutable> && !std::is_copy_assignable_v<CodexLaunchSpec>);
 
-// Replaceable QObject seam for the client milestone; preserves JSON ID types.
-class MemoryTransport final : public ICodexTransport
-{
-public:
-    using ICodexTransport::ICodexTransport;
-    quint64 generation = 0;
-    QList<QJsonObject> sent;
-    void launch(const CodexLaunchSpec& spec) override { generation = spec.processGeneration; emit started(generation); }
-    devhub::shared::common::Result<void> sendObject(const QJsonObject& object) override
-    { sent.append(object); return devhub::shared::common::Result<void>::success(); }
-    void stop() override { emit stopped(0, false, generation); }
-    void deliver(QJsonObject object) { emit objectReceived(object, generation); }
-};
+using MemoryTransport = MemoryCodexTransport;
 class AssistantProtocolTest final : public QObject
 {
     Q_OBJECT

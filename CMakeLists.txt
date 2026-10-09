@@ -91,6 +91,13 @@ add_library(devhub_assistant STATIC
     src/infrastructure/codex/CodexWriteQueue.cpp
     src/infrastructure/codex/CodexProcess.h
     src/infrastructure/codex/CodexProcess.cpp
+    src/infrastructure/codex/CodexClient.h
+    src/infrastructure/codex/CodexClient.cpp
+    src/infrastructure/codex/CodexRuntimeProfile.h
+    src/infrastructure/codex/CodexRuntimeProfile.cpp
+    src/infrastructure/codex/CodexWireContract.h
+    src/infrastructure/codex/CodexWireContract.cpp
+    resources/codex_contracts.qrc
 )
 target_include_directories(devhub_assistant PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(devhub_assistant PUBLIC project_options devhub_core Qt6::Core

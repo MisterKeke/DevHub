@@ -29,7 +29,11 @@ target_compile_definitions(devhub_assistant_process_tests PRIVATE
 add_dependencies(devhub_assistant_process_tests devhub_fake_codex devhub_assistant_shutdown_driver)
 add_test(NAME devhub.assistant-process COMMAND devhub_assistant_process_tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-process-tests.txt,txt")
-set_tests_properties(devhub.assistant-protocol devhub.assistant-process PROPERTIES
+qt_add_executable(devhub_assistant_client_tests assistant_client_test.cpp)
+target_link_libraries(devhub_assistant_client_tests PRIVATE devhub_assistant Qt6::Test project_warnings)
+add_test(NAME devhub.assistant-client COMMAND devhub_assistant_client_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-client-tests.txt,txt")
+set_tests_properties(devhub.assistant-protocol devhub.assistant-process devhub.assistant-client PROPERTIES
     TIMEOUT 45
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"

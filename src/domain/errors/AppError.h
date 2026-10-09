@@ -59,6 +59,10 @@ enum class ErrorCode
     ConcurrencyLimitReached,
     ShutdownInProgress,
     IoFailure,
+    CodexProtocolFailure,
+    CodexRequestTimeout,
+    CodexConnectionLost,
+    AssistantPermissionDenied,
     InternalFailure
 };
 

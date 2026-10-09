@@ -78,8 +78,10 @@ separate QProcess arguments; never interpolate a command string. Discard command
 environment, URL and credential values. Unknown or newly enabled servers invalidate
 admission. Never write the user's config to achieve this.
 
-The test tool's `admission_reasons` function is a policy prototype for the later
-client, not a shipped enforcement layer. It rejects enabled/missing restricted
+The test tool's `admission_reasons` function is the Phase 0 policy prototype.
+Phase 2 now implements the stricter shipped library policy in `CodexRuntimeProfile`
+and gates operations through `CodexClient`; see [the client report](assistant-client.md).
+The prototype rejects enabled/missing restricted
 feature values, inherited enabled MCP servers, enabled legacy notify callbacks,
 malformed configuration, managed hooks and conflicting managed feature requirements.
 Unsafe controls intentionally continue within their disposable tree to demonstrate

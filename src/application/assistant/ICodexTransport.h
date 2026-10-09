@@ -11,6 +11,8 @@ class ICodexTransport : public QObject
     Q_OBJECT
 public:
     using QObject::QObject;
+    // Native is the default. Only test-target in-memory fakes override this.
+    [[nodiscard]] virtual CodexTransportKind kind() const { return CodexTransportKind::NativeProcess; }
     virtual void launch(const CodexLaunchSpec& spec) = 0;
     [[nodiscard]] virtual shared::common::Result<void> sendObject(const QJsonObject& object) = 0;
     virtual void stop() = 0;

@@ -35,6 +35,7 @@ not a minimum supported version.
 | 0.160.1, stable connection with candidate overrides | Handshake, config and inventories work; thread/start with environments=[] returns -32600 | Rejected; required scope control unavailable without experimental opt-in; stable account/read lacks routing identity |
 | 0.160.1, experimental connection with candidate overrides | Empty selection accepted; inherited MCP remains active; native execution is absent in follow-up tool-surface/dispatch tests despite unified_exec inventory reporting true | Rejected; inherited MCP and goal tools remain; no inference or automatic resume enabled |
 | 0.160.1, strengthened bounded development profile | Individual MCP disablement, disabled plugins/hooks/goals/image generation, and empty thread/turn environments pass synthetic controls | Development contract only; attached browser/computer runtimes, managed hooks/conflicts, unverified model catalogs and live ChatGPT path excluded |
+| 0.160.1, Phase 2 typed-client development profile | Frozen-schema validation, account/profile admission, thread/turn races and deny replies tested with an in-memory transport | Synthetic turns only; native Send remains blocked pending authenticated/model release gates |
 | Any other version | No evidence | Unverified; fail closed until explicitly rechecked |
 
 These are tested **candidate** profiles, not a claim that every possible 0.160.1
@@ -205,6 +206,8 @@ must never open it.
 
 The [Phase 1 transport report](assistant-transport.md) records the implemented
 process/codec/locator boundaries, offline fault tests and native cleanup probe.
+The [Phase 2 client report](assistant-client.md) records typed protocol operations,
+the implemented runtime admission checks and the continuing native inference gate.
 
 Official references rechecked on the evidence date:
 [App Server](https://learn.chatgpt.com/docs/app-server),
