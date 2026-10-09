@@ -43,6 +43,8 @@ class UnlockWidget;
 }
 namespace devhub::presentation::workspaces { class WorkspaceListModel; }
 namespace devhub::presentation::notes { class NotesPage; }
+namespace devhub::presentation::assistant { class AssistantPage; }
+namespace devhub::application::assistant { class AssistantController; }
 namespace devhub::presentation::databases { class DatabasePage; }
 namespace devhub::application::overview { class OverviewStateComposer; }
 namespace devhub::application::commands { class CommandRegistry; }
@@ -91,6 +93,7 @@ public:
                application::notifications::NotificationService& notificationService,
                application::support::SupportBundleBuilder& supportBundleBuilder,
                const shared::security::RedactionService& redactor,
+               application::assistant::AssistantController& assistantController,
                QWidget* parent = nullptr);
     void restoreWorkspaceSelection();
     bool flushNotesForShutdown();
@@ -170,6 +173,7 @@ private:
     QWidget* m_lockPage = nullptr;
     authentication::UnlockWidget* m_unlockWidget = nullptr;
     devhub::presentation::notes::NotesPage* m_notesPage = nullptr;
+    devhub::presentation::assistant::AssistantPage* m_assistantPage = nullptr;
     devhub::presentation::databases::DatabasePage* m_databasePage = nullptr;
     application::overview::OverviewStateComposer* m_overviewComposer = nullptr;
     application::commands::CommandRegistry* m_commandRegistry = nullptr;

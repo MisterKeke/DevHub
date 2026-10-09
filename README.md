@@ -6,6 +6,13 @@ The application currently includes workspace management, Git and service pages, 
 
 The project distribution license has not been selected yet. Qt’s open-source license obligations must be reviewed against that choice before binary distribution.
 
+Assistant now replaces Quick Ask inside DevHub. Its streaming UI, controller and
+safe Markdown rendering are tested offline; native Send remains disabled until
+the authenticated Codex runtime/model profile is verified. See the
+[Assistant UI report](docs/architecture/assistant-ui.md) for current behavior and
+remaining release checks. Opening the page checks the installed native
+`codex.exe` on PATH; it does not sign in or open an external chat page.
+
 ## Running a portable build
 
 Create a portable ZIP with `tools/package-windows.ps1 -PortableOnly`. Extract the entire ZIP into one folder and run `bin/devhub.exe` from that folder. A desktop shortcut may point to this executable, but moving the executable alone will leave behind the Qt DLLs and plugins it needs. The `out/build/windows-dev/Debug/devhub.exe` file is a development build, not a portable package. See [packaging/README.md](packaging/README.md) for release checks.

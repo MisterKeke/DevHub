@@ -1,5 +1,6 @@
 #pragma once
 #include "application/assistant/ICodexTransport.h"
+#include "application/assistant/ICodexClient.h"
 #include "CodexWireContract.h"
 #include <QElapsedTimer>
 #include <QHash>
@@ -8,46 +9,32 @@
 #include <optional>
 
 namespace devhub::infrastructure::codex {
-class CodexClient final : public QObject {
+class CodexClient final : public application::assistant::ICodexClient {
     Q_OBJECT
 public:
     explicit CodexClient(application::assistant::ICodexTransport& transport, QObject* parent = nullptr,
         application::assistant::CodexClientLimits limits = {});
-    [[nodiscard]] shared::common::Result<void> launch(const application::assistant::CodexLaunchSpec& spec);
-    void stop();
-    [[nodiscard]] shared::common::Result<qint64> readAccount(bool refreshToken = false);
+    [[nodiscard]] shared::common::Result<void> launch(const application::assistant::CodexLaunchSpec& spec) override;
+    void stop() override;
+    [[nodiscard]] shared::common::Result<qint64> readAccount(bool refreshToken = false) override;
     [[nodiscard]] shared::common::Result<qint64> startLogin(application::assistant::CodexLoginMode mode);
     [[nodiscard]] shared::common::Result<qint64> cancelLogin();
-    [[nodiscard]] shared::common::Result<qint64> listModels(const QString& cursor = {});
+    [[nodiscard]] shared::common::Result<qint64> listModels(const QString& cursor = {}) override;
     [[nodiscard]] shared::common::Result<void> verifyRuntime();
-    [[nodiscard]] shared::common::Result<qint64> startThread(const QString& model);
+    [[nodiscard]] shared::common::Result<qint64> startThread(const QString& model) override;
     [[nodiscard]] shared::common::Result<qint64> resumeThread(const application::assistant::CodexThreadBinding& binding);
-    [[nodiscard]] shared::common::Result<qint64> readThread(const application::assistant::CodexThreadBinding& binding);
-    [[nodiscard]] shared::common::Result<qint64> startTurn(const QString& text);
-    [[nodiscard]] shared::common::Result<qint64> interruptTurn();
-    [[nodiscard]] bool isInitialized() const { return m_initialized; }
-    [[nodiscard]] bool profileVerified() const { return m_profileVerified; }
-    [[nodiscard]] bool canSend() const;
+    [[nodiscard]] shared::common::Result<qint64> readThread(const application::assistant::CodexThreadBinding& binding) override;
+    [[nodiscard]] shared::common::Result<qint64> startTurn(const QString& text) override;
+    [[nodiscard]] shared::common::Result<qint64> interruptTurn() override;
+    [[nodiscard]] bool isInitialized() const override { return m_initialized; }
+    [[nodiscard]] bool profileVerified() const override { return m_profileVerified; }
+    [[nodiscard]] bool canSend() const override;
+    [[nodiscard]] bool canStartConversation() const override;
     [[nodiscard]] int pendingRequestCount() const { return static_cast<int>(m_pending.size()); }
     [[nodiscard]] quint64 ignoredMessageCount() const { return m_ignored; }
-    [[nodiscard]] application::assistant::CodexAccount account() const { return m_account; }
-    [[nodiscard]] application::assistant::CodexThreadBinding threadBinding() const { return m_thread; }
-    [[nodiscard]] QString activeTurnId() const { return m_turnId; }
-signals:
-    void initialized(application::assistant::CodexInitializeInfo info);
-    void accountChanged(application::assistant::CodexAccount account);
-    void loginChallenge(application::assistant::CodexLoginChallenge challenge);
-    void loginCleared();
-    void loginFinished(QString loginId, bool success);
-    void modelsReceived(application::assistant::CodexModelPage page);
-    void profileChecked(bool accepted, QStringList reasons);
-    void threadReceived(application::assistant::CodexThread thread);
-    void turnAccepted(QString threadId, QString turnId);
-    void itemChanged(application::assistant::CodexItem item);
-    void turnFinished(application::assistant::CodexTurn turn);
-    void requestSucceeded(qint64 id, QString method);
-    void requestFailed(qint64 id, QString method, devhub::domain::errors::AppError error);
-    void protocolFailed(devhub::domain::errors::AppError error);
+    [[nodiscard]] application::assistant::CodexAccount account() const override { return m_account; }
+    [[nodiscard]] application::assistant::CodexThreadBinding threadBinding() const override { return m_thread; }
+    [[nodiscard]] QString activeTurnId() const override { return m_turnId; }
 private:
     enum class Operation { Initialize, Account, LoginStart, LoginCancel, Models, Config, Requirements,
         ThreadStart, ThreadResume, ThreadRead, TurnStart, TurnInterrupt };

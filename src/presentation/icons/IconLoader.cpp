@@ -57,6 +57,9 @@ QString svgSource(IconName name)
     case IconName::Notes:
         shape = QStringLiteral("<path d='M6 3h9l4 4v14H6z'/><path d='M14 3v5h5M9 12h7M9 16h7'/>");
         break;
+    case IconName::Assistant:
+        shape = QStringLiteral("<path d='M4 4h16v12H9l-5 4z'/><path d='M8 8h8M8 12h5'/>");
+        break;
     }
     return QStringLiteral("<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='#ffffff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'>%1</svg>")
         .arg(shape);

@@ -16,6 +16,8 @@
 #include "../logs/LogsPage.h"
 #include "../databases/DatabasePage.h"
 #include "../notes/NotesPage.h"
+#include "../assistant/AssistantPage.h"
+#include "../assistant/AssistantNavigation.h"
 #include "../files/FileBrowserPage.h"
 #include "../overview/OverviewPage.h"
 #include "../commands/CommandPaletteDialog.h"
@@ -55,7 +57,8 @@
 #include <QMessageBox>
 #include <QDir>
 #include <QUrl>
-#include <QUrlQuery>
+#include <QPainter>
+#include <QStyledItemDelegate>
 #include <QToolButton>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -76,6 +79,21 @@ using devhub::presentation::theme::ThemePalette;
 using devhub::presentation::theme::ThemeTokens;
 using devhub::presentation::theme::SizeToken;
 using devhub::presentation::widgets::EmptyStateWidget;
+
+class ModuleNavigationDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        auto adjusted = option;
+        if (index.row() == 9) {
+            painter->save(); painter->setPen(option.palette.mid().color());
+            painter->drawLine(option.rect.topLeft(), option.rect.topRight()); painter->restore();
+            adjusted.rect.adjust(0, 6, 0, 0);
+        }
+        QStyledItemDelegate::paint(painter, adjusted, index);
+    }
+};
 
 QToolButton* makeToolButton(const QString& name, IconName iconName, QWidget* parent,
                             bool iconOnly = false)
@@ -122,6 +140,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
                        application::notifications::NotificationService& notificationService,
                        application::support::SupportBundleBuilder& supportBundleBuilder,
                        const shared::security::RedactionService& redactor,
+                       application::assistant::AssistantController& assistantController,
                        QWidget* parent)
     : QMainWindow(parent),
       m_session(session),
@@ -247,9 +266,11 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::Settings,
                                                               ThemePalette::color(ColorToken::TextSecondary),
                                                               18), tr("Settings")));
-    moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::Notes,
+    moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::Assistant,
                                                               ThemePalette::color(ColorToken::TextSecondary),
-                                                              18), tr("Quick Ask")));
+                                                              18), tr("Assistant")));
+    moduleList->setItemDelegate(new ModuleNavigationDelegate(moduleList));
+    moduleList->item(9)->setSizeHint(QSize(120, 46));
     moduleList->setCurrentRow(0);
     navigationLayout->addWidget(moduleList, 1);
 
@@ -257,19 +278,24 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     const QStringList navigationIds{QStringLiteral("nav.overview"), QStringLiteral("nav.git"),
         QStringLiteral("nav.services"), QStringLiteral("nav.ports"), QStringLiteral("nav.logs"),
         QStringLiteral("nav.database"), QStringLiteral("nav.notes"), QStringLiteral("nav.files"),
-        QStringLiteral("nav.settings"), QStringLiteral("nav.quickAsk")};
+        QStringLiteral("nav.settings"), QStringLiteral("nav.assistant")};
     const QStringList navigationTitles{tr("Overview"), tr("Git"), tr("Services"), tr("Ports"),
-        tr("Logs"), tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Quick Ask")};
+        tr("Logs"), tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant")};
     for (int row = 0; row < navigationIds.size(); ++row) {
+        if (row == presentation::assistant::AssistantNavigation::Index) {
+            presentation::assistant::AssistantNavigation::registerCommand(*m_commandRegistry,
+                [this](int index) { selectQuickModule(index); });
+            continue;
+        }
         using Category = application::commands::CommandCategory;
         const auto category = row == 1 ? Category::Git : row == 2 ? Category::Services
             : row == 3 ? Category::Ports : row == 4 ? Category::Logs
             : row == 5 ? Category::Database : row == 6 ? Category::Notes
             : row == 7 ? Category::Files : row == 8 ? Category::Settings : Category::Navigation;
         m_commandRegistry->addCommand(navigationIds[row], navigationTitles[row], category,
-            [this, moduleList, row] {
+            [this, row] {
                 if (row == 8) openQuickSettings();
-                else moduleList->setCurrentRow(row);
+                else selectQuickModule(row);
             }, {},
             tr("Open the %1 module").arg(navigationTitles[row]), {navigationTitles[row].toLower()});
     }
@@ -458,54 +484,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     settingsLayout->addWidget(supportBundleButton, 0, Qt::AlignLeft);
     settingsLayout->addStretch();
     m_pageHost->addWidget(settingsPage);
-    auto* quickAskPage = new QWidget(m_pageHost);
-    quickAskPage->setObjectName(QStringLiteral("quickAskPage"));
-    auto* quickAskLayout = new QVBoxLayout(quickAskPage);
-    quickAskLayout->setContentsMargins(32, 28, 32, 28);
-    quickAskLayout->setSpacing(ThemeTokens::spacing(devhub::presentation::theme::SpaceToken::Three));
-    auto* quickAskTitle = new QLabel(tr("Quick Ask"), quickAskPage);
-    quickAskTitle->setFont(ThemeTokens::font(devhub::presentation::theme::TypographyToken::PageTitle));
-    auto* quickAskPrompt = new QLineEdit(quickAskPage);
-    quickAskPrompt->setObjectName(QStringLiteral("quickAskPrompt"));
-    quickAskPrompt->setAccessibleName(tr("Quick Ask prompt"));
-    quickAskPrompt->setPlaceholderText(tr("Ask something..."));
-    quickAskPrompt->setClearButtonEnabled(true);
-    quickAskPrompt->setMaximumWidth(680);
-    auto* quickAskButtons = new QHBoxLayout();
-    auto* quickAskStatus = new QLabel(quickAskPage);
-    quickAskStatus->setWordWrap(true);
-    quickAskStatus->setStyleSheet(QStringLiteral("color: palette(mid);"));
-    struct QuickAskProvider { QString name; QString url; QString promptParameter; };
-    const QuickAskProvider quickAskProviders[]{
-        {QStringLiteral("ChatGPT"), QStringLiteral("https://chatgpt.com/"), QStringLiteral("q")},
-        {QStringLiteral("Gemini"), QStringLiteral("https://gemini.google.com/app"), {}},
-        {QStringLiteral("DeepSeek"), QStringLiteral("https://chat.deepseek.com/"), {}}
-    };
-    for (const auto& provider : quickAskProviders) {
-        auto* button = new devhub::presentation::widgets::SecondaryButton(provider.name, quickAskPage);
-        quickAskButtons->addWidget(button);
-        connect(button, &QPushButton::clicked, this, [quickAskPrompt, quickAskStatus, provider] {
-            quickAskStatus->clear();
-            const QString prompt = quickAskPrompt->text().trimmed();
-            if (prompt.isEmpty()) return;
-            QUrl url(provider.url);
-            if (!provider.promptParameter.isEmpty()) {
-                QUrlQuery query;
-                // Encode literal '+' and '%' as well as query delimiters before adding the value.
-                query.addQueryItem(provider.promptParameter, QString::fromLatin1(QUrl::toPercentEncoding(prompt)));
-                url.setQuery(query);
-            }
-            if (!QDesktopServices::openUrl(url))
-                quickAskStatus->setText(tr("The system could not open the browser."));
-        });
-    }
-    quickAskButtons->addStretch();
-    quickAskLayout->addWidget(quickAskTitle);
-    quickAskLayout->addWidget(quickAskPrompt);
-    quickAskLayout->addLayout(quickAskButtons);
-    quickAskLayout->addWidget(quickAskStatus);
-    quickAskLayout->addStretch();
-    m_pageHost->addWidget(quickAskPage);
+    m_assistantPage = new devhub::presentation::assistant::AssistantPage(assistantController, m_pageHost);
+    m_pageHost->addWidget(m_assistantPage);
     m_commandPalette = new devhub::presentation::commands::CommandPaletteDialog(*m_commandRegistry, this);
     m_workspaceSearchProvider = new application::commands::WorkspaceSearchProvider();
     m_servicesSearchProvider = new application::commands::ServiceSearchProvider();
@@ -890,7 +870,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         emit shellChanged();
     });
     m_modulePages = {m_overviewPage, gitPage, servicePage, portPage, logsPage,
-                     databasePage, m_notesPage, filesPage, settingsPage, quickAskPage};
+                     databasePage, m_notesPage, filesPage, settingsPage, m_assistantPage};
 
     auto* quickView = new QQuickView;
     quickView->setResizeMode(QQuickView::SizeRootObjectToView);
@@ -991,9 +971,10 @@ void MainWindow::selectQuickModule(int index)
         return;
     }
     m_pageHost->setCurrentWidget(m_modulePages.at(index));
+    if (index == 9) m_assistantPage->activate();
     m_moduleWindow->setWindowTitle(tr("DevHub — %1").arg(QStringList{
         tr("Overview"), tr("Git"), tr("Services"), tr("Ports"), tr("Logs"),
-        tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Quick Ask")}.at(index)));
+        tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant")}.at(index)));
     m_moduleWindow->show();
     m_moduleWindow->raise();
     m_moduleWindow->activateWindow();

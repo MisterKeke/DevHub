@@ -1,5 +1,6 @@
 #include "NotesPage.h"
 #include "../../application/notes/NoteFolderExporter.h"
+#include "../widgets/SafeMarkdownBrowser.h"
 
 #include <QCryptographicHash>
 #include <QCheckBox>
@@ -67,17 +68,6 @@ protected:
     }
 };
 
-class SafeMarkdownPreview final : public QTextBrowser
-{
-public:
-    using QTextBrowser::QTextBrowser;
-protected:
-    QVariant loadResource(int type, const QUrl& name) override
-    {
-        if (name.scheme() == QStringLiteral("qrc")) return QTextBrowser::loadResource(type, name);
-        return {};
-    }
-};
 }
 
 NotesPage::NotesPage(INotesRepository& repository, QString accountId, QString recoveryRoot, QWidget* parent)
@@ -105,7 +95,7 @@ NotesPage::NotesPage(INotesRepository& repository, QString accountId, QString re
     auto* editorPane = new QSplitter(Qt::Horizontal, split);
     m_editor = new QPlainTextEdit(editorPane); m_editor->setObjectName(QStringLiteral("markdownEditor"));
     m_editor->setPlaceholderText(tr("Select a note or create one to start writing Markdown."));
-    m_preview = new SafeMarkdownPreview(editorPane); m_preview->setObjectName(QStringLiteral("markdownPreview"));
+    m_preview = new widgets::SafeMarkdownBrowser(editorPane, widgets::SafeMarkdownBrowser::ResourcePolicy::NotesQrc); m_preview->setObjectName(QStringLiteral("markdownPreview"));
     m_preview->setOpenLinks(false); m_preview->setOpenExternalLinks(false);
     new MarkdownHighlighter(m_editor->document());
     m_preview->setPlaceholderText(tr("Markdown preview — remote links are not opened."));

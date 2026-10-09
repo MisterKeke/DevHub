@@ -7,11 +7,47 @@
 #include <QMetaType>
 #include <QUrl>
 #include <QList>
+#include <QDateTime>
+#include <QUuid>
 
 namespace devhub::application::assistant {
 
 enum class AssistantConnectionState { Disconnected, Probing, Starting, Ready, Stopping, Failed };
 enum class AssistantTurnState { Idle, Starting, Running, Cancelling, Completed, Interrupted, Failed };
+enum class AssistantOperation { Idle, CreatingThread, Submitting, Streaming, Cancelling, Reconciling, Uncertain };
+enum class AssistantRole { User, Assistant };
+enum class AssistantDelivery { NotSent, Queued, Accepted, Completed, Failed, Interrupted, Uncertain };
+struct AssistantMessage final {
+    QUuid id;
+    AssistantRole role = AssistantRole::User;
+    QString source;
+    AssistantDelivery delivery = AssistantDelivery::NotSent;
+    QDateTime createdAtUtc;
+    QString threadId;
+    QString turnId;
+    QString itemId;
+    bool final = false;
+    bool truncated = false;
+};
+struct AssistantContext final {
+    QString workspaceId;
+    QString name;
+    QString canonicalRoot;
+    friend bool operator==(const AssistantContext&, const AssistantContext&) = default;
+};
+struct AssistantConversation final {
+    QUuid id;
+    QString title = QStringLiteral("New chat");
+    AssistantContext context;
+};
+struct AssistantLimits final {
+    qsizetype userBytes = 64 * 1024;
+    qsizetype assistantBytes = 2 * 1024 * 1024;
+    qsizetype transcriptBytes = 8 * 1024 * 1024;
+    int messages = 200;
+    int renderMilliseconds = 50;
+    int cancellationMilliseconds = 5000;
+};
 
 enum class CodexTransportKind { NativeProcess, InMemoryTest };
 enum class CodexAccountMode { Unknown, SignedOut, ChatGpt, ApiKey, Other, Expired };
@@ -145,3 +181,4 @@ Q_DECLARE_METATYPE(devhub::application::assistant::CodexModelPage)
 Q_DECLARE_METATYPE(devhub::application::assistant::CodexItem)
 Q_DECLARE_METATYPE(devhub::application::assistant::CodexTurn)
 Q_DECLARE_METATYPE(devhub::application::assistant::CodexThread)
+Q_DECLARE_METATYPE(devhub::application::assistant::AssistantMessage)

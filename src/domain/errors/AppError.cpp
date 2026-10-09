@@ -50,6 +50,8 @@ QString errorCodeName(ErrorCode code)
     case ErrorCode::CodexRequestTimeout: return QStringLiteral("codex_request_timeout");
     case ErrorCode::CodexConnectionLost: return QStringLiteral("codex_connection_lost");
     case ErrorCode::AssistantPermissionDenied: return QStringLiteral("assistant_permission_denied");
+    case ErrorCode::AssistantLimitExceeded: return QStringLiteral("assistant_limit_exceeded");
+    case ErrorCode::AssistantHistoryUnavailable: return QStringLiteral("assistant_history_unavailable");
     case ErrorCode::InternalFailure: return QStringLiteral("internal_failure");
     }
     return QStringLiteral("unknown_error");

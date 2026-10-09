@@ -38,6 +38,26 @@ set_tests_properties(devhub.assistant-protocol devhub.assistant-process devhub.a
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
 )
+qt_add_executable(devhub_assistant_controller_tests assistant_controller_test.cpp)
+target_link_libraries(devhub_assistant_controller_tests PRIVATE devhub_assistant Qt6::Test project_warnings)
+add_test(NAME devhub.assistant-controller COMMAND devhub_assistant_controller_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-controller-tests.txt,txt")
+qt_add_executable(devhub_assistant_ui_tests assistant_ui_test.cpp
+    ../src/application/commands/CommandRegistry.cpp
+    ../src/presentation/assistant/AssistantPage.cpp
+    ../src/presentation/widgets/SafeMarkdownBrowser.cpp
+    ../src/presentation/theme/ThemeTokens.cpp
+    ../src/presentation/theme/ThemeManager.cpp
+    ../src/presentation/theme/ThemePalette.cpp
+    ../src/presentation/theme/ThemeProxyStyle.cpp
+)
+target_link_libraries(devhub_assistant_ui_tests PRIVATE devhub_assistant Qt6::Widgets Qt6::Test project_warnings)
+add_test(NAME devhub.assistant-ui COMMAND devhub_assistant_ui_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-ui-tests.txt,txt")
+set_tests_properties(devhub.assistant-controller devhub.assistant-ui PROPERTIES TIMEOUT 45
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
+)
 
 qt_add_executable(devhub_database_tests
     database_migration_test.cpp
@@ -120,6 +140,7 @@ set_tests_properties(devhub.feature-regressions PROPERTIES
 qt_add_executable(devhub_reliability_tests
     reliability_test.cpp
     ../src/presentation/notes/NotesPage.cpp
+    ../src/presentation/widgets/SafeMarkdownBrowser.cpp
     ../src/application/notes/NoteFolderExporter.cpp
     ../resources/database_migrations.qrc
 )

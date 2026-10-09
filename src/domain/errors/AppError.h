@@ -63,6 +63,8 @@ enum class ErrorCode
     CodexRequestTimeout,
     CodexConnectionLost,
     AssistantPermissionDenied,
+    AssistantLimitExceeded,
+    AssistantHistoryUnavailable,
     InternalFailure
 };
 

@@ -62,7 +62,7 @@ QString CodexClient::responseContract(Operation operation)
     return {};
 }
 CodexClient::CodexClient(ICodexTransport& transport, QObject* parent, CodexClientLimits limits)
-    : QObject(parent), m_transport(&transport), m_limits(limits)
+    : ICodexClient(parent), m_transport(&transport), m_limits(limits)
 {
     m_clock.start(); m_deadlineTimer.setInterval(10); m_loginTimer.setSingleShot(true);
     connect(&m_deadlineTimer, &QTimer::timeout, this, &CodexClient::deadlines);
@@ -89,6 +89,7 @@ CodexClient::CodexClient(ICodexTransport& transport, QObject* parent, CodexClien
     connect(&transport, &ICodexTransport::stopped, this, [this](int, bool, quint64 generation) {
         if (generation == m_generation) m_transportBusy = false;
         if (m_active && generation == m_generation) disconnectClient(error(ErrorCode::CodexConnectionLost, QStringLiteral("The Codex connection closed.")));
+        emit backendStopped(generation);
     });
     connect(&transport, &QObject::destroyed, this, [this] {
         m_transport = nullptr;
@@ -221,6 +222,16 @@ bool CodexClient::canSend() const
     return m_active && bindingMatches(m_thread) && !m_uncertain && m_turnId.isEmpty() && !hasPending(Operation::TurnStart)
         && !hasPending(Operation::ThreadStart) && !hasPending(Operation::ThreadResume) && !hasPending(Operation::ThreadRead) && !m_login
         && !hasPending(Operation::LoginStart) && !hasPending(Operation::Account) && m_transport
+        && (m_transport->kind() == CodexTransportKind::InMemoryTest || CodexRuntimeProfile::liveInferenceApproved());
+}
+bool CodexClient::canStartConversation() const
+{
+    return m_active && m_initialized && m_profileVerified && !m_uncertain && m_turnId.isEmpty()
+        && m_account.mode == CodexAccountMode::ChatGpt && m_account.requiresOpenaiAuth
+        && !m_account.identityFingerprint.isEmpty() && !hasPending(Operation::Account)
+        && !hasPending(Operation::ThreadStart) && !hasPending(Operation::ThreadResume)
+        && !hasPending(Operation::ThreadRead) && !hasPending(Operation::TurnStart)
+        && !m_login && !hasPending(Operation::LoginStart) && m_transport
         && (m_transport->kind() == CodexTransportKind::InMemoryTest || CodexRuntimeProfile::liveInferenceApproved());
 }
 Result<qint64> CodexClient::startTurn(const QString& text)
@@ -620,6 +631,7 @@ void CodexClient::failPending(qint64 id, const Pending& pending, AppError failur
 }
 void CodexClient::disconnectClient(AppError failure)
 {
+    const auto generation = m_generation;
     m_active = false; m_initialized = false; m_profileVerified = false; m_deadlineTimer.stop();
     const auto pending = std::exchange(m_pending, {});
     m_config.reset(); m_requirements.reset(); m_earlyTurns.clear(); m_earlyBytes = 0;
@@ -635,6 +647,7 @@ void CodexClient::disconnectClient(AppError failure)
     emit loginCleared(); emit accountChanged(CodexAccount{});
     for (auto it = pending.begin(); it != pending.end(); ++it) emit requestFailed(it.key(), method(it->operation), failure);
     if (interrupted) emit turnFinished(*interrupted);
+    emit connectionClosed(generation);
 }
 void CodexClient::fatal(const QString& safeReason, quint64 expectedGeneration)
 {

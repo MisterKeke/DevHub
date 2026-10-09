@@ -81,6 +81,10 @@ target_link_libraries(devhub_core
 )
 
 add_library(devhub_assistant STATIC
+    src/application/assistant/ICodexClient.h
+    src/application/assistant/IConversationRepository.h
+    src/application/assistant/AssistantController.h
+    src/application/assistant/AssistantController.cpp
     src/application/assistant/AssistantTypes.h
     src/application/assistant/ICodexTransport.h
     src/infrastructure/codex/CodexExecutableLocator.h
@@ -229,6 +233,8 @@ add_executable(devhub WIN32
     src/presentation/theme/ThemeTokens.cpp
     src/presentation/icons/IconLoader.cpp
     src/presentation/widgets/ReusableWidgets.cpp
+    src/presentation/widgets/SafeMarkdownBrowser.cpp
+    src/presentation/assistant/AssistantPage.cpp
     src/presentation/shell/MainWindow.cpp
     src/presentation/overview/OverviewPage.cpp
     src/presentation/commands/CommandPaletteDialog.cpp

@@ -1,8 +1,9 @@
 # Assistant typed client and runtime profile
 
 Phase 2 adds `CodexClient` to the existing Qt Core `devhub_assistant` library.
-The application bootstrap still does not instantiate an Assistant backend or
-enable Send. Protocol operations are verified through an in-memory transport;
+Phase 3 now wires a lazily started backend and Assistant controller/page in
+bootstrap; see [the UI report](assistant-ui.md). Native Send remains disabled.
+Protocol operations are verified through an in-memory transport;
 no native sign-in, logout, credential copying or real inference was performed.
 
 ## Wire contract and request lifetime

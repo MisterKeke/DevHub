@@ -13,9 +13,10 @@ live ChatGPT/model verification remain excluded. The original profile stays reje
 
 MainWindow.cpp constructs Widgets feature pages and owns the nonmodal module
 QDialog. It embeds MainShell.qml with QQuickView/createWindowContainer. QML's last
-visible navigation entry maps to index 9, currently Quick Ask; Settings remains
-index 8 outside the repeater. The later Assistant replaces index 9 and migrates
-nav.quickAsk to nav.assistant, preserving last-page restoration.
+visible navigation entry maps to index 9, occupied by Quick Ask at the Phase 0
+inventory; Settings remains index 8 outside the repeater. Phase 3 replaces that
+entry with Assistant and migrates nav.quickAsk to nav.assistant, preserving
+last-page restoration.
 
 The composition root remains ApplicationBootstrapper. Codex will be a dedicated
 protocol child, not a project service in ServiceCoordinator. Use an empty cache
@@ -208,6 +209,8 @@ The [Phase 1 transport report](assistant-transport.md) records the implemented
 process/codec/locator boundaries, offline fault tests and native cleanup probe.
 The [Phase 2 client report](assistant-client.md) records typed protocol operations,
 the implemented runtime admission checks and the continuing native inference gate.
+The [Phase 3 UI report](assistant-ui.md) records the in-app replacement, streaming
+controller, offline interaction tests and remaining baseline/live-turn checks.
 
 Official references rechecked on the evidence date:
 [App Server](https://learn.chatgpt.com/docs/app-server),

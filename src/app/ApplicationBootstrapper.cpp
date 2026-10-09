@@ -49,9 +49,16 @@
 #include "../infrastructure/detection/SqlDetectionResultRepository.h"
 #include "../presentation/authentication/AuthenticationWindow.h"
 #include "../presentation/shell/MainWindow.h"
+#include "../presentation/assistant/AssistantPage.h"
 #include "../presentation/theme/ThemeManager.h"
 #include "../presentation/theme/ThemePalette.h"
 #include "../shared/security/RedactionService.h"
+#include "../application/assistant/AssistantController.h"
+#include "../infrastructure/codex/CodexClient.h"
+#include "../infrastructure/codex/CodexProcess.h"
+#include "../infrastructure/codex/CodexExecutableLocator.h"
+#include "../infrastructure/codex/CodexRuntimeProfile.h"
+#include <QTemporaryDir>
 
 #include <QApplication>
 #include <QDateTime>
@@ -356,13 +363,48 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
                 if (active && active->id().toString() == workspaceId) scanService.schedule(*active);
             });
         });
+    QTemporaryDir assistantScratch(QDir(paths.cacheDirectory).filePath(QStringLiteral("assistant-XXXXXX")));
+    infrastructure::codex::CodexProcess assistantProcess;
+    infrastructure::codex::CodexClient assistantClient(assistantProcess);
+    infrastructure::codex::CodexExecutableLocator assistantLocator;
+    application::assistant::AssistantController assistantController(assistantClient, m_clock, m_idGenerator,
+        assistantScratch.path(), infrastructure::codex::CodexRuntimeProfile::launchArguments().value(),
+        application::assistant::codexBaseEnvironment(QProcessEnvironment::systemEnvironment()));
+    QObject::connect(&assistantController, &application::assistant::AssistantController::executableProbeRequested,
+        &assistantLocator, [&assistantLocator](const QString& path, quint64 generation) { assistantLocator.locate(path, generation); });
+    QObject::connect(&assistantController, &application::assistant::AssistantController::cancelProbeRequested,
+        &assistantLocator, &infrastructure::codex::CodexExecutableLocator::cancel);
+    QObject::connect(&assistantLocator, &infrastructure::codex::CodexExecutableLocator::executableFound,
+        &assistantController, &application::assistant::AssistantController::executableFound);
+    QObject::connect(&assistantLocator, &infrastructure::codex::CodexExecutableLocator::probeFailed,
+        &assistantController, &application::assistant::AssistantController::probeFailed);
+    QObject::connect(&workspaceContext, &application::workspaces::WorkspaceContext::workspaceChanged,
+        &assistantController, [&assistantController, &workspaceContext] {
+            const auto& active = workspaceContext.activeWorkspace();
+            assistantController.setContext(active ? application::assistant::AssistantContext{
+                active->id().toString(), active->displayName(), active->path().canonicalPath()} : application::assistant::AssistantContext{});
+        });
+    QObject::connect(&session, &application::authentication::SessionController::stateChanged,
+        &assistantController, [&assistantController](application::authentication::SessionState state) {
+            using State = application::authentication::SessionState;
+            assistantController.setSessionAllowed(state == State::SignedIn,
+                state == State::SigningOut || state == State::SignedOut || state == State::Cleared || state == State::NoAccount);
+        });
+    QObject::connect(&m_application, &QCoreApplication::aboutToQuit, &assistantController,
+        [&assistantController, &assistantLocator] { assistantLocator.cancel(); assistantController.setSessionAllowed(false); });
     presentation::shell::MainWindow mainWindow(session, authentication, workspaceManager, workspaceContext,
                                                 workspaceState, relocation, terminalLauncher, scheduler,
                                                 serviceRepository, serviceCoordinator, portMonitor, logSourceRepository,
                                                 databaseReferenceRepository, databaseConnectionFactory, notesRepository,
                                                 notesStorageRoot, session.account()->id().toString(), trashService, editorLauncher,
                                                 settingsService, *themeManager, eventHub, notificationRepository,
-                                                notifications, supportBundleBuilder, redactor);
+                                                notifications, supportBundleBuilder, redactor, assistantController);
+    QObject::connect(&session, &application::authentication::SessionController::stateChanged, &mainWindow,
+        [&mainWindow](application::authentication::SessionState state) {
+            using State = application::authentication::SessionState;
+            if (state == State::SigningOut || state == State::SignedOut || state == State::Cleared)
+                if (auto* page = mainWindow.findChild<presentation::assistant::AssistantPage*>()) page->clearDraft();
+        });
     QObject::connect(&scheduler, &application::tasks::TaskScheduler::progressChanged, &mainWindow,
         [&mainWindow, &workspaceContext](const application::tasks::TaskProgress& progress) {
             if (progress.moduleKey == QStringLiteral("workspace-detection") && progress.workspaceId

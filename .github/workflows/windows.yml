@@ -56,6 +56,11 @@ jobs:
           }
           exit $ctestExitCode
 
+      - name: Verify Assistant baseline rendering and keyboard flow at four DPI scales
+        shell: pwsh
+        run: |
+          ./tools/verify-assistant-ui.ps1 -Executable out/build/windows-ci/tests/Release/devhub_assistant_ui_tests.exe -QtRoot "$env:QT_ROOT_DIR" -OutputDirectory out/assistant-ui-verification -ExpectedQtVersion 6.8.3
+
       - name: Stage Release runtime
         shell: pwsh
         run: cmake --install out/build/windows-ci --config Release --prefix "$env:GITHUB_WORKSPACE/out/ci-runtime"
@@ -73,4 +78,6 @@ jobs:
             out/ci-runtime-reports/*.txt
             out/build/windows-ci/tests/Release/*-tests.txt
             out/build/windows-ci/Testing/Temporary/LastTest.log
+            out/assistant-ui-verification/*.txt
+            out/assistant-ui-verification/*.png
           if-no-files-found: ignore
