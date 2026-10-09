@@ -14,7 +14,8 @@ Assistant starts an asynchronous PATH/version probe; threads are created only
 when an admitted message is submitted. An empty `QTemporaryDir` under the app
 cache is the process cwd. The environment and arguments use the Phase 2 allowlist
 and canonical restricted profile; no credentials or user configuration are copied.
-Executable selection/settings and sign-in UX remain Phase 4 work.
+Executable selection/settings and sign-in UX are documented in the
+[Phase 4 setup report](assistant-settings.md).
 
 The application-facing `ICodexClient` port keeps infrastructure headers out of
 the controller. It contains typed protocol operations/signals, not an additional

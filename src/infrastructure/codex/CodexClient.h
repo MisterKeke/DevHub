@@ -17,8 +17,8 @@ public:
     [[nodiscard]] shared::common::Result<void> launch(const application::assistant::CodexLaunchSpec& spec) override;
     void stop() override;
     [[nodiscard]] shared::common::Result<qint64> readAccount(bool refreshToken = false) override;
-    [[nodiscard]] shared::common::Result<qint64> startLogin(application::assistant::CodexLoginMode mode);
-    [[nodiscard]] shared::common::Result<qint64> cancelLogin();
+    [[nodiscard]] shared::common::Result<qint64> startLogin(application::assistant::CodexLoginMode mode) override;
+    [[nodiscard]] shared::common::Result<qint64> cancelLogin() override;
     [[nodiscard]] shared::common::Result<qint64> listModels(const QString& cursor = {}) override;
     [[nodiscard]] shared::common::Result<void> verifyRuntime();
     [[nodiscard]] shared::common::Result<qint64> startThread(const QString& model) override;

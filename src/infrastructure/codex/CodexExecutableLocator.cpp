@@ -8,7 +8,7 @@
 
 namespace devhub::infrastructure::codex {
 CodexExecutableLocator::CodexExecutableLocator(QObject* parent, int timeoutMilliseconds, QStringList testedVersions)
-    : QObject(parent), m_testedVersions(std::move(testedVersions)), m_timeoutMilliseconds(timeoutMilliseconds)
+    : ICodexExecutableProbe(parent), m_testedVersions(std::move(testedVersions)), m_timeoutMilliseconds(timeoutMilliseconds)
 {
     m_timer.setSingleShot(true);
 #ifdef Q_OS_WIN
@@ -25,12 +25,12 @@ CodexExecutableLocator::CodexExecutableLocator(QObject* parent, int timeoutMilli
     connect(&m_process, &QProcess::readyReadStandardError, this, &CodexExecutableLocator::readOutput);
     connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         fail(domain::errors::ErrorCode::StartupFailed, QStringLiteral("The Codex version probe failed."));
-        if (error == QProcess::FailedToStart) { m_active = false; m_timer.stop(); }
+        if (error == QProcess::FailedToStart) { m_active = false; m_timer.stop(); restartQueuedProbe(); }
     });
     connect(&m_process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
         [this](int code, QProcess::ExitStatus status) {
             readOutput(); m_timer.stop(); m_active = false;
-            if (m_failed) return;
+            if (m_failed) { restartQueuedProbe(); return; }
             const auto match = QRegularExpression(QStringLiteral("\\Acodex-cli ([0-9]+\\.[0-9]+\\.[0-9]+)\\r?\\n?\\z"))
                 .match(QString::fromUtf8(m_output));
             if (code != 0 || status != QProcess::NormalExit || !match.hasMatch()) {
@@ -51,10 +51,14 @@ CodexExecutableLocator::~CodexExecutableLocator()
 void CodexExecutableLocator::locate(const QString& configuredPath, quint64 probeGeneration)
 {
     if (m_active) {
+        // Cancellation is asynchronous. A replacement probe must wait for the
+        // owned QProcess to finish rather than racing its kill/finished events.
+        if (m_failed) { m_queuedProbe.emplace(configuredPath, probeGeneration); return; }
         emit probeFailed(domain::errors::AppError::failure(domain::errors::ErrorCode::ConcurrencyLimitReached,
             domain::errors::ErrorCategory::Process, QStringLiteral("A Codex version probe is already running."),
             {}, QStringLiteral("codex.probe")), probeGeneration); return;
     }
+    m_queuedProbe.reset();
     m_generation = probeGeneration; m_failed = false; m_output.clear(); m_stderrBytes = 0;
     QString path = configuredPath;
     if (path.isEmpty()) {
@@ -65,6 +69,7 @@ void CodexExecutableLocator::locate(const QString& configuredPath, quint64 probe
 #endif
     }
     const QFileInfo file(path);
+    if (path.isEmpty()) { fail(domain::errors::ErrorCode::PathUnavailable, QStringLiteral("Native codex.exe was not found on PATH. Select its installed executable.")); return; }
     const auto suffix = file.suffix().toLower();
     if (path.isEmpty() || !file.isAbsolute() || !file.isFile() || !file.isExecutable()
         || suffix == QStringLiteral("cmd") || suffix == QStringLiteral("bat") || suffix == QStringLiteral("ps1")
@@ -72,7 +77,7 @@ void CodexExecutableLocator::locate(const QString& configuredPath, quint64 probe
         || suffix != QStringLiteral("exe")
 #endif
     ) {
-        fail(domain::errors::ErrorCode::PathUnavailable, QStringLiteral("Select an installed native Codex executable.")); return;
+        fail(domain::errors::ErrorCode::PathUnavailable, QStringLiteral("The Codex executable override is invalid. Select an installed native .exe; script wrappers and directories are unsupported.")); return;
     }
     m_path = file.canonicalFilePath();
     m_process.setProgram(m_path);
@@ -106,9 +111,18 @@ void CodexExecutableLocator::fail(domain::errors::ErrorCode code, const QString&
 }
 void CodexExecutableLocator::cancel()
 {
+    m_queuedProbe.reset();
     if (!m_active) return;
     m_timer.stop();
     fail(domain::errors::ErrorCode::OperationCancelled, QStringLiteral("The Codex version probe was cancelled."));
     m_process.kill();
+}
+void CodexExecutableLocator::restartQueuedProbe()
+{
+    QTimer::singleShot(0, this, [this] {
+        if (m_active || !m_queuedProbe) return;
+        const auto queued = std::move(*m_queuedProbe); m_queuedProbe.reset();
+        locate(queued.first, queued.second);
+    });
 }
 } // namespace devhub::infrastructure::codex

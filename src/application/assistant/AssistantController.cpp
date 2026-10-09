@@ -1,4 +1,5 @@
 #include "AssistantController.h"
+#include "CodexLoginPolicy.h"
 #include <algorithm>
 #include <utility>
 
@@ -23,10 +24,28 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
         refreshConnection();
     });
     connect(&client, &ICodexClient::modelsReceived, this, [this](const CodexModelPage& page) {
-        for (const auto& model : page.models) if (!model.hidden && model.supportsText && (m_model.isEmpty() || model.isDefault)) m_model = model.model;
+        m_models = page.models; selectModel();
+        if (m_loginStatus == tr("ChatGPT sign-in verified. Checking available models…")) m_loginStatus = tr("ChatGPT sign-in verified.");
         refreshConnection();
     });
-    connect(&client, &ICodexClient::accountChanged, this, [this] { refreshConnection(); });
+    connect(&client, &ICodexClient::loginChallenge, this, [this](const CodexLoginChallenge& challenge) {
+        if (!m_allowed || !m_loginPending || !acceptsCodexLoginUrl(challenge.url, challenge.mode == CodexLoginMode::DeviceCode)) return;
+        m_challenge = challenge; m_loginPending = false; m_loginStatus = tr("Complete sign-in on the validated authorization page."); emit stateChanged();
+    });
+    connect(&client, &ICodexClient::loginCleared, this, [this] { m_challenge.reset(); emit stateChanged(); });
+    connect(&client, &ICodexClient::loginFinished, this, [this](const QString&, bool success) {
+        m_loginPending = false; m_challenge.reset();
+        m_refreshModelsAfterLogin = success;
+        m_loginStatus = success ? tr("Sign-in completed. Checking the Codex account…") : tr("Sign-in cancelled or not completed.");
+        emit stateChanged(); QTimer::singleShot(0, this, &AssistantController::applyPendingConfiguration);
+    });
+    connect(&client, &ICodexClient::accountChanged, this, [this] {
+        if (m_refreshModelsAfterLogin && m_allowed && m_client.isInitialized() && m_client.account().mode == CodexAccountMode::ChatGpt) {
+            m_refreshModelsAfterLogin = false; m_models.clear(); m_model.clear(); m_loginStatus = tr("ChatGPT sign-in verified. Checking available models…");
+            const auto result = m_client.listModels(); if (!result) setError(result.error().code, result.error().userMessage);
+        }
+        refreshConnection();
+    });
     connect(&client, &ICodexClient::profileChecked, this, [this](bool accepted) {
         if (!accepted) setError(ErrorCode::AssistantPermissionDenied, tr("The Codex profile does not meet this Assistant's restrictions."));
         refreshConnection();
@@ -48,6 +67,7 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
     connect(&client, &ICodexClient::protocolFailed, this, [this](const domain::errors::AppError& error) { setError(error.code, error.userMessage); });
     connect(&client, &ICodexClient::connectionClosed, this, [this](quint64 generation) {
         if (generation != m_processGeneration) return;
+        m_loginPending = false; m_challenge.reset();
         m_connection = m_reconnectWanted ? AssistantConnectionState::Stopping : AssistantConnectionState::Disconnected;
         if (busy()) {
             if (auto* user = mutableMessage(m_pendingUser)) { user->delivery = AssistantDelivery::Uncertain; user->final = true; emit messageChanged(user->id); }
@@ -61,6 +81,7 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
         if (m_newChatWanted) { m_newChatWanted = false; resetConversation(); }
         if (std::exchange(m_reconnectWanted, false) && m_allowed) beginProbe();
         else { m_connection = AssistantConnectionState::Disconnected; emit stateChanged(); }
+        QTimer::singleShot(0, this, &AssistantController::applyPendingConfiguration);
     });
 }
 void AssistantController::open()
@@ -70,12 +91,14 @@ void AssistantController::open()
 }
 void AssistantController::beginProbe()
 {
-    m_connection = AssistantConnectionState::Probing; m_modelsRequested = false; m_model.clear(); m_error = {};
-    emit stateChanged(); emit executableProbeRequested({}, ++m_probeGeneration);
+    m_connection = AssistantConnectionState::Probing; m_modelsRequested = false; m_model.clear(); m_models.clear(); m_runtimeVersion.clear(); m_error = {};
+    m_loginStatus.clear(); m_refreshModelsAfterLogin = false;
+    emit stateChanged(); emit executableProbeRequested(m_configuration.executablePath, ++m_probeGeneration);
 }
 void AssistantController::reconnect()
 {
     if (!canReconnect()) return;
+    m_opened = true;
     emit cancelProbeRequested(); ++m_probeGeneration;
     if (m_backendOwned) {
         m_reconnectWanted = true; m_connection = AssistantConnectionState::Stopping; emit stateChanged(); m_client.stop();
@@ -84,6 +107,7 @@ void AssistantController::reconnect()
 void AssistantController::executableFound(CodexExecutable executable, quint64 generation)
 {
     if (!m_allowed || generation != m_probeGeneration || m_connection != AssistantConnectionState::Probing) return;
+    m_runtimeVersion = executable.version;
     m_backendOwned = true; m_connection = AssistantConnectionState::Starting; emit stateChanged();
     const auto result = m_client.launch({std::move(executable), m_arguments, m_scratch, m_environment, ++m_processGeneration});
     if (!result) { m_backendOwned = false; m_connection = AssistantConnectionState::Failed; setError(result.error().code, result.error().userMessage); }
@@ -113,16 +137,18 @@ bool AssistantController::canNewChat() const
 }
 bool AssistantController::canReconnect() const
 {
-    return m_allowed && !busy() && m_connection != AssistantConnectionState::Stopping;
+    return m_allowed && !busy() && !loginActive() && m_connection != AssistantConnectionState::Stopping;
 }
 bool AssistantController::canSend() const
 {
-    return m_allowed && !busy() && m_operation != AssistantOperation::Uncertain && !m_contextBlocked && !m_limitReached
+    return m_allowed && !busy() && !loginActive() && !m_pendingConfiguration && m_operation != AssistantOperation::Uncertain && !m_contextBlocked && !m_limitReached
         && !m_model.isEmpty() && (!m_threadOwned ? m_client.canStartConversation() : m_client.canSend());
 }
 QString AssistantController::statusText() const
 {
     if (!m_allowed) return tr("Assistant is paused while DevHub is locked or signed out.");
+    if (m_pendingConfiguration) return tr("Saved Assistant settings will apply after the active operation finishes.");
+    if (loginActive()) return tr("Codex sign-in is in progress. Send is disabled.");
     if (m_contextBlocked) return tr("Workspace changed. Start a new chat to use the selected context.");
     if (m_operation == AssistantOperation::Cancelling) return tr("Stopping…");
     if (m_operation == AssistantOperation::Uncertain) return tr("Delivery is uncertain. Reconnect and check history, or start a new chat.");
@@ -139,8 +165,9 @@ QString AssistantController::statusText() const
     if (account.mode == CodexAccountMode::Expired) return tr("Codex sign-in has expired. Reconnect after signing in through Codex.");
     if (account.mode != CodexAccountMode::ChatGpt) return tr("This Assistant requires a Codex-managed ChatGPT sign-in.");
     if (!m_client.profileVerified()) return tr("Codex restrictions have not passed verification. Send is disabled.");
-    if (!m_client.canStartConversation() && !m_client.canSend()) return tr("Native chat awaits authenticated model and runtime verification. Send is disabled.");
+    if (m_model.isEmpty() && !m_configuration.preferredModel.isEmpty()) return tr("The selected model is unavailable. Choose another model in Assistant settings.");
     if (m_model.isEmpty()) return m_modelsRequested ? tr("No text model is available in the Codex catalog.") : tr("Checking models…");
+    if (!m_client.canStartConversation() && !m_client.canSend()) return tr("Native chat awaits authenticated model and runtime verification. Send is disabled.");
     return tr("Codex is ready. Text chat stays inside DevHub.");
 }
 const AssistantMessage* AssistantController::message(const QUuid& id) const
@@ -196,6 +223,7 @@ void AssistantController::receivedThread(const CodexThread& thread)
         if (terminalFound) m_reconciled.insert(m_retryMessage);
         m_operation = AssistantOperation::Idle;
         setError(ErrorCode::OperationCancelled, terminalFound ? tr("History checked. Send again starts a new turn.") : tr("The accepted turn could not be reconciled. Start a new chat."));
+        QTimer::singleShot(0, this, &AssistantController::applyPendingConfiguration);
     }
 }
 void AssistantController::submit()
@@ -260,6 +288,7 @@ void AssistantController::finishedTurn(const CodexTurn& turn)
     if (turn.hasError) m_error = turn.error;
     flushMessages(); emit stateChanged();
     if (std::exchange(m_newChatWanted, false)) resetConversation();
+    QTimer::singleShot(0, this, &AssistantController::applyPendingConfiguration);
 }
 void AssistantController::stopTurn()
 {
@@ -333,6 +362,7 @@ void AssistantController::setSessionAllowed(bool allowed, bool clearTranscript)
 {
     m_allowed = allowed;
     if (!allowed) {
+        m_loginPending = false; m_challenge.reset(); m_loginStatus.clear();
         ++m_probeGeneration; emit cancelProbeRequested(); m_reconnectWanted = false; m_client.stop();
         if (clearTranscript) { m_sessionConversations.clear(); resetConversation(false); }
     } else if (m_opened) {
@@ -353,7 +383,64 @@ void AssistantController::failedRequest(const QString& method, const domain::err
         if (auto* value = mutableMessage(m_pendingUser)) { value->delivery = AssistantDelivery::Uncertain; value->final = true; emit messageChanged(value->id); }
         m_operation = AssistantOperation::Uncertain;
     } else if (method == "thread/read" && m_operation == AssistantOperation::Reconciling) m_operation = AssistantOperation::Idle;
+    if (method == "account/login/start" || method == "account/login/cancel") { m_loginPending = false; m_challenge.reset(); m_loginStatus = tr("Sign-in could not be completed. Recheck the connection and try again."); }
     setError(error.code, error.userMessage);
+    QTimer::singleShot(0, this, &AssistantController::applyPendingConfiguration);
+}
+void AssistantController::selectModel()
+{
+    m_model.clear();
+    for (const auto& model : m_models) {
+        if (model.hidden || !model.supportsText || !model.availabilityMessage.isEmpty()) continue;
+        if (!m_configuration.preferredModel.isEmpty()) {
+            if (model.model == m_configuration.preferredModel) { m_model = model.model; break; }
+        } else if (m_model.isEmpty() || model.isDefault) m_model = model.model;
+    }
+}
+void AssistantController::applyConfiguration(AssistantConfiguration configuration)
+{
+    if (configuration == m_configuration && !m_pendingConfiguration) return;
+    m_pendingConfiguration = std::move(configuration); emit stateChanged(); applyPendingConfiguration();
+}
+void AssistantController::applyPendingConfiguration()
+{
+    if (!m_pendingConfiguration || busy() || loginActive() || m_connection == AssistantConnectionState::Stopping) return;
+    m_configuration = std::move(*m_pendingConfiguration); m_pendingConfiguration.reset(); selectModel();
+    if (m_opened && m_allowed) reconnect(); else emit stateChanged();
+}
+bool AssistantController::canConnectAccount() const
+{
+    return m_allowed && !busy() && !loginActive() && !m_pendingConfiguration
+        && m_client.isInitialized() && m_client.profileVerified() && m_connection == AssistantConnectionState::Ready;
+}
+void AssistantController::connectAccount(CodexLoginMode mode)
+{
+    if (!canConnectAccount()) return;
+    m_loginPending = true; m_challenge.reset(); m_loginStatus = tr("Requesting a Codex sign-in challenge…"); emit stateChanged();
+    const auto result = m_client.startLogin(mode);
+    if (!result) { m_loginPending = false; m_loginStatus = tr("Sign-in could not be started."); setError(result.error().code, result.error().userMessage); }
+}
+void AssistantController::cancelAccountLogin()
+{
+    if (!loginActive()) return;
+    if (!m_challenge) { m_loginPending = false; m_loginStatus = tr("Sign-in cancelled before a challenge was received."); m_client.stop(); emit stateChanged(); return; }
+    const auto result = m_client.cancelLogin();
+    m_loginPending = false; m_challenge.reset();
+    if (!result) setError(result.error().code, result.error().userMessage);
+    emit stateChanged(); QTimer::singleShot(0, this, &AssistantController::applyPendingConfiguration);
+}
+QString AssistantController::runtimeText() const
+{
+    const auto mode = m_client.account().mode;
+    const QString account = mode == CodexAccountMode::SignedOut ? tr("Signed out") : mode == CodexAccountMode::ChatGpt ? tr("ChatGPT")
+        : mode == CodexAccountMode::ApiKey ? tr("API key account — unsupported") : mode == CodexAccountMode::Expired ? tr("Expired sign-in")
+        : mode == CodexAccountMode::Other ? tr("Other account — unsupported") : tr("Not checked");
+    const QString process = m_connection == AssistantConnectionState::Probing ? tr("Checking executable")
+        : m_connection == AssistantConnectionState::Starting ? tr("Starting") : m_connection == AssistantConnectionState::Stopping ? tr("Stopping")
+        : m_connection == AssistantConnectionState::Failed ? tr("Failed") : m_client.isInitialized() ? tr("Running") : tr("Disconnected");
+    return tr("Version: %1\nProcess: %2\nAccount: %3\nRestrictions: %4")
+        .arg(m_runtimeVersion.isEmpty() ? tr("Not checked") : m_runtimeVersion, process, account,
+            m_client.profileVerified() ? tr("Verified") : tr("Not verified"));
 }
 void AssistantController::setError(ErrorCode code, const QString& text)
 {

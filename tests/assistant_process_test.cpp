@@ -241,6 +241,16 @@ private slots:
         QTest::newRow("timeout") << QStringLiteral("hang") << false;
         QTest::newRow("cancel") << QStringLiteral("hang") << true;
     }
+    void locatorReplacementWaitsForCancelledChild()
+    {
+        QTemporaryDir scratch; const auto hung = scratch.filePath("hang.exe");
+        QVERIFY(QFile::copy(QStringLiteral(DEVHUB_FAKE_CODEX), hung));
+        CodexExecutableLocator locator; QSignalSpy found(&locator, &CodexExecutableLocator::executableFound);
+        QSignalSpy failed(&locator, &CodexExecutableLocator::probeFailed);
+        locator.locate(hung, 51); locator.cancel(); locator.locate(QStringLiteral(DEVHUB_FAKE_CODEX), 52);
+        QTRY_COMPARE(found.size(), 1); QCOMPARE(failed.size(), 1);
+        QCOMPARE(found.front().at(1).toULongLong(), quint64(52)); QVERIFY(!locator.isProbing());
+    }
     void locatorFaults()
     {
         QFETCH(QString, name); QFETCH(bool, cancel); QTemporaryDir scratch;

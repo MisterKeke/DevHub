@@ -17,6 +17,17 @@ public:
         QObject* parent = nullptr, AssistantLimits limits = {});
     void open();
     void reconnect();
+    void applyConfiguration(AssistantConfiguration configuration);
+    void connectAccount(CodexLoginMode mode);
+    void cancelAccountLogin();
+    [[nodiscard]] bool canConnectAccount() const;
+    [[nodiscard]] bool loginActive() const { return m_loginPending || m_challenge.has_value(); }
+    [[nodiscard]] std::optional<CodexLoginChallenge> accountChallenge() const { return m_challenge; }
+    [[nodiscard]] QString loginStatusText() const { return m_loginStatus; }
+    [[nodiscard]] QString runtimeText() const;
+    [[nodiscard]] bool setupAllowed() const { return m_allowed; }
+    [[nodiscard]] const QList<CodexModel>& models() const { return m_models; }
+    [[nodiscard]] AssistantConfiguration configuration() const { return m_configuration; }
     void executableFound(CodexExecutable executable, quint64 probeGeneration);
     void probeFailed(domain::errors::AppError error, quint64 probeGeneration);
     bool send(const QString& text);
@@ -62,6 +73,8 @@ private:
     void resetConversation(bool retainAssociation = true);
     void setError(domain::errors::ErrorCode code, const QString& text);
     void exceededLimit();
+    void selectModel();
+    void applyPendingConfiguration();
     AssistantMessage* mutableMessage(const QUuid&);
     qsizetype transcriptBytes() const;
     ICodexClient& m_client;
@@ -88,6 +101,14 @@ private:
     QUuid m_pendingUser;
     QUuid m_retryMessage;
     QString m_model;
+    QString m_runtimeVersion;
+    QString m_loginStatus;
+    AssistantConfiguration m_configuration;
+    std::optional<AssistantConfiguration> m_pendingConfiguration;
+    std::optional<CodexLoginChallenge> m_challenge;
+    QList<CodexModel> m_models;
+    bool m_loginPending = false;
+    bool m_refreshModelsAfterLogin = false;
     quint64 m_probeGeneration = 0;
     quint64 m_processGeneration = 0;
     bool m_allowed = true;

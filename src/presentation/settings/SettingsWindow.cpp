@@ -1,4 +1,5 @@
 #include "SettingsWindow.h"
+#include "AssistantSettingsPanel.h"
 #include "../../application/settings/SettingsService.h"
 #include "../theme/ThemeManager.h"
 #include "../theme/ThemePalette.h"
@@ -19,7 +20,9 @@
 namespace devhub::presentation::settings {
 
 SettingsWindow::SettingsWindow(application::settings::SettingsService& settings,
-                               presentation::theme::ThemeManager& theme, QString workspaceId, QWidget* parent)
+                               presentation::theme::ThemeManager& theme, QString workspaceId, QWidget* parent,
+                               application::assistant::AssistantController* assistant,
+                               application::assistant::ICodexExecutableProbe* probe)
     : QDialog(parent), m_settings(settings), m_theme(theme), m_workspaceId(std::move(workspaceId))
 {
     setWindowTitle(tr("DevHub Settings"));
@@ -28,7 +31,8 @@ SettingsWindow::SettingsWindow(application::settings::SettingsService& settings,
     auto* tabs = new QTabWidget(this);
     const QStringList sections{tr("General"), tr("Appearance"), tr("Account and Security"), tr("Git"),
         tr("Terminal"), tr("Workspaces"), tr("Services"), tr("Logs"), tr("Database"),
-        tr("Notifications"), tr("Advanced"), tr("About")};
+        tr("Notifications"), tr("Assistant"), tr("Advanced"), tr("About")};
+    const auto values = m_settings.effectiveValues(m_workspaceId);
     QHash<QString, QFormLayout*> forms;
     for (const QString& section : sections) {
         auto* page = new QWidget(tabs);
@@ -37,6 +41,13 @@ SettingsWindow::SettingsWindow(application::settings::SettingsService& settings,
         auto* form = new QFormLayout(formWidget);
         form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
         layout->addWidget(formWidget);
+        if (section == tr("Assistant") && assistant && probe) {
+            auto* setup = new AssistantSettingsPanel(*assistant, *probe,
+                {values.value(QStringLiteral("assistant/executable")).toString(), values.value(QStringLiteral("assistant/model")).toString()}, page);
+            layout->addWidget(setup);
+            m_controls.insert(QStringLiteral("assistant/executable"), setup->executableControl());
+            m_controls.insert(QStringLiteral("assistant/model"), setup->modelControl());
+        }
         if (section == tr("About")) {
             auto* about = new QLabel(tr("DevHub %1\nA local workspace companion.").arg(QCoreApplication::applicationVersion()), page);
             about->setWordWrap(true); layout->addWidget(about);
@@ -53,8 +64,8 @@ SettingsWindow::SettingsWindow(application::settings::SettingsService& settings,
         forms.insert(section, form);
     }
 
-    const auto values = m_settings.effectiveValues(m_workspaceId);
     for (const auto& descriptor : m_settings.descriptors()) {
+        if (m_controls.contains(descriptor.id)) continue;
         QWidget* control = nullptr;
         const QVariant value = values.value(descriptor.id, descriptor.defaultValue);
         if (descriptor.id == QStringLiteral("appearance/theme")) {
@@ -88,7 +99,7 @@ SettingsWindow::SettingsWindow(application::settings::SettingsService& settings,
         const QString displayLabel = descriptor.requiresRestart
             ? tr("%1 (restart to apply)").arg(descriptor.label) : descriptor.label;
         if (auto* form = forms.value(descriptor.section)) form->addRow(displayLabel, control);
-        m_controls.insert(descriptor.id, control);
+        control->setObjectName(descriptor.id); m_controls.insert(descriptor.id, control);
     }
     root->addWidget(tabs, 1);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
@@ -99,13 +110,21 @@ SettingsWindow::SettingsWindow(application::settings::SettingsService& settings,
 
 void SettingsWindow::saveSettings()
 {
+    application::settings::SettingValues pending;
     for (auto i = m_controls.cbegin(); i != m_controls.cend(); ++i) {
         QVariant value;
         if (auto* check = qobject_cast<QCheckBox*>(i.value())) value = check->isChecked();
         else if (auto* spin = qobject_cast<QSpinBox*>(i.value())) value = spin->value();
         else if (auto* combo = qobject_cast<QComboBox*>(i.value())) value = combo->currentData();
         else if (auto* edit = qobject_cast<QLineEdit*>(i.value())) value = edit->text();
-        const auto saved = m_settings.setValue(i.key(), value, m_workspaceId);
+        const auto descriptor = m_settings.descriptor(i.key());
+        if (!descriptor.validate || !descriptor.validate(value)) {
+            QMessageBox::warning(this, tr("Could not save settings"), tr("That setting value is invalid: %1").arg(descriptor.label)); return;
+        }
+        pending.insert(i.key(), value);
+    }
+    for (auto i = pending.cbegin(); i != pending.cend(); ++i) {
+        const auto saved = m_settings.setValue(i.key(), i.value(), m_workspaceId);
         if (!saved) {
             QMessageBox message(this);
             message.setIcon(QMessageBox::Warning);
@@ -121,6 +140,7 @@ void SettingsWindow::saveSettings()
         ? presentation::theme::ThemeVariant::DarkBlue
         : presentation::theme::ThemeVariant::DarkRose);
     m_theme.setReducedMotion(m_settings.value(QStringLiteral("appearance/reducedMotion")).toBool());
+    emit settingsApplied();
     accept();
 }
 

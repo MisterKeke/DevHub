@@ -17,6 +17,11 @@ enum class AssistantTurnState { Idle, Starting, Running, Cancelling, Completed, 
 enum class AssistantOperation { Idle, CreatingThread, Submitting, Streaming, Cancelling, Reconciling, Uncertain };
 enum class AssistantRole { User, Assistant };
 enum class AssistantDelivery { NotSent, Queued, Accepted, Completed, Failed, Interrupted, Uncertain };
+struct AssistantConfiguration final {
+    QString executablePath;
+    QString preferredModel;
+    friend bool operator==(const AssistantConfiguration&, const AssistantConfiguration&) = default;
+};
 struct AssistantMessage final {
     QUuid id;
     AssistantRole role = AssistantRole::User;

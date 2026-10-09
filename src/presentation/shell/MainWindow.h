@@ -44,7 +44,7 @@ class UnlockWidget;
 namespace devhub::presentation::workspaces { class WorkspaceListModel; }
 namespace devhub::presentation::notes { class NotesPage; }
 namespace devhub::presentation::assistant { class AssistantPage; }
-namespace devhub::application::assistant { class AssistantController; }
+namespace devhub::application::assistant { class AssistantController; class ICodexExecutableProbe; }
 namespace devhub::presentation::databases { class DatabasePage; }
 namespace devhub::application::overview { class OverviewStateComposer; }
 namespace devhub::application::commands { class CommandRegistry; }
@@ -94,6 +94,7 @@ public:
                application::support::SupportBundleBuilder& supportBundleBuilder,
                const shared::security::RedactionService& redactor,
                application::assistant::AssistantController& assistantController,
+               application::assistant::ICodexExecutableProbe& assistantSetupProbe,
                QWidget* parent = nullptr);
     void restoreWorkspaceSelection();
     bool flushNotesForShutdown();
@@ -156,6 +157,8 @@ private:
     application::tasks::TaskScheduler& m_scheduler;
     application::services::ServiceCoordinator& m_serviceCoordinator;
     application::settings::SettingsService& m_settingsService;
+    application::assistant::AssistantController& m_assistantController;
+    application::assistant::ICodexExecutableProbe& m_assistantSetupProbe;
     presentation::theme::ThemeManager& m_themeManager;
     application::events::ApplicationEventHub& m_eventHub;
     application::notifications::INotificationRepository& m_notificationRepository;

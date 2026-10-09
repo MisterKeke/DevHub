@@ -81,6 +81,7 @@ target_link_libraries(devhub_core
 )
 
 add_library(devhub_assistant STATIC
+    src/application/assistant/ICodexExecutableProbe.h
     src/application/assistant/ICodexClient.h
     src/application/assistant/IConversationRepository.h
     src/application/assistant/AssistantController.h
@@ -239,6 +240,7 @@ add_executable(devhub WIN32
     src/presentation/overview/OverviewPage.cpp
     src/presentation/commands/CommandPaletteDialog.cpp
     src/presentation/settings/SettingsWindow.cpp
+    src/presentation/settings/AssistantSettingsPanel.cpp
     src/presentation/settings/SupportBundleDialog.cpp
     src/presentation/notifications/NotificationListModel.cpp
     src/presentation/notifications/NotificationCenterDialog.cpp

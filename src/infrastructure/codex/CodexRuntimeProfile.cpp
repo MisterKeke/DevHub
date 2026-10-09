@@ -1,4 +1,5 @@
 #include "CodexRuntimeProfile.h"
+#include "application/assistant/CodexLoginPolicy.h"
 #include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -133,10 +134,6 @@ bool CodexRuntimeProfile::acceptsEnvironment(const QProcessEnvironment& environm
 }
 bool CodexRuntimeProfile::acceptsLoginUrl(const QUrl& url, bool deviceCode)
 {
-    if (!url.isValid() || url.scheme() != "https" || !url.userInfo().isEmpty()
-        || (url.port() != -1 && url.port() != 443) || !url.fragment().isEmpty()) return false;
-    if (deviceCode) return url.host() == "auth.openai.com" && url.path() == "/codex/device" && !url.hasQuery();
-    return (url.host() == "auth.openai.com" && url.path() == "/oauth/authorize")
-        || (url.host() == "chatgpt.com" && url.path() == "/oauth/authorize");
+    return application::assistant::acceptsCodexLoginUrl(url, deviceCode);
 }
 }

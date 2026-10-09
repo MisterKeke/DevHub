@@ -10,8 +10,12 @@ Assistant now replaces Quick Ask inside DevHub. Its streaming UI, controller and
 safe Markdown rendering are tested offline; native Send remains disabled until
 the authenticated Codex runtime/model profile is verified. See the
 [Assistant UI report](docs/architecture/assistant-ui.md) for current behavior and
-remaining release checks. Opening the page checks the installed native
-`codex.exe` on PATH; it does not sign in or open an external chat page.
+remaining release checks. Opening the page checks the configured native
+`codex.exe` (or PATH when the override is empty); it does not sign in or open an external chat page.
+Settings → Assistant provides Browse/Recheck, runtime/account status,
+ChatGPT or device-code authorization and optional model choices. No API key is
+required. Authorization opens a browser only through its explicit button and
+may change Codex's shared sign-in. See [Assistant setup](docs/architecture/assistant-settings.md).
 
 ## Running a portable build
 

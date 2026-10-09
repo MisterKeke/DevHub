@@ -13,6 +13,8 @@ public:
     virtual shared::common::Result<void> launch(const CodexLaunchSpec&) = 0;
     virtual void stop() = 0;
     virtual shared::common::Result<qint64> readAccount(bool refreshToken = false) = 0;
+    virtual shared::common::Result<qint64> startLogin(CodexLoginMode mode) = 0;
+    virtual shared::common::Result<qint64> cancelLogin() = 0;
     virtual shared::common::Result<qint64> listModels(const QString& cursor = {}) = 0;
     virtual shared::common::Result<qint64> startThread(const QString& model) = 0;
     virtual shared::common::Result<qint64> readThread(const CodexThreadBinding&) = 0;

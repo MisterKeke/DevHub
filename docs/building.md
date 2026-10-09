@@ -1,5 +1,17 @@
 # Building DevHub
 
+Codex is optional and is not a build/CTest dependency. Assistant setup accepts
+the tested native `codex-cli 0.160.1` Windows executable. Select it with Settings
+→ Assistant → Browse/Recheck, or leave the override empty for native `codex.exe`
+on PATH. Installation locations are not guessed; `.cmd`, `.bat` and PowerShell
+wrappers are unsupported. An invalid override never falls back to PATH.
+No API key is required or accepted by DevHub. Explicit ChatGPT/device-code
+authorization uses Codex-managed sign-in; native Send still requires the runtime
+safety gate. Tests use synthetic protocol fixtures, without real sign-in or
+inference. The Qt 6.8.3 Windows CI job also runs chat/settings checks at
+100/125/150/200% scaling with `tools/verify-assistant-ui.ps1` and retains snapshots.
+See [Assistant setup](architecture/assistant-settings.md) for the boundaries.
+
 ## Prerequisites
 
 - Windows 11 x64.

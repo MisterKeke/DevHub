@@ -141,6 +141,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
                        application::support::SupportBundleBuilder& supportBundleBuilder,
                        const shared::security::RedactionService& redactor,
                        application::assistant::AssistantController& assistantController,
+                       application::assistant::ICodexExecutableProbe& assistantSetupProbe,
                        QWidget* parent)
     : QMainWindow(parent),
       m_session(session),
@@ -153,6 +154,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
       m_scheduler(scheduler),
       m_serviceCoordinator(serviceCoordinator),
       m_settingsService(settingsService),
+      m_assistantController(assistantController), m_assistantSetupProbe(assistantSetupProbe),
       m_themeManager(themeManager),
       m_eventHub(eventHub),
       m_notificationRepository(notificationRepository),
@@ -829,7 +831,10 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     connect(openSettingsButton, &QPushButton::clicked, this, [this, databasePage] {
         const QString workspaceId = m_workspaceContext.activeWorkspace()
             ? m_workspaceContext.activeWorkspace()->id().toString() : QString{};
-        devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this);
+        devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this, &m_assistantController, &m_assistantSetupProbe);
+        connect(&dialog, &devhub::presentation::settings::SettingsWindow::settingsApplied, &m_assistantController, [this] {
+            m_assistantController.applyConfiguration({m_settingsService.value(QStringLiteral("assistant/executable")).toString(), m_settingsService.value(QStringLiteral("assistant/model")).toString()});
+        });
         connect(&dialog, &devhub::presentation::settings::SettingsWindow::changePasswordRequested,
                 &dialog, [this] {
             if (!m_session.account()) return;
@@ -1030,7 +1035,10 @@ void MainWindow::openQuickSettings()
 {
     const QString workspaceId = m_workspaceContext.activeWorkspace()
         ? m_workspaceContext.activeWorkspace()->id().toString() : QString{};
-    devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this);
+    devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this, &m_assistantController, &m_assistantSetupProbe);
+    connect(&dialog, &devhub::presentation::settings::SettingsWindow::settingsApplied, &m_assistantController, [this] {
+        m_assistantController.applyConfiguration({m_settingsService.value(QStringLiteral("assistant/executable")).toString(), m_settingsService.value(QStringLiteral("assistant/model")).toString()});
+    });
     connect(&dialog, &devhub::presentation::settings::SettingsWindow::changePasswordRequested,
             &dialog, [this] {
         if (!m_session.account()) return;

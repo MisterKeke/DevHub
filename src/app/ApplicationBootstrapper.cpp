@@ -367,9 +367,11 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
     infrastructure::codex::CodexProcess assistantProcess;
     infrastructure::codex::CodexClient assistantClient(assistantProcess);
     infrastructure::codex::CodexExecutableLocator assistantLocator;
+    infrastructure::codex::CodexExecutableLocator assistantSetupLocator;
     application::assistant::AssistantController assistantController(assistantClient, m_clock, m_idGenerator,
         assistantScratch.path(), infrastructure::codex::CodexRuntimeProfile::launchArguments().value(),
         application::assistant::codexBaseEnvironment(QProcessEnvironment::systemEnvironment()));
+    assistantController.applyConfiguration({settingsService.value(QStringLiteral("assistant/executable")).toString(), settingsService.value(QStringLiteral("assistant/model")).toString()});
     QObject::connect(&assistantController, &application::assistant::AssistantController::executableProbeRequested,
         &assistantLocator, [&assistantLocator](const QString& path, quint64 generation) { assistantLocator.locate(path, generation); });
     QObject::connect(&assistantController, &application::assistant::AssistantController::cancelProbeRequested,
@@ -391,14 +393,14 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
                 state == State::SigningOut || state == State::SignedOut || state == State::Cleared || state == State::NoAccount);
         });
     QObject::connect(&m_application, &QCoreApplication::aboutToQuit, &assistantController,
-        [&assistantController, &assistantLocator] { assistantLocator.cancel(); assistantController.setSessionAllowed(false); });
+        [&assistantController, &assistantLocator, &assistantSetupLocator] { assistantLocator.cancel(); assistantSetupLocator.cancel(); assistantController.setSessionAllowed(false); });
     presentation::shell::MainWindow mainWindow(session, authentication, workspaceManager, workspaceContext,
                                                 workspaceState, relocation, terminalLauncher, scheduler,
                                                 serviceRepository, serviceCoordinator, portMonitor, logSourceRepository,
                                                 databaseReferenceRepository, databaseConnectionFactory, notesRepository,
                                                 notesStorageRoot, session.account()->id().toString(), trashService, editorLauncher,
                                                 settingsService, *themeManager, eventHub, notificationRepository,
-                                                notifications, supportBundleBuilder, redactor, assistantController);
+                                                notifications, supportBundleBuilder, redactor, assistantController, assistantSetupLocator);
     QObject::connect(&session, &application::authentication::SessionController::stateChanged, &mainWindow,
         [&mainWindow](application::authentication::SessionState state) {
             using State = application::authentication::SessionState;

@@ -2,6 +2,7 @@
 #include "../../domain/errors/AppError.h"
 
 #include <QRegularExpression>
+#include <QFileInfo>
 
 namespace devhub::application::settings {
 namespace {
@@ -34,6 +35,8 @@ SettingsService::SettingsService(ISettingsRepository& repository) : m_repository
         boolean(QStringLiteral("appearance/reducedMotion"), QStringLiteral("Reduce motion"), QStringLiteral("Appearance"), false),
         string(QStringLiteral("appearance/theme"), QStringLiteral("Color theme"), QStringLiteral("Appearance"), QStringLiteral("dark-rose")),
         string(QStringLiteral("git/executable"), QStringLiteral("Git executable override"), QStringLiteral("Git"), {}, true, SettingSensitivity::Sensitive),
+        string(QStringLiteral("assistant/executable"), QStringLiteral("Native Codex executable override"), QStringLiteral("Assistant"), {}, false, SettingSensitivity::Sensitive),
+        string(QStringLiteral("assistant/model"), QStringLiteral("Preferred text model"), QStringLiteral("Assistant"), {}, false, SettingSensitivity::Sensitive),
         integer(QStringLiteral("workspaces/scanLimitMs"), QStringLiteral("Workspace scan limit (ms)"), QStringLiteral("Workspaces"), 5000, 100, 60000, SettingScope::Global, true),
         integer(QStringLiteral("logs/maxLines"), QStringLiteral("Maximum cached log lines"), QStringLiteral("Logs"), 10000, 100, 200000, SettingScope::Global, true),
         integer(QStringLiteral("logs/maxBytes"), QStringLiteral("Maximum cached log bytes"), QStringLiteral("Logs"), 4194304, 65536, 67108864, SettingScope::Global, true),
@@ -46,6 +49,20 @@ SettingsService::SettingsService(ISettingsRepository& repository) : m_repository
         string(QStringLiteral("terminal/customExecutable"), QStringLiteral("Custom terminal executable"), QStringLiteral("Terminal"), {}, false, SettingSensitivity::Sensitive),
         string(QStringLiteral("terminal/customArguments"), QStringLiteral("Custom terminal arguments"), QStringLiteral("Terminal"), {}, false, SettingSensitivity::Sensitive)
     };
+    for (auto& item : m_descriptors) if (item.section == QStringLiteral("Assistant")) {
+        const bool executable = item.id == QStringLiteral("assistant/executable");
+        item.validate = [executable](const QVariant& value) {
+            if (value.metaType().id() != QMetaType::QString) return false;
+            const auto text = value.toString();
+            if (text.isEmpty()) return true;
+            if (text.size() > (executable ? 2048 : 512)) return false;
+            for (const auto ch : text) if (ch.isNull() || ch.category() == QChar::Other_Control) return false;
+            if (!executable) return !text.trimmed().isEmpty();
+            const QFileInfo file(text);
+            return file.isAbsolute() && file.suffix().compare(QStringLiteral("exe"), Qt::CaseInsensitive) == 0
+                && !file.isDir() && !text.contains(QLatin1Char('"'));
+        };
+    }
     for (auto& item : m_descriptors) if (item.id == QStringLiteral("terminal/profile"))
         item.validate = [](const QVariant& value) {
             return QStringList{QStringLiteral("windows-terminal"), QStringLiteral("powershell"), QStringLiteral("cmd"),
@@ -91,6 +108,8 @@ SettingValues SettingsService::effectiveValues(const QString& workspaceId) const
     if (global) for (auto i = global.value().cbegin(); i != global.value().cend(); ++i) {
         const auto setting = descriptor(i.key());
         if (!setting.id.isEmpty() && setting.validate && setting.validate(i.value())) values.insert(i.key(), i.value());
+        else if (i.key() == QStringLiteral("assistant/executable") || i.key() == QStringLiteral("assistant/model"))
+            values.insert(i.key(), QStringLiteral("[invalid saved Assistant preference]")); // Never silently fall back to PATH/another model.
     }
     if (!workspaceId.isEmpty()) {
         const auto workspace = m_repository.load(SettingScope::Workspace, workspaceId);
