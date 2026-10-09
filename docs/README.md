@@ -8,6 +8,11 @@ See [sqlite-browser.md](architecture/sqlite-browser.md) for SQLite references, b
 
 See [notes-and-files.md](architecture/notes-and-files.md) for Notes storage/recovery and the workspace File Browser safety boundaries.
 
+See [assistant.md](architecture/assistant.md) for the Assistant Phase 0 wire fixtures,
+candidate compatibility table, capability probe evidence and remaining release gates.
+The [capability verification report](architecture/assistant-capability-verification.md)
+records the follow-up native controls, behavioral results and excluded profiles.
+
 ## Toolchain pins
 
 - Qt 6.8 API baseline, with CI pinned to Qt 6.8.3 (the Qt 6.8 patch release available to open-source users). Local development accepts Qt 6.8.3 or newer.
