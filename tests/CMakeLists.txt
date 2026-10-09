@@ -6,6 +6,35 @@ set_tests_properties(devhub.smoke PROPERTIES
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
 )
 
+qt_add_executable(devhub_fake_codex helpers/fake_codex_app_server.cpp)
+target_link_libraries(devhub_fake_codex PRIVATE Qt6::Core project_options project_warnings)
+qt_add_executable(devhub_assistant_native_probe helpers/assistant_native_probe.cpp)
+target_link_libraries(devhub_assistant_native_probe PRIVATE devhub_assistant project_warnings)
+# Deliberately absent from CTest: opt-in installed-native check, no inference/auth.
+qt_add_executable(devhub_assistant_shutdown_driver helpers/assistant_shutdown_driver.cpp)
+target_link_libraries(devhub_assistant_shutdown_driver PRIVATE devhub_assistant project_warnings)
+target_compile_definitions(devhub_assistant_shutdown_driver PRIVATE
+    DEVHUB_FAKE_CODEX="$<TARGET_FILE:devhub_fake_codex>")
+add_dependencies(devhub_assistant_shutdown_driver devhub_fake_codex)
+
+qt_add_executable(devhub_assistant_protocol_tests assistant_protocol_test.cpp)
+target_link_libraries(devhub_assistant_protocol_tests PRIVATE devhub_assistant Qt6::Test project_warnings)
+add_test(NAME devhub.assistant-protocol COMMAND devhub_assistant_protocol_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-protocol-tests.txt,txt")
+qt_add_executable(devhub_assistant_process_tests assistant_process_test.cpp)
+target_link_libraries(devhub_assistant_process_tests PRIVATE devhub_assistant Qt6::Test project_warnings)
+target_compile_definitions(devhub_assistant_process_tests PRIVATE
+    DEVHUB_FAKE_CODEX="$<TARGET_FILE:devhub_fake_codex>"
+    DEVHUB_SHUTDOWN_DRIVER="$<TARGET_FILE:devhub_assistant_shutdown_driver>")
+add_dependencies(devhub_assistant_process_tests devhub_fake_codex devhub_assistant_shutdown_driver)
+add_test(NAME devhub.assistant-process COMMAND devhub_assistant_process_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-process-tests.txt,txt")
+set_tests_properties(devhub.assistant-protocol devhub.assistant-process PROPERTIES
+    TIMEOUT 45
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
+)
+
 qt_add_executable(devhub_database_tests
     database_migration_test.cpp
     ../resources/database_migrations.qrc

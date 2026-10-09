@@ -203,6 +203,9 @@ Phase 1 can proceed offline using these fixtures and a fake server. Phase 2 must
 repeat the capability gate before enabling inference; successful initialize alone
 must never open it.
 
+The [Phase 1 transport report](assistant-transport.md) records the implemented
+process/codec/locator boundaries, offline fault tests and native cleanup probe.
+
 Official references rechecked on the evidence date:
 [App Server](https://learn.chatgpt.com/docs/app-server),
 [configuration](https://learn.chatgpt.com/docs/config-file/config-reference), and

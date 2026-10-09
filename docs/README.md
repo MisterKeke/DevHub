@@ -12,6 +12,8 @@ See [assistant.md](architecture/assistant.md) for the Assistant Phase 0 wire fix
 candidate compatibility table, capability probe evidence and remaining release gates.
 The [capability verification report](architecture/assistant-capability-verification.md)
 records the follow-up native controls, behavioral results and excluded profiles.
+See [assistant-transport.md](architecture/assistant-transport.md) for Phase 1's
+native process prototype, bounded JSONL transport, lifecycle tests and ownership limits.
 
 ## Toolchain pins
 

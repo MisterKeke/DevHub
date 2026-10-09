@@ -80,6 +80,22 @@ target_link_libraries(devhub_core
     PRIVATE project_warnings Qt6::Core
 )
 
+add_library(devhub_assistant STATIC
+    src/application/assistant/AssistantTypes.h
+    src/application/assistant/ICodexTransport.h
+    src/infrastructure/codex/CodexExecutableLocator.h
+    src/infrastructure/codex/CodexExecutableLocator.cpp
+    src/infrastructure/codex/CodexProtocolCodec.h
+    src/infrastructure/codex/CodexProtocolCodec.cpp
+    src/infrastructure/codex/CodexWriteQueue.h
+    src/infrastructure/codex/CodexWriteQueue.cpp
+    src/infrastructure/codex/CodexProcess.h
+    src/infrastructure/codex/CodexProcess.cpp
+)
+target_include_directories(devhub_assistant PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(devhub_assistant PUBLIC project_options devhub_core Qt6::Core
+    PRIVATE project_warnings)
+
 add_library(devhub_database STATIC
     src/application/databases/DatabaseTypes.cpp
     src/application/databases/IDatabaseSession.h
@@ -256,6 +272,7 @@ target_link_libraries(devhub PRIVATE
     project_options
     project_warnings
     devhub_core
+    devhub_assistant
     devhub_database
     devhub_accounts
     devhub_workspaces
