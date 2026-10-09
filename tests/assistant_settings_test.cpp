@@ -5,6 +5,7 @@
 #include "presentation/settings/SettingsWindow.h"
 #include "presentation/theme/ThemeManager.h"
 #include <QApplication>
+#include <QAbstractButton>
 #include <QDialogButtonBox>
 #include <QFontDatabase>
 #include <QComboBox>
@@ -16,6 +17,7 @@
 #include <QSignalSpy>
 #include <QTabWidget>
 #include <QTest>
+#include <QTimer>
 using namespace devhub;
 using namespace application::assistant;
 using namespace application::settings;
@@ -51,8 +53,23 @@ class AssistantSettingsTest final : public QObject {
         if (!availability.isEmpty()) value.insert("availabilityNux", QJsonObject{{"message", availability}});
         return value;
     }
-    static void dismissMessage() {
-        QTimer::singleShot(0, [] { for (auto* widget : QApplication::topLevelWidgets()) if (auto* message = qobject_cast<QMessageBox*>(widget)) message->accept(); });
+    static bool clickWhileDismissingMessage(QAbstractButton* button) {
+        bool dismissed = false;
+        QTimer retry;
+        retry.setInterval(25);
+        QObject::connect(&retry, &QTimer::timeout, &retry, [&dismissed] {
+            for (auto* widget : QApplication::topLevelWidgets()) {
+                if (auto* message = qobject_cast<QMessageBox*>(widget); message && message->isVisible()) {
+                    dismissed = true;
+                    message->accept();
+                    return;
+                }
+            }
+        });
+        retry.start();
+        button->click();
+        retry.stop();
+        return dismissed;
     }
 private slots:
     void initTestCase() {
@@ -107,7 +124,7 @@ private slots:
         connect(&dialog, &SettingsWindow::settingsApplied, &h.controller, [&] { h.controller.applyConfiguration({settings.value("assistant/executable").toString(), settings.value("assistant/model").toString()}); });
         auto* edit = dialog.findChild<QLineEdit*>("assistantExecutable"); QVERIFY(edit); edit->setText("C:/Native path/codex.exe");
         auto* save = dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save);
-        repository.failSave = true; dismissMessage(); save->click(); QCOMPARE(applied.size(), 0); QCOMPARE(h.controller.configuration().executablePath, QString{});
+        repository.failSave = true; QVERIFY(clickWhileDismissingMessage(save)); QCOMPARE(applied.size(), 0); QCOMPARE(h.controller.configuration().executablePath, QString{});
         repository.failSave = false; save->click(); QCOMPARE(applied.size(), 1); QCOMPARE(h.controller.configuration().executablePath, edit->text());
         for (auto i = repository.values.cbegin(); i != repository.values.cend(); ++i) QVERIFY(!i.key().contains("login") && !i.key().contains("token") && !i.key().contains("account") && !i.key().contains("runtime"));
     }
