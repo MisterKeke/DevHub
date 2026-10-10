@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 3.28)
 
+# vcpkg selects its MinGW compilers from PATH independently of the application
+# compiler supplied by Qt Creator. Put that kit first before project() triggers
+# the manifest install, so cached dependencies use the same compiler/runtime.
+if(CMAKE_HOST_WIN32 AND VCPKG_TARGET_TRIPLET MATCHES "-mingw-" AND
+   IS_ABSOLUTE "${CMAKE_CXX_COMPILER}")
+    get_filename_component(_devhub_compiler_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    if(EXISTS "${_devhub_compiler_bin}/gcc.exe")
+        file(TO_NATIVE_PATH "${_devhub_compiler_bin}" _devhub_compiler_bin_native)
+        set(ENV{PATH} "${_devhub_compiler_bin_native};$ENV{PATH}")
+    endif()
+endif()
+
 project(DevHub VERSION 0.0.1 LANGUAGES CXX)
 
 include(CTest)

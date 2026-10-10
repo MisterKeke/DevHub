@@ -46,6 +46,15 @@ cmake -S . -B out/build/qtcreator-mingw -G Ninja `
 
 Set the same `CMAKE_TOOLCHAIN_FILE` and `VCPKG_TARGET_TRIPLET` in Qt Creator's CMake configuration. The manifest installs libsodium for the selected triplet.
 
+When Qt Creator supplies an absolute `CMAKE_CXX_COMPILER` for a MinGW kit,
+DevHub puts that compiler's directory first on the configure process's `PATH`
+before vcpkg installs dependencies. This keeps dependencies on the same MinGW
+compiler/runtime as the application even when MSYS2 is also installed.
+If linking reports `libsodium.a ... undefined reference to memset_explicit`,
+run **Build → Run CMake** and rebuild. This error can occur when libsodium was
+built with a newer MSYS2 compiler while DevHub uses Qt's MinGW compiler;
+reconfiguration rebuilds the dependencies for the selected kit.
+
 Build configurations are Debug, RelWithDebInfo, and Release. The CI preset turns warnings into errors and pins the MSVC v143 14.44 toolset.
 
 ## Formatting and analysis
