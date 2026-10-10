@@ -111,7 +111,15 @@ Result<void> SqlConversationRepository::save(const AssistantConversationMetadata
     query.addBindValue(binding.profileFingerprint); query.addBindValue(workspaceId); query.addBindValue(workspaceId);
     query.addBindValue(metadata.devhubAccountId);
     if (!query.exec()) return Result<void>::failure(database::SqlErrorMapper::fromSqlError(query.lastError(), QStringLiteral("save assistant conversation")));
-    if (query.numRowsAffected() != 1) return invalidMetadata(QStringLiteral("Conversation write affected %1 rows.").arg(query.numRowsAffected()));
+    // INSERT ... SELECT row counts are reported inconsistently by SQLite
+    // drivers. Verify the scoped row itself so a successful write is not
+    // misclassified as a failed save (while still detecting rejected scope).
+    QSqlQuery verify(m_database.database());
+    verify.prepare(QStringLiteral("SELECT 1 FROM assistant_conversations WHERE id=? AND account_id=? LIMIT 1"));
+    verify.addBindValue(metadata.conversation.id.toString(QUuid::WithoutBraces));
+    verify.addBindValue(metadata.devhubAccountId);
+    if (!verify.exec() || !verify.next())
+        return invalidMetadata(QStringLiteral("The scoped conversation row was not saved."));
     return Result<void>::success();
 }
 } // namespace devhub::infrastructure::assistant

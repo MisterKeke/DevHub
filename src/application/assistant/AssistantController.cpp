@@ -24,7 +24,10 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
     m_renderTimer.setSingleShot(true); m_renderTimer.setInterval(m_limits.renderMilliseconds);
     m_cancelTimer.setSingleShot(true); m_cancelTimer.setInterval(m_limits.cancellationMilliseconds);
     connect(&m_renderTimer, &QTimer::timeout, this, &AssistantController::flushMessages);
-    connect(&m_cancelTimer, &QTimer::timeout, this, [this] { m_client.stop(); });
+    connect(&m_cancelTimer, &QTimer::timeout, this, [this] {
+        m_client.stop();
+        if (!m_backendOwned && m_shuttingDown) completeShutdown();
+    });
     connect(&client, &ICodexClient::initialized, this, [this] {
         m_modelsRequested = true;
         const auto result = m_client.listModels();
@@ -95,6 +98,7 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
     connect(&client, &ICodexClient::backendStopped, this, [this](quint64 generation) {
         if (generation != m_processGeneration) return;
         m_backendOwned = false; m_cancelTimer.stop();
+        if (m_shuttingDown) { completeShutdown(); return; }
         if (m_newChatWanted) { m_newChatWanted = false; resetConversation(); }
         if (std::exchange(m_reconnectWanted, false) && m_allowed) beginProbe();
         else { m_connection = AssistantConnectionState::Disconnected; emit stateChanged(); }
@@ -237,6 +241,7 @@ void AssistantController::admitPendingMessage()
 }
 void AssistantController::receivedThread(const CodexThread& thread)
 {
+    if (m_shuttingDown || !m_allowed) return;
     if (m_operation == AssistantOperation::CreatingThread) {
         m_binding = thread.binding; m_threadOwned = true; m_operation = AssistantOperation::Submitting;
         persistCurrent(); submit();
@@ -285,7 +290,7 @@ void AssistantController::submit()
 }
 void AssistantController::receivedItem(const CodexItem& item)
 {
-    if (!m_allowed || (m_operation != AssistantOperation::Streaming && m_operation != AssistantOperation::Cancelling) || item.type != "agentMessage") return;
+    if (m_shuttingDown || !m_allowed || (m_operation != AssistantOperation::Streaming && m_operation != AssistantOperation::Cancelling) || item.type != "agentMessage") return;
     const auto* user = message(m_pendingUser);
     if (!user || item.threadId != user->threadId || item.turnId != user->turnId) return;
     auto* value = mutableMessage(m_itemMessages.value(item.id));
@@ -316,6 +321,7 @@ void AssistantController::flushMessages()
 }
 void AssistantController::finishedTurn(const CodexTurn& turn)
 {
+    if (!m_allowed && !m_shuttingDown) { m_client.stop(); return; }
     const auto* user = message(m_pendingUser);
     if (!user || user->turnId != turn.id || user->threadId != turn.threadId) return;
     m_cancelTimer.stop();
@@ -334,6 +340,7 @@ void AssistantController::finishedTurn(const CodexTurn& turn)
     persistCurrent(turnStatus);
     flushMessages(); emit stateChanged();
     if (std::exchange(m_newChatWanted, false)) resetConversation();
+    if (m_shuttingDown || !m_allowed) { m_client.stop(); return; }
     QTimer::singleShot(0, this, &AssistantController::applyPendingConfiguration);
 }
 void AssistantController::stopTurn()
@@ -405,6 +412,7 @@ void AssistantController::retry(const QUuid& id)
 void AssistantController::setContext(AssistantContext context)
 {
     if (context == m_selectedContext) return;
+    if (!m_messages.isEmpty() && !sameContextBinding(context, m_conversation.context)) revokeAccess();
     m_selectedContext = std::move(context);
     if (m_messages.isEmpty()) m_conversation.context = m_selectedContext;
     else if (!sameContextBinding(m_selectedContext, m_conversation.context)) { m_contextBlocked = true; stopTurn(); }
@@ -418,10 +426,16 @@ void AssistantController::setPersistenceContext(QString accountId, bool restoreE
 }
 void AssistantController::setSessionAllowed(bool allowed, bool clearTranscript)
 {
+    if (m_shuttingDown && allowed) return;
+    const bool wasAllowed = m_allowed;
     m_allowed = allowed;
     if (!allowed) {
+        if (wasAllowed) revokeAccess();
         m_loginPending = false; m_challenge.reset(); m_loginStatus.clear();
-        ++m_probeGeneration; emit cancelProbeRequested(); m_reconnectWanted = false; m_client.stop();
+        if (wasAllowed) {
+            ++m_probeGeneration; emit cancelProbeRequested(); m_reconnectWanted = false;
+            stopBackendAfterInterrupt();
+        }
         if (clearTranscript) { m_sessionConversations.clear(); resetConversation(false); }
     } else if (m_opened) {
         if (m_backendOwned && !m_client.isInitialized()) m_reconnectWanted = true;
@@ -429,8 +443,92 @@ void AssistantController::setSessionAllowed(bool allowed, bool clearTranscript)
     }
     emit stateChanged();
 }
+void AssistantController::revokeAccess()
+{
+    ++m_accessGeneration;
+    emit accessRevoked(m_accessGeneration);
+}
+void AssistantController::stopBackendAfterInterrupt()
+{
+    if (!m_backendOwned) {
+        if (m_shuttingDown) QTimer::singleShot(0, this, &AssistantController::completeShutdown);
+        return;
+    }
+    if (!m_client.activeTurnId().isEmpty()) {
+        m_operation = AssistantOperation::Cancelling;
+        m_cancelTimer.start(m_limits.cancellationMilliseconds);
+        const auto interrupted = m_client.interruptTurn();
+        if (!interrupted) m_client.stop();
+        emit stateChanged();
+        return;
+    }
+    m_client.stop();
+}
+void AssistantController::beginShutdown(std::function<void()> completion)
+{
+    if (m_shutdownComplete) {
+        if (completion) QTimer::singleShot(0, this, [completion = std::move(completion)] { completion(); });
+        return;
+    }
+    if (completion) m_shutdownCompletion = std::move(completion);
+    if (m_shuttingDown) return;
+    m_shuttingDown = true;
+    m_allowed = false;
+    revokeAccess();
+    m_loginPending = false; m_challenge.reset(); m_loginStatus.clear();
+    ++m_probeGeneration; emit cancelProbeRequested();
+    m_reconnectWanted = false; m_newChatWanted = false;
+    m_renderTimer.stop(); m_changed.clear();
+    stopBackendAfterInterrupt();
+    if (!m_backendOwned) QTimer::singleShot(0, this, &AssistantController::completeShutdown);
+    emit stateChanged();
+}
+void AssistantController::completeShutdown()
+{
+    if (!m_shuttingDown || m_shutdownComplete || m_backendOwned) return;
+    m_shutdownComplete = true;
+    if (m_shutdownCompletion) {
+        auto completion = std::exchange(m_shutdownCompletion, {});
+        completion();
+    }
+    emit shutdownFinished();
+}
+QStringList AssistantController::diagnosticsSnapshot() const
+{
+    const auto connection = [this] {
+        switch (m_connection) {
+        case AssistantConnectionState::Disconnected: return tr("disconnected");
+        case AssistantConnectionState::Probing: return tr("checking executable");
+        case AssistantConnectionState::Starting: return tr("starting");
+        case AssistantConnectionState::Ready: return tr("ready");
+        case AssistantConnectionState::Stopping: return tr("stopping");
+        case AssistantConnectionState::Failed: return tr("failed");
+        }
+        return tr("unknown");
+    }();
+    const auto operation = [this] {
+        switch (m_operation) {
+        case AssistantOperation::Idle: return tr("idle");
+        case AssistantOperation::CreatingThread: return tr("creating thread");
+        case AssistantOperation::Restoring: return tr("restoring");
+        case AssistantOperation::Submitting: return tr("submitting");
+        case AssistantOperation::Streaming: return tr("streaming");
+        case AssistantOperation::Cancelling: return tr("cancelling");
+        case AssistantOperation::Reconciling: return tr("reconciling uncertain delivery");
+        case AssistantOperation::Uncertain: return tr("delivery uncertain");
+        }
+        return tr("unknown");
+    }();
+    const QString version = m_runtimeVersion.isEmpty() ? tr("unverified") : m_runtimeVersion;
+    const QString profile = m_client.profileVerified() ? tr("verified") : tr("unverified");
+    return {tr("Assistant connection: %1").arg(connection),
+            tr("Assistant operation: %1").arg(operation),
+            tr("Codex runtime: %1; profile: %2").arg(version, profile),
+            tr("Assistant access generation: %1").arg(m_accessGeneration)};
+}
 void AssistantController::failedRequest(const QString& method, const domain::errors::AppError& error)
 {
+    if (m_shuttingDown) return;
     if (method == "thread/resume" && m_operation == AssistantOperation::Restoring) {
         m_operation = AssistantOperation::Idle; m_threadOwned = false; m_restoreMetadata.reset();
         m_restoreUnavailable = true;

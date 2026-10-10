@@ -7,6 +7,7 @@
 #include "presentation/databases/DatabasePage.h"
 
 #include <QComboBox>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QMessageBox>
@@ -469,16 +470,26 @@ class FeatureRegressionTest final : public QObject
 
     void supportBundleHasValidCentralDirectory()
     {
-        QTemporaryDir root;
+        QTemporaryDir root(QDir::current().filePath(QStringLiteral("support-bundle-XXXXXX")));
+        QVERIFY(root.isValid());
         SettingsRepository repository;
         application::settings::SettingsService settings(repository);
         shared::security::RedactionService redactor;
         application::support::SupportBundleBuilder builder(root.path(), settings, redactor);
+        QFile log(root.filePath(QStringLiteral("devhub.log")));
+        QVERIFY2(log.open(QIODevice::WriteOnly | QIODevice::Text), qPrintable(log.errorString()));
+        const QByteArray planted = QByteArrayLiteral("PLANTED_ASSISTANT_TRANSCRIPT_SECRET_7f83c4");
+        log.write("2026-10-10 INFO [devhub.assistant] transcript="); log.write(planted); log.write("\n");
+        log.write("2026-10-10 INFO [devhub.codex.protocol] state="); log.write(planted); log.write("\n");
+        log.write("2026-10-10 INFO [devhub.workspace] status=ready\n"); log.close();
         const auto path = root.filePath(QStringLiteral("support.zip"));
-        QVERIFY(builder.write(path, {}, {QStringLiteral("Healthy")}));
+        QVERIFY(builder.write(path, {}, {QStringLiteral("Healthy"), QString::fromLatin1(planted),
+            QStringLiteral("Codex state: ") + QString::fromLatin1(planted)}));
         QFile file(path);
         QVERIFY(file.open(QIODevice::ReadOnly));
         const QByteArray bytes = file.readAll();
+        QVERIFY(!bytes.contains(planted));
+        QVERIFY(builder.previewCategories({}).join(QLatin1Char('\n')).contains(QStringLiteral("Assistant transcripts, and Codex state")));
         const qsizetype central = bytes.indexOf(QByteArray::fromHex("504b0102"));
         QVERIFY(central >= 0);
         const auto u16 = [&bytes](qsizetype at)

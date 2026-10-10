@@ -7,6 +7,7 @@ include(cmake/ProjectOptions.cmake)
 include(cmake/ProjectWarnings.cmake)
 
 option(DEVHUB_BUILD_TESTS "Build DevHub tests" ${BUILD_TESTING})
+option(DEVHUB_BUILD_LIVE_ASSISTANT_TESTS "Build the explicitly opted-in real Codex integration harness" OFF)
 option(DEVHUB_ENABLE_PACKAGING "Enable installer and packaging targets" OFF)
 option(DEVHUB_ENABLE_SANITIZERS "Enable supported compiler sanitizers" OFF)
 option(DEVHUB_WARNINGS_AS_ERRORS "Treat DevHub warnings as errors" OFF)
@@ -80,7 +81,7 @@ target_link_libraries(devhub_core
     PRIVATE project_warnings Qt6::Core
 )
 
-add_library(devhub_assistant STATIC
+set(DEVHUB_ASSISTANT_SOURCES
     src/application/assistant/ICodexExecutableProbe.h
     src/application/assistant/ICodexClient.h
     src/application/assistant/IConversationRepository.h
@@ -106,9 +107,24 @@ add_library(devhub_assistant STATIC
     src/infrastructure/codex/CodexWireContract.cpp
     resources/codex_contracts.qrc
 )
-target_include_directories(devhub_assistant PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(devhub_assistant PUBLIC project_options devhub_core Qt6::Core
-    PRIVATE project_warnings devhub_database Qt6::Sql)
+
+function(configure_devhub_assistant target)
+    target_include_directories(${target} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(${target} PUBLIC project_options devhub_core Qt6::Core
+        PRIVATE project_warnings devhub_database Qt6::Sql)
+endfunction()
+
+add_library(devhub_assistant STATIC ${DEVHUB_ASSISTANT_SOURCES})
+configure_devhub_assistant(devhub_assistant)
+
+if(DEVHUB_BUILD_LIVE_ASSISTANT_TESTS)
+    # Keep the development inference-validation policy out of the production
+    # library and app even when the dedicated opt-in test target is enabled.
+    add_library(devhub_assistant_live_validation STATIC ${DEVHUB_ASSISTANT_SOURCES})
+    configure_devhub_assistant(devhub_assistant_live_validation)
+    target_compile_definitions(devhub_assistant_live_validation PRIVATE
+        DEVHUB_ASSISTANT_LIVE_VALIDATION_BUILD=1)
+endif()
 
 add_library(devhub_database STATIC
     src/application/databases/DatabaseTypes.cpp
@@ -356,6 +372,9 @@ endif()
 if(DEVHUB_BUILD_TESTS)
     find_package(Qt6 6.8.3 REQUIRED COMPONENTS Test)
     add_subdirectory(tests)
+endif()
+if(DEVHUB_BUILD_LIVE_ASSISTANT_TESTS AND NOT DEVHUB_BUILD_TESTS)
+    message(FATAL_ERROR "DEVHUB_BUILD_LIVE_ASSISTANT_TESTS requires DEVHUB_BUILD_TESTS=ON")
 endif()
 
 if(DEVHUB_ENABLE_PACKAGING)

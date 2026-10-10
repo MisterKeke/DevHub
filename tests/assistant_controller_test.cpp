@@ -1,8 +1,15 @@
 #include "support/AssistantHarness.h"
+#include "application/events/ApplicationEventHub.h"
+#include "application/lifecycle/ApplicationLifecycle.h"
+#include "application/lifecycle/ShutdownCoordinator.h"
+#include "application/tasks/TaskScheduler.h"
 #include <QCryptographicHash>
+#include <QCoreApplication>
 #include <QSignalSpy>
+#include <QTimer>
 #include <QTest>
 using namespace devhub::application::assistant;
+namespace application = devhub::application;
 using namespace devhub::tests::assistant;
 using namespace devhub::tests::codex;
 using devhub::domain::errors::ErrorCode;
@@ -11,6 +18,42 @@ using devhub::domain::errors::ErrorCategory;
 class AssistantControllerTest final : public QObject {
     Q_OBJECT
 private slots:
+    void shutdownCoordinatorWaitsForParticipantAndBoundsTimeout()
+    {
+        {
+            application::events::ApplicationEventHub events;
+            application::lifecycle::ApplicationLifecycle lifecycle(events);
+            QVERIFY(lifecycle.transitionTo(application::lifecycle::ApplicationLifecycleState::Ready));
+            SequenceIds ids; application::tasks::TaskScheduler scheduler(ids, 1);
+            application::lifecycle::ShutdownCoordinator shutdown(*QCoreApplication::instance(), lifecycle,
+                scheduler, events, nullptr, 100);
+            QObject participant; QSignalSpy finished(&shutdown, &application::lifecycle::ShutdownCoordinator::shutdownFinished);
+            shutdown.addPreQuitParticipant(&participant, [&participant](auto completion) {
+                QTimer::singleShot(0, &participant, [completion = std::move(completion)] { completion(); });
+            });
+            shutdown.requestShutdown();
+            QCOMPARE(lifecycle.state(), application::lifecycle::ApplicationLifecycleState::ShutdownRequested);
+            QVERIFY(!scheduler.isAccepting());
+            QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 1000);
+            QCOMPARE(lifecycle.state(), application::lifecycle::ApplicationLifecycleState::Stopped);
+        }
+        {
+            application::events::ApplicationEventHub events;
+            application::lifecycle::ApplicationLifecycle lifecycle(events);
+            QVERIFY(lifecycle.transitionTo(application::lifecycle::ApplicationLifecycleState::Ready));
+            SequenceIds ids; application::tasks::TaskScheduler scheduler(ids, 1);
+            application::lifecycle::ShutdownCoordinator shutdown(*QCoreApplication::instance(), lifecycle,
+                scheduler, events, nullptr, 25);
+            QObject participant; application::lifecycle::ShutdownCoordinator::Completion stale;
+            shutdown.addPreQuitParticipant(&participant, [&stale](auto completion) { stale = std::move(completion); });
+            QSignalSpy finished(&shutdown, &application::lifecycle::ShutdownCoordinator::shutdownFinished);
+            shutdown.requestShutdown();
+            QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 1000);
+            QCOMPARE(lifecycle.state(), application::lifecycle::ApplicationLifecycleState::Stopped);
+            stale(); QCoreApplication::processEvents();
+            QCOMPARE(finished.size(), 1);
+        }
+    }
     void lazyProbeAndThread()
     {
         Harness h; QCOMPARE(h.transport.sent.size(), 0); QVERIFY(h.readyController()); QVERIFY(h.controller.canSend());
@@ -222,6 +265,39 @@ private slots:
         h.controller.newChat(); QCOMPARE(h.controller.conversation().context.name, QStringLiteral("B"));
         h.controller.setSessionAllowed(false, true); QVERIFY(h.controller.messages().isEmpty()); QVERIFY(!h.controller.canSend());
         QVERIFY(h.controller.sessionConversations().isEmpty());
+    }
+    void shutdownInterruptsBeforeStoppingAndRejectsLateWork()
+    {
+        MemoryConversationRepository repository; Harness h({}, {}, &repository);
+        h.controller.setPersistenceContext(QStringLiteral("local-account"), true);
+        QVERIFY(h.readyController()); QVERIFY(h.sendAndAccept(QStringLiteral("shutdown marker")));
+        QSignalSpy revoked(&h.controller, &AssistantController::accessRevoked);
+        QSignalSpy stopped(&h.controller, &AssistantController::shutdownFinished);
+        bool completed = false;
+        h.controller.beginShutdown([&completed] { completed = true; });
+        QCOMPARE(revoked.size(), 1); QVERIFY(!h.controller.canSend());
+        QCOMPARE(h.transport.stops, 0);
+        QCOMPARE(h.transport.lastRequest(QStringLiteral("turn/interrupt")).value("method"), QJsonValue("turn/interrupt"));
+        h.finish(QStringLiteral("interrupted"));
+        QVERIFY(completed); QCOMPARE(stopped.size(), 1); QCOMPARE(h.transport.stops, 1);
+        QVERIFY(!h.controller.canSend());
+        QCOMPARE(repository.rows.back().lastTurnStatus, QStringLiteral("interrupted"));
+        const auto messages = h.controller.messages().size();
+        h.delta(QStringLiteral("late callback")); QCOMPARE(h.controller.messages().size(), messages);
+    }
+    void lockRevokesAssistantWithoutDeletingCodexAssociation()
+    {
+        MemoryConversationRepository repository; Harness h({}, {}, &repository);
+        h.controller.setPersistenceContext(QStringLiteral("local-account"), true);
+        QVERIFY(h.readyController()); QVERIFY(h.sendAndAccept());
+        const auto access = h.controller.accessGeneration();
+        h.controller.setSessionAllowed(false, true);
+        QVERIFY(h.controller.accessGeneration() > access); QVERIFY(h.controller.messages().isEmpty());
+        QVERIFY(!h.controller.canSend()); QCOMPARE(repository.rows.size(), 1);
+        QCOMPARE(h.transport.stops, 0);
+        h.finish(QStringLiteral("interrupted"));
+        QCOMPARE(h.transport.stops, 1); QCOMPARE(repository.rows.size(), 1);
+        h.controller.setSessionAllowed(true); QVERIFY(h.controller.setupAllowed());
     }
     void cancellationWatchdog()
     {

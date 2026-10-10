@@ -84,6 +84,20 @@ set_tests_properties(devhub.assistant-settings PROPERTIES TIMEOUT 45
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
+# Developer-only harness; intentionally excluded from CTest and default builds.
+if(DEVHUB_BUILD_LIVE_ASSISTANT_TESTS)
+    # Offline-only policy test for the compile-time validation archive. This
+    # executable does not launch Codex, authenticate, or create a thread.
+    qt_add_executable(devhub_assistant_live_validation_policy_tests
+        assistant_live_validation_policy_test.cpp)
+    target_link_libraries(devhub_assistant_live_validation_policy_tests PRIVATE
+        devhub_assistant_live_validation Qt6::Test project_warnings)
+
+    qt_add_executable(devhub_assistant_live_tests assistant_live_integration_test.cpp)
+    target_link_libraries(devhub_assistant_live_tests PRIVATE
+        devhub_assistant_live_validation Qt6::Test project_warnings)
+endif()
+
 qt_add_executable(devhub_database_tests
     database_migration_test.cpp
     ../resources/database_migrations.qrc

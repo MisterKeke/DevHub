@@ -4,6 +4,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QFileInfo>
+#include <QDir>
+#include <QFile>
+#include <QProcessEnvironment>
 #include <QSet>
 
 namespace devhub::infrastructure::codex {
@@ -21,6 +24,35 @@ QString quoted(const QString& value)
     return QString::fromUtf8(encoded.mid(1, encoded.size() - 2));
 }
 bool disabled(const QJsonValue& value) { return value.isBool() && !value.toBool(); }
+
+QString canonicalPath(const QString& path)
+{
+    return QDir::cleanPath(QFileInfo(path).canonicalFilePath());
+}
+
+bool samePath(const QString& left, const QString& right)
+{
+    const auto canonicalLeft = QDir::fromNativeSeparators(canonicalPath(left)).toCaseFolded();
+    const auto canonicalRight = QDir::fromNativeSeparators(canonicalPath(right)).toCaseFolded();
+    return !canonicalLeft.isEmpty() && canonicalLeft == canonicalRight;
+}
+
+bool pathsOverlap(const QString& left, const QString& right)
+{
+    const auto canonicalLeft = QDir::fromNativeSeparators(canonicalPath(left)).toCaseFolded();
+    const auto canonicalRight = QDir::fromNativeSeparators(canonicalPath(right)).toCaseFolded();
+    return !canonicalLeft.isEmpty() && !canonicalRight.isEmpty()
+        && (canonicalLeft == canonicalRight || canonicalLeft.startsWith(canonicalRight + '/')
+            || canonicalRight.startsWith(canonicalLeft + '/'));
+}
+
+QString environmentValue(const QProcessEnvironment& environment, const QString& name)
+{
+    for (const auto& key : environment.keys()) {
+        if (key.compare(name, Qt::CaseInsensitive) == 0) return environment.value(key);
+    }
+    return {};
+}
 }
 shared::common::Result<QStringList> CodexRuntimeProfile::launchArguments(QStringList disabledMcpServers)
 {
@@ -132,6 +164,51 @@ bool CodexRuntimeProfile::acceptsEnvironment(const QProcessEnvironment& environm
     }
     return true;
 }
+bool CodexRuntimeProfile::developmentLiveValidationBuild()
+{
+#if defined(DEVHUB_ASSISTANT_LIVE_VALIDATION_BUILD) && DEVHUB_ASSISTANT_LIVE_VALIDATION_BUILD
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool CodexRuntimeProfile::developmentLiveInferenceAuthorized(
+    const QString& executablePath, const QString& version, const QProcessEnvironment& childEnvironment)
+{
+    if (!developmentLiveValidationBuild() || version != QStringLiteral("0.160.1")
+        || !acceptsEnvironment(childEnvironment)) return false;
+
+    const auto processEnvironment = QProcessEnvironment::systemEnvironment();
+    if (processEnvironment.value(QStringLiteral("DEVHUB_RUN_LIVE_ASSISTANT_TESTS"))
+            != QStringLiteral("I_ACKNOWLEDGE_REAL_CODEX_INFERENCE")
+        || processEnvironment.value(QStringLiteral("DEVHUB_LIVE_DISPOSABLE_PROFILE_ACK"))
+            != QStringLiteral("I_CREATED_THIS_DISPOSABLE_PROFILE")) return false;
+
+    const auto expectedExecutable = processEnvironment.value(QStringLiteral("DEVHUB_LIVE_CODEX_EXE"));
+    const auto expectedHome = processEnvironment.value(QStringLiteral("DEVHUB_LIVE_CODEX_HOME"));
+    const QFileInfo executableInfo(executablePath);
+    const QFileInfo expectedExecutableInfo(expectedExecutable);
+    const QFileInfo homeInfo(expectedHome);
+    if (expectedExecutable.isEmpty() || expectedHome.isEmpty()
+        || !executableInfo.isAbsolute() || !executableInfo.isFile() || !executableInfo.isExecutable()
+        || !expectedExecutableInfo.isAbsolute() || !expectedExecutableInfo.isFile()
+        || !expectedExecutableInfo.isExecutable() || !homeInfo.isAbsolute() || !homeInfo.isDir()
+        || !samePath(executablePath, expectedExecutable)) return false;
+#ifdef Q_OS_WIN
+    if (executableInfo.suffix().compare(QStringLiteral("exe"), Qt::CaseInsensitive) != 0) return false;
+#endif
+
+    const auto childHome = environmentValue(childEnvironment, QStringLiteral("CODEX_HOME"));
+    if (childHome.isEmpty() || !samePath(expectedHome, childHome)) return false;
+    const auto defaultHome = QDir::home().filePath(QStringLiteral(".codex"));
+    if (QFileInfo(defaultHome).exists() && pathsOverlap(defaultHome, expectedHome)) return false;
+
+    QFile marker(QDir(expectedHome).filePath(QStringLiteral(".devhub-disposable-codex-profile")));
+    return marker.open(QIODevice::ReadOnly)
+        && marker.read(128) == QByteArray("DevHub live integration disposable profile\n");
+}
+
 bool CodexRuntimeProfile::acceptsLoginUrl(const QUrl& url, bool deviceCode)
 {
     return application::assistant::acceptsCodexLoginUrl(url, deviceCode);

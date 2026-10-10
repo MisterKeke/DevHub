@@ -50,6 +50,7 @@ private:
         QString expectedThread = {}, QString argument = {});
     [[nodiscard]] bool hasPending(Operation operation) const;
     [[nodiscard]] bool bindingMatches(const application::assistant::CodexThreadBinding& binding) const;
+    [[nodiscard]] bool liveInferenceGateOpen() const;
     void receive(const QJsonObject& object, quint64 generation);
     void response(const QJsonObject& object);
     void notification(const QJsonObject& object);
@@ -95,6 +96,7 @@ private:
     bool m_initializeSent = false;
     bool m_initialized = false;
     bool m_profileVerified = false;
+    bool m_developmentLiveValidationAuthorized = false;
     bool m_uncertain = false;
     bool m_interruptAccepted = false;
     QString m_scratch;

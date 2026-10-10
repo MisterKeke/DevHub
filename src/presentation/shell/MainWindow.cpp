@@ -34,6 +34,7 @@
 #include "../../application/authentication/AuthenticationService.h"
 #include "../../application/authentication/SessionController.h"
 #include "../../application/authentication/SessionState.h"
+#include "../../application/lifecycle/ShutdownCoordinator.h"
 
 #include <QAction>
 #include <QApplication>
@@ -142,6 +143,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
                        const shared::security::RedactionService& redactor,
                        application::assistant::AssistantController& assistantController,
                        application::assistant::ICodexExecutableProbe& assistantSetupProbe,
+                       application::lifecycle::ShutdownCoordinator& shutdownCoordinator,
                        QWidget* parent)
     : QMainWindow(parent),
       m_session(session),
@@ -155,6 +157,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
       m_serviceCoordinator(serviceCoordinator),
       m_settingsService(settingsService),
       m_assistantController(assistantController), m_assistantSetupProbe(assistantSetupProbe),
+      m_shutdownCoordinator(shutdownCoordinator),
       m_themeManager(themeManager),
       m_eventHub(eventHub),
       m_notificationRepository(notificationRepository),
@@ -858,6 +861,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             running += state.lifecycle == application::services::ServiceLifecycleState::Running ? 1 : 0;
         status << tr("Managed services running: %1 of %2").arg(running).arg(serviceStates.size());
         status << tr("Open-port records cached: %1").arg(m_workspaceContext.activeWorkspace() ? tr("available in Ports") : tr("not loaded"));
+        status.append(m_assistantController.diagnosticsSnapshot());
         devhub::presentation::settings::SupportBundleDialog dialog(m_supportBundleBuilder, status, this);
         dialog.exec();
     });
@@ -1279,6 +1283,7 @@ void MainWindow::resizeEvent(QResizeEvent* event)
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    if (m_shutdownRequested) { event->ignore(); return; }
     if (m_serviceCoordinator.hasRunningServices()) {
         if (!m_closeAfterServicesStop) {
             QMessageBox dialog(this); dialog.setWindowTitle(tr("Services are running"));
@@ -1297,7 +1302,11 @@ void MainWindow::closeEvent(QCloseEvent* event)
         QSettings().setValue(QStringLiteral("window/normalGeometry"), normalGeometry());
     }
     QSettings().setValue(QStringLiteral("window/lastPage"), m_pageHost->currentIndex());
-    QMainWindow::closeEvent(event);
+    // All feature transition guards accepted the close. Keep owners alive while
+    // the asynchronous Assistant participant drains its child process.
+    m_shutdownRequested = true;
+    m_shutdownCoordinator.requestShutdown();
+    event->ignore();
 }
 
 void MainWindow::restoreSafeGeometry()

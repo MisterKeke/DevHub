@@ -5,6 +5,7 @@
 #include "shared/identifiers/IdGenerator.h"
 #include <QSet>
 #include <QTimer>
+#include <functional>
 #include <optional>
 
 namespace devhub::application::assistant {
@@ -37,6 +38,9 @@ public:
     void setContext(AssistantContext context);
     void setPersistenceContext(QString accountId, bool restoreEnabled);
     void setSessionAllowed(bool allowed, bool clearTranscript = false);
+    void beginShutdown(std::function<void()> completion = {});
+    [[nodiscard]] QStringList diagnosticsSnapshot() const;
+    [[nodiscard]] quint64 accessGeneration() const noexcept { return m_accessGeneration; }
     [[nodiscard]] bool canSend() const;
     [[nodiscard]] bool busy() const;
     [[nodiscard]] bool canStop() const;
@@ -61,6 +65,10 @@ signals:
     void messageAdded(QUuid id);
     void messageChanged(QUuid id);
     void sendAdmitted(QString source);
+    // Lifecycle contract for future capabilities: every scope revocation bumps
+    // this generation before asynchronous work is interrupted or discarded.
+    void accessRevoked(quint64 generation);
+    void shutdownFinished();
 private:
     void refreshConnection();
     void beginProbe();
@@ -79,6 +87,9 @@ private:
     void persistCurrent(const QString& turnStatus = {});
     void hydrateConversation(const AssistantConversationMetadata&, const CodexThread&);
     void applyPendingConfiguration();
+    void revokeAccess();
+    void stopBackendAfterInterrupt();
+    void completeShutdown();
     AssistantMessage* mutableMessage(const QUuid&);
     qsizetype transcriptBytes() const;
     ICodexClient& m_client;
@@ -130,5 +141,10 @@ private:
     bool m_restoreEnabled = true;
     bool m_restoreAttempted = false;
     bool m_restoreUnavailable = false;
+    bool m_shuttingDown = false;
+    bool m_shutdownStopRequested = false;
+    bool m_shutdownComplete = false;
+    quint64 m_accessGeneration = 0;
+    std::function<void()> m_shutdownCompletion;
 };
 }

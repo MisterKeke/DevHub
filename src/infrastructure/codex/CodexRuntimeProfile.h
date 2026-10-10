@@ -17,5 +17,13 @@ public:
     // Phase 0 has no authenticated/native model proof. No runtime boolean can
     // turn synthetic protocol verification into live release approval.
     [[nodiscard]] static constexpr bool liveInferenceApproved() { return false; }
+    // True only in the separate static library linked by the explicit live-test
+    // executable. This is not a production approval and is not user-configurable.
+    [[nodiscard]] static bool developmentLiveValidationBuild();
+    // Per-launch validation authorization. A live-test build must still provide
+    // explicit acknowledgements, the exact supported executable and an isolated,
+    // sentinel-marked CODEX_HOME. Production builds always return false.
+    [[nodiscard]] static bool developmentLiveInferenceAuthorized(
+        const QString& executablePath, const QString& version, const QProcessEnvironment& childEnvironment);
 };
 }

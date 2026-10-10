@@ -109,6 +109,8 @@ Result<void> CodexClient::launch(const CodexLaunchSpec& spec)
     m_expectedHome.clear();
     for (const auto& key : spec.environment.keys()) if (key.compare("CODEX_HOME", Qt::CaseInsensitive) == 0)
         m_expectedHome = QFileInfo(spec.environment.value(key)).canonicalFilePath();
+    m_developmentLiveValidationAuthorized = CodexRuntimeProfile::developmentLiveInferenceAuthorized(
+        spec.executable.path, spec.executable.version, spec.environment);
     m_initializeInfo = {}; m_account = {}; m_thread = {}; m_turnId.clear(); m_lastTurnId.clear();
     m_items.clear(); m_itemOrder.clear(); m_earlyTurns.clear(); m_earlyLogins.clear(); m_earlyBytes = 0; m_earlyLoginBytes = 0; m_serverRequests.clear();
     m_config.reset(); m_requirements.reset(); ++m_accountEpoch;
@@ -225,7 +227,7 @@ bool CodexClient::canSend() const
     return m_active && bindingMatches(m_thread) && !m_uncertain && m_turnId.isEmpty() && !hasPending(Operation::TurnStart)
         && !hasPending(Operation::ThreadStart) && !hasPending(Operation::ThreadResume) && !hasPending(Operation::ThreadRead) && !m_login
         && !hasPending(Operation::LoginStart) && !hasPending(Operation::Account) && m_transport
-        && (m_transport->kind() == CodexTransportKind::InMemoryTest || CodexRuntimeProfile::liveInferenceApproved());
+        && (m_transport->kind() == CodexTransportKind::InMemoryTest || liveInferenceGateOpen());
 }
 bool CodexClient::canStartConversation() const
 {
@@ -235,7 +237,11 @@ bool CodexClient::canStartConversation() const
         && !hasPending(Operation::ThreadStart) && !hasPending(Operation::ThreadResume)
         && !hasPending(Operation::ThreadRead) && !hasPending(Operation::TurnStart)
         && !m_login && !hasPending(Operation::LoginStart) && m_transport
-        && (m_transport->kind() == CodexTransportKind::InMemoryTest || CodexRuntimeProfile::liveInferenceApproved());
+        && (m_transport->kind() == CodexTransportKind::InMemoryTest || liveInferenceGateOpen());
+}
+bool CodexClient::liveInferenceGateOpen() const
+{
+    return CodexRuntimeProfile::liveInferenceApproved() || m_developmentLiveValidationAuthorized;
 }
 Result<qint64> CodexClient::startTurn(const QString& text)
 {
@@ -635,7 +641,8 @@ void CodexClient::failPending(qint64 id, const Pending& pending, AppError failur
 void CodexClient::disconnectClient(AppError failure)
 {
     const auto generation = m_generation;
-    m_active = false; m_initialized = false; m_profileVerified = false; m_deadlineTimer.stop();
+    m_active = false; m_initialized = false; m_profileVerified = false;
+    m_developmentLiveValidationAuthorized = false; m_deadlineTimer.stop();
     const auto pending = std::exchange(m_pending, {});
     m_config.reset(); m_requirements.reset(); m_earlyTurns.clear(); m_earlyBytes = 0;
     m_loginTimer.stop(); m_login.reset(); m_earlyLogins.clear(); m_earlyLoginBytes = 0;

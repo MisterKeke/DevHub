@@ -50,6 +50,7 @@ namespace devhub::application::overview { class OverviewStateComposer; }
 namespace devhub::application::commands { class CommandRegistry; }
 namespace devhub::application::commands { class CachedSearchProvider; }
 namespace devhub::application::settings { class SettingsService; }
+namespace devhub::application::lifecycle { class ShutdownCoordinator; }
 namespace devhub::application::support { class SupportBundleBuilder; }
 namespace devhub::presentation::theme { class ThemeManager; }
 namespace devhub::presentation::overview { class OverviewPage; }
@@ -95,6 +96,7 @@ public:
                const shared::security::RedactionService& redactor,
                application::assistant::AssistantController& assistantController,
                application::assistant::ICodexExecutableProbe& assistantSetupProbe,
+               application::lifecycle::ShutdownCoordinator& shutdownCoordinator,
                QWidget* parent = nullptr);
     void restoreWorkspaceSelection();
     bool flushNotesForShutdown();
@@ -159,6 +161,7 @@ private:
     application::settings::SettingsService& m_settingsService;
     application::assistant::AssistantController& m_assistantController;
     application::assistant::ICodexExecutableProbe& m_assistantSetupProbe;
+    application::lifecycle::ShutdownCoordinator& m_shutdownCoordinator;
     presentation::theme::ThemeManager& m_themeManager;
     application::events::ApplicationEventHub& m_eventHub;
     application::notifications::INotificationRepository& m_notificationRepository;
@@ -167,6 +170,7 @@ private:
     const shared::security::RedactionService& m_redactor;
     devhub::presentation::notifications::ToastManager* m_toastManager = nullptr;
     bool m_closeAfterServicesStop = false;
+    bool m_shutdownRequested = false;
     devhub::presentation::workspaces::WorkspaceListModel* m_workspaceModel = nullptr;
     QListView* m_workspaceList = nullptr;
     QLineEdit* m_workspaceSearch = nullptr;

@@ -380,6 +380,10 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
     application::assistant::AssistantController assistantController(assistantClient, m_clock, m_idGenerator,
         assistantScratchReady ? canonicalScratch : QString{}, infrastructure::codex::CodexRuntimeProfile::launchArguments().value(),
         application::assistant::codexBaseEnvironment(QProcessEnvironment::systemEnvironment()), &assistantConversationRepository);
+    shutdown.addPreQuitParticipant(&assistantController,
+        [&assistantController](application::lifecycle::ShutdownCoordinator::Completion done) {
+            assistantController.beginShutdown(std::move(done));
+        });
     assistantController.applyConfiguration({settingsService.value(QStringLiteral("assistant/executable")).toString(), settingsService.value(QStringLiteral("assistant/model")).toString()});
     assistantController.setPersistenceContext(session.account()->id().toString(),
         settingsService.value(QStringLiteral("assistant/restoreConversation")).toBool());
@@ -400,8 +404,10 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
     QObject::connect(&session, &application::authentication::SessionController::stateChanged,
         &assistantController, [&assistantController](application::authentication::SessionState state) {
             using State = application::authentication::SessionState;
-            assistantController.setSessionAllowed(state == State::SignedIn,
-                state == State::SigningOut || state == State::SignedOut || state == State::Cleared || state == State::NoAccount);
+            if (state == State::SignedIn) assistantController.setSessionAllowed(true);
+            else if (state == State::Locked || state == State::Locking || state == State::SigningOut
+                     || state == State::SignedOut || state == State::Cleared || state == State::NoAccount)
+                assistantController.setSessionAllowed(false, true);
         });
     QObject::connect(&m_application, &QCoreApplication::aboutToQuit, &assistantController,
         [&assistantController, &assistantLocator, &assistantSetupLocator] { assistantLocator.cancel(); assistantSetupLocator.cancel(); assistantController.setSessionAllowed(false); });
@@ -411,7 +417,7 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
                                                 databaseReferenceRepository, databaseConnectionFactory, notesRepository,
                                                 notesStorageRoot, session.account()->id().toString(), trashService, editorLauncher,
                                                 settingsService, *themeManager, eventHub, notificationRepository,
-                                                notifications, supportBundleBuilder, redactor, assistantController, assistantSetupLocator);
+                                                notifications, supportBundleBuilder, redactor, assistantController, assistantSetupLocator, shutdown);
     QObject::connect(&session, &application::authentication::SessionController::stateChanged, &mainWindow,
         [&mainWindow](application::authentication::SessionState state) {
             using State = application::authentication::SessionState;

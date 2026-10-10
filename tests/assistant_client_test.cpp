@@ -12,6 +12,31 @@ using namespace devhub::infrastructure::codex;
 using devhub::domain::errors::ErrorCode;
 #include "support/CodexTestSession.h"
 using namespace devhub::tests::codex;
+
+namespace {
+class ScopedEnvironmentVariable final {
+public:
+    explicit ScopedEnvironmentVariable(QByteArray name)
+        : m_name(std::move(name)), m_wasSet(qEnvironmentVariableIsSet(m_name.constData())),
+          m_previous(qgetenv(m_name.constData()))
+    {
+    }
+
+    ~ScopedEnvironmentVariable()
+    {
+        if (m_wasSet) qputenv(m_name.constData(), m_previous);
+        else qunsetenv(m_name.constData());
+    }
+
+    void set(const QByteArray& value) { qputenv(m_name.constData(), value); }
+
+private:
+    QByteArray m_name;
+    bool m_wasSet;
+    QByteArray m_previous;
+};
+} // namespace
+
 class AssistantClientTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -76,6 +101,31 @@ private slots:
         s.reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)}}); QVERIFY(s.client.profileVerified()); QVERIFY(s.openThread());
         QVERIFY(s.client.canSend()); s.transport.native = true; QVERIFY(!s.client.canSend()); QVERIFY(!s.client.startTurn("hello"));
         QVERIFY(!CodexRuntimeProfile::liveInferenceApproved());
+    }
+    void productionBuildCannotEnableLiveValidationFromEnvironmentOrSettings()
+    {
+        ScopedEnvironmentVariable inferenceOptIn("DEVHUB_RUN_LIVE_ASSISTANT_TESTS");
+        ScopedEnvironmentVariable executablePath("DEVHUB_LIVE_CODEX_EXE");
+        ScopedEnvironmentVariable disposableHome("DEVHUB_LIVE_CODEX_HOME");
+        ScopedEnvironmentVariable disposableAck("DEVHUB_LIVE_DISPOSABLE_PROFILE_ACK");
+        inferenceOptIn.set("I_ACKNOWLEDGE_REAL_CODEX_INFERENCE");
+        executablePath.set("C:/fixture/codex.exe");
+        disposableHome.set("C:/fixture/disposable-codex-home");
+        disposableAck.set("I_CREATED_THIS_DISPOSABLE_PROFILE");
+
+        QVERIFY(!CodexRuntimeProfile::developmentLiveValidationBuild());
+        QVERIFY(!CodexRuntimeProfile::liveInferenceApproved());
+        QVERIFY(!CodexRuntimeProfile::developmentLiveInferenceAuthorized(
+            QStringLiteral("C:/fixture/codex.exe"), QStringLiteral("0.160.1"), QProcessEnvironment{}));
+
+        // App settings have no route to the compile-time policy. Even after a
+        // valid account, capability profile and thread, native admission stays
+        // disabled in the production library.
+        Session s; QVERIFY(s.ready()); QVERIFY(s.openThread());
+        s.transport.native = true;
+        QVERIFY(!s.client.canStartConversation());
+        QVERIFY(!s.client.canSend());
+        QVERIFY(!s.client.startTurn(QStringLiteral("synthetic test prompt")));
     }
     void admissionRejectsUnsafeProfiles_data()
     {
