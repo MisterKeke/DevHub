@@ -18,9 +18,11 @@ public:
     void clearDraft();
 protected:
     bool eventFilter(QObject*, QEvent*) override;
+    void hideEvent(QHideEvent*) override;
 private:
     struct Card { QWidget* widget; widgets::SafeMarkdownBrowser* body; QLabel* status; QPushButton* retry; };
     void refreshState();
+    void refreshApprovals();
     void addMessage(const QUuid&);
     void updateMessage(const QUuid&);
     void sendDraft();
@@ -43,6 +45,7 @@ private:
     QPushButton* m_latest;
     QScrollArea* m_scroll;
     QVBoxLayout* m_messages;
+    QVBoxLayout* m_approvalCards;
     bool m_preedit = false;
     bool m_followLatest = true;
     bool m_rendering = false;

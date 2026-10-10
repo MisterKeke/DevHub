@@ -1,5 +1,6 @@
 #include "support/AssistantHarness.h"
 #include "presentation/assistant/AssistantPage.h"
+#include "application/assistant/AssistantApprovalCoordinator.h"
 #include "presentation/assistant/AssistantNavigation.h"
 #include "presentation/widgets/SafeMarkdownBrowser.h"
 #include "presentation/theme/ThemeManager.h"
@@ -28,6 +29,26 @@ class AssistantUiTest final : public QObject {
     QTemporaryDir m_settingsRoot;
     std::unique_ptr<devhub::presentation::theme::ThemeManager> m_theme;
 private slots:
+    void approvalsAreExplicitAndHidingDenies() {
+        Harness h; AssistantApprovalCoordinator approvals; h.controller.setApprovalCoordinator(&approvals);
+        AssistantPage page(h.controller); page.resize(850, 650); page.show();
+        ToolCall call; call.callId = "approved-call"; call.name = "devhub_notes_edit";
+        call.expiresAtMonotonicMs = 100000;
+        int decisions = 0; bool allowed = false;
+        auto ask = [&] { return approvals.request(call, {}, "Workspace", "Replace note", "<script>PRIVATE_PROPOSED_TEXT</script>", [&](bool allow) { ++decisions; allowed = allow; }); };
+        const auto first = ask(); QCOMPARE(decisions, 0);
+        QCOMPARE(page.findChild<QLabel*>("assistantStatus")->text(), QString("Waiting for your approval."));
+        auto* preview = page.findChild<QPlainTextEdit*>("assistantApprovalPreview"); QVERIFY(preview && preview->isReadOnly());
+        QCOMPARE(preview->toPlainText(), QString("<script>PRIVATE_PROPOSED_TEXT</script>"));
+        auto* allow = page.findChild<QPushButton*>("assistantApprovalAllow"); QVERIFY(allow); allow->click();
+        QCOMPARE(decisions, 1); QVERIFY(allowed); QVERIFY(!approvals.decide(first, true));
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        ask(); page.hide(); QCOMPARE(decisions, 2); QVERIFY(!allowed); QVERIFY(approvals.pending().isEmpty());
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        page.show(); ask();
+        page.findChild<QPushButton*>("assistantApprovalDeny")->click(); QCOMPARE(decisions, 3); QVERIFY(!allowed);
+        h.controller.setApprovalCoordinator(nullptr);
+    }
     void initTestCase()
     {
         // The offscreen plugin has no Windows font database integration.

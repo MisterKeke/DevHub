@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 
 #include <QMainWindow>
 #include <QPointer>
@@ -101,6 +102,8 @@ public:
     void restoreWorkspaceSelection();
     bool flushNotesForShutdown();
     [[nodiscard]] bool confirmDatabaseTransition();
+    [[nodiscard]] bool requestAssistantWorkspaceOpen(const QString& id,
+        std::function<bool()> revalidate, std::function<void()> committed);
     void showRecoveryNotice();
     QString shellWorkspaceTitle() const;
     QString shellWorkspacePath() const;
@@ -136,7 +139,8 @@ private:
     void submitUnlock();
     void reloadWorkspaces(QString preferredId = {});
     void addWorkspace(QString initialPath = {});
-    void activateWorkspace(const QString& id);
+    bool activateWorkspace(const QString& id, std::function<bool()> revalidate = {},
+                           std::function<void()> committed = {});
     void showWorkspaceMenu(const QPoint& position);
 
     QLabel* m_workspaceTitle = nullptr;

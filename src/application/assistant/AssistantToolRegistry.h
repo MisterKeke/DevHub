@@ -17,7 +17,7 @@ namespace devhub::application::assistant {
 class AssistantController;
 class ICodexClient;
 
-enum class ToolEffect { ReadOnly, UnsupportedMutation };
+enum class ToolEffect { ReadOnly, ApprovedMutation, UnsupportedMutation };
 enum class ToolAffinity { Worker, OwnerThread };
 
 class ToolScope final
@@ -81,8 +81,10 @@ struct ToolResult final {
 
 struct ToolCancellation final {
     std::shared_ptr<std::atomic_bool> flag = std::make_shared<std::atomic_bool>(false);
+    std::shared_ptr<std::atomic_bool> mutationStarted = std::make_shared<std::atomic_bool>(false);
     [[nodiscard]] bool isCancellationRequested() const { return flag->load(); }
     void cancel() const { flag->store(true); }
+    void markMutationStarted() const { mutationStarted->store(true); }
 };
 
 class AssistantToolRegistry final : public QObject
@@ -110,6 +112,7 @@ public:
 signals:
     void activityStarted(QString callId, QString toolName);
     void activityFinished(QString callId, QString toolName, bool success);
+    void mutationUncertain(QString toolName);
 
 private:
     struct Entry final { ToolDefinition definition; Handler handler; };
@@ -130,6 +133,7 @@ private:
     QHash<QString, ToolResult> m_terminalDedupe;
     QHash<QString, QByteArray> m_dedupeCallFingerprints;
     QQueue<QString> m_terminalOrder;
+    QSet<QString> m_mutationKeys;
     QSet<QString> m_resolvedRouteKeys;
     QQueue<QString> m_resolvedRouteOrder;
     QTimer m_expiryTimer;

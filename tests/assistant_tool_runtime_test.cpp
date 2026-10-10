@@ -19,6 +19,7 @@
 #include <QSemaphore>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QCryptographicHash>
 
 using namespace devhub;
 using namespace devhub::application;
@@ -87,10 +88,11 @@ public:
     shared::common::Result<void> setFavorite(const domain::workspace::WorkspaceId&, const domain::account::AccountId&, bool) override { return shared::common::Result<void>::failure(failure()); }
     shared::common::Result<void> updateLocation(const domain::workspace::WorkspaceId&, const domain::account::AccountId&, const domain::workspace::WorkspacePath&) override { return shared::common::Result<void>::failure(failure()); }
     shared::common::Result<void> remove(const domain::workspace::WorkspaceId&, const domain::account::AccountId&) override { return shared::common::Result<void>::failure(failure()); }
-    shared::common::Result<void> recordOpened(const domain::workspace::WorkspaceId&, const domain::account::AccountId&, const QDateTime&) override { return shared::common::Result<void>::success(); }
+    shared::common::Result<void> recordOpened(const domain::workspace::WorkspaceId&, const domain::account::AccountId&, const QDateTime&) override { ++opened; return shared::common::Result<void>::success(); }
     shared::common::Result<void> setRecentOrder(const domain::account::AccountId&, const QVector<domain::workspace::WorkspaceId>&) override { return shared::common::Result<void>::success(); }
     QVector<domain::workspace::Workspace> rows;
     int listCalls = 0;
+    int opened = 0;
 };
 
 class ServiceRepo final : public services::IServiceDefinitionRepository
@@ -98,17 +100,32 @@ class ServiceRepo final : public services::IServiceDefinitionRepository
 public:
     shared::common::Result<QVector<domain::services::ServiceDefinition>> list(const QString& id) override
     { ++listCalls; lastWorkspace = id; return shared::common::Result<QVector<domain::services::ServiceDefinition>>::success(rows); }
-    shared::common::Result<void> save(const domain::services::ServiceDefinition&) override { return shared::common::Result<void>::success(); }
+    shared::common::Result<void> save(const domain::services::ServiceDefinition&) override { ++saves; return shared::common::Result<void>::success(); }
     shared::common::Result<void> remove(const QString&, const QString&) override { return shared::common::Result<void>::success(); }
     QVector<domain::services::ServiceDefinition> rows;
     int listCalls = 0;
     QString lastWorkspace;
+    int saves = 0;
 };
 
+class ControlledProcess final : public services::IManagedProcess {
+public:
+    using services::IManagedProcess::IManagedProcess;
+    int starts = 0, stops = 0; qint64 pid = 0;
+    void start() override { ++starts; }
+    void stop(int) override { ++stops; }
+    qint64 processId() const override { return pid; }
+    void running(qint64 value = 123) { pid = value; emit started(); }
+    void exited(int code = 0) { pid = 0; emit finished(code, 0); }
+    void failed() { emit processError(QStringLiteral("PRIVATE_PROCESS_ERROR")); }
+};
 class ProcessLauncher final : public services::IProcessLauncher
 {
 public:
-    services::IManagedProcess* launch(const domain::services::ServiceDefinition&, QObject*) override { return nullptr; }
+    services::IManagedProcess* launch(const domain::services::ServiceDefinition&, QObject* owner) override {
+        auto* process = new ControlledProcess(owner); processes.append(process); ++launches; return process;
+    }
+    QList<QPointer<ControlledProcess>> processes; int launches = 0;
 };
 
 class NotesRepo final : public notes::INotesRepository
@@ -124,7 +141,13 @@ public:
     shared::common::Result<QString> readContent(const QString&, const QString&) override { return shared::common::Result<QString>::success(content); }
     shared::common::Result<QString> readContentBounded(const QString& workspace, const QString& id, qint64 cap) override
     { ++boundedReads; lastWorkspace = workspace; lastId = id; lastCap = cap; return shared::common::Result<QString>::success(content.left(static_cast<qsizetype>(cap))); }
-    shared::common::Result<QString> saveContent(const QString&, const QString&, const QString&, const QString&) override { return shared::common::Result<QString>::failure(failure()); }
+    shared::common::Result<QString> saveContent(const QString&, const QString& id, const QString& text, const QString& hash) override {
+        ++saves;
+        if (hash != QString::fromLatin1(QCryptographicHash::hash(content.toUtf8(), QCryptographicHash::Sha256).toHex())) return shared::common::Result<QString>::failure(failure());
+        content = text; const auto next = QString::fromLatin1(QCryptographicHash::hash(content.toUtf8(), QCryptographicHash::Sha256).toHex());
+        for (auto& node : nodes) if (node.id == id) node.contentHash = next;
+        return shared::common::Result<QString>::success(next);
+    }
     QString contentPath(const QString&, const QString&) const override { return notePath; }
     shared::common::Result<void> setTrashed(const QString&, const QString&, bool) override { return shared::common::Result<void>::failure(failure()); }
     shared::common::Result<void> permanentlyRemove(const QString&, const QString&) override { return shared::common::Result<void>::failure(failure()); }
@@ -134,6 +157,65 @@ public:
     QString lastWorkspace, lastId;
     qint64 lastCap = 0;
     int listCalls = 0, boundedReads = 0;
+    int saves = 0;
+};
+
+struct MutationFixture {
+    devhub::tests::assistant::Harness h;
+    domain::account::AccountId account = domain::account::AccountId::fromString("92f343d4-5b1e-41ac-9c83-99f6410e1b3f").value();
+    domain::workspace::WorkspaceId workspaceId = domain::workspace::WorkspaceId::fromString("8a0d03aa-6cd0-46b6-941b-2b362053d97f").value();
+    domain::workspace::WorkspaceId targetId = domain::workspace::WorkspaceId::fromString("f93e9980-e56d-4e64-b855-5fe97977d0e1").value();
+    WorkspaceRepo workspaceRepo; workspaces::WorkspaceValidator validator;
+    workspaces::WorkspaceManager manager;
+    workspaces::WorkspaceContext context;
+    ServiceRepo serviceRepo; ProcessLauncher launcher; services::ServiceCoordinator services;
+    NotesRepo notes; tasks::TaskScheduler scheduler;
+    AssistantToolRuntime runtime;
+    bool dirty = false, transitionAllowed = true; int editRequests = 0, transitionRequests = 0;
+    explicit MutationFixture(QString version) : h({}, {}, nullptr, version), manager(workspaceRepo, validator, h.ids, h.clock, account),
+        services(serviceRepo, launcher), scheduler(h.ids), runtime(h.client, h.controller, scheduler, manager, context, serviceRepo, services, notes) {
+        const auto root = QFileInfo(h.scratch.path()).canonicalFilePath();
+        workspaceRepo.rows.append(domain::workspace::Workspace(workspaceId, account, "Current", {root, root}, domain::workspace::WorkspaceStatus::Ready, false, 0, h.clock.utcNow()));
+        const auto targetPath = QDir(root).filePath("target"); QDir().mkpath(targetPath);
+        workspaceRepo.rows.append(domain::workspace::Workspace(targetId, account, "Target", {targetPath, QFileInfo(targetPath).canonicalFilePath()}, domain::workspace::WorkspaceStatus::Ready, false, 0, h.clock.utcNow()));
+        context.activate(workspaceRepo.rows.first());
+        h.controller.setPersistenceContext(account.toString(), false);
+        h.controller.setContext({workspaceId.toString(), "Current", root});
+        QObject::connect(&context, &workspaces::WorkspaceContext::workspaceChanged, &h.controller, [this] {
+            const auto& active = context.activeWorkspace();
+            h.controller.setContext(active ? AssistantContext{active->id().toString(), active->displayName(), active->path().canonicalPath()} : AssistantContext{});
+        });
+        notes::NoteNode node; node.id = "note-id"; node.workspaceId = workspaceId.toString(); node.title = "Note";
+        node.contentHash = QString::fromLatin1(QCryptographicHash::hash(notes.content.toUtf8(), QCryptographicHash::Sha256).toHex()); notes.nodes.append(node);
+        domain::services::ServiceDefinition definition; definition.id = "service-id"; definition.workspaceId = workspaceId.toString();
+        definition.name = "Test service"; definition.program = QCoreApplication::applicationFilePath(); definition.workingDirectory = root; serviceRepo.rows.append(definition);
+        runtime.setMutationIntegration({[this](const QString& ws, const QString& id) { return !dirty && ws == workspaceId.toString() && id == "note-id"; },
+            [this](const QString& ws, const QString& id, const QString& text, const QString& hash) { ++editRequests; return notes.saveContent(ws, id, text, hash); },
+            [this](const QString& id, auto revalidate, auto committed) {
+                ++transitionRequests;
+                if (!transitionAllowed || !revalidate()) return false;
+                const auto activated = manager.activate(domain::workspace::WorkspaceId::fromString(id).value());
+                if (!activated) return false;
+                committed(); context.activate(activated.value()); return true;
+            }});
+    }
+    bool ready() { return h.readyController() && h.sendAndAccept(); }
+    QJsonObject arguments(const QString& tool) const {
+        if (tool == "devhub_notes_edit") return {{"noteId", "note-id"}, {"expectedHash", notes.nodes.first().contentHash}, {"content", "PROPOSED_PRIVATE_CONTENT"}};
+        if (tool == "devhub_project_open") return {{"workspaceId", targetId.toString()}};
+        return {{"serviceId", "service-id"}};
+    }
+    void call(const QString& tool, const QJsonObject& args, QString id = "first", QString callId = "action") {
+        h.transport.deliver({{"id", id}, {"method", "item/tool/call"}, {"params", QJsonObject{
+            {"threadId", "thread-1"}, {"turnId", "turn-1"}, {"callId", callId}, {"tool", tool}, {"arguments", args}}}});
+    }
+    QJsonObject response(QString id = "first") const {
+        for (const auto& message : h.transport.sent) if (message.value("id") == id && message.contains("result")) {
+            auto result = message.value("result").toObject();
+            return QJsonDocument::fromJson(result.value("contentItems").toArray().first().toObject().value("text").toString().toUtf8()).object();
+        }
+        return {};
+    }
 };
 
 QJsonObject responseBody(const QList<QPair<QJsonValue, QJsonObject>>& replies, int index = -1)
@@ -168,12 +250,140 @@ class AssistantToolRuntimeTest final : public QObject
 {
     Q_OBJECT
 private slots:
+    void advertisedInventoryMatchesNativeAlphaEvidence() {
+        QFile file(QFINDTESTDATA("fixtures/codex/0.162.0-alpha.17.2/phase9-tool-specifications.json"));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(file.readAll()).array(), AssistantToolRuntime::experimentalToolSpecifications());
+    }
+    void selectedMutations_data() {
+        QTest::addColumn<QString>("tool"); QTest::addColumn<QString>("version"); QTest::addColumn<QString>("scenario");
+        for (const auto& version : {"0.160.1", "0.162.0-alpha.17.2"})
+            for (const auto& tool : {"devhub_notes_edit", "devhub_services_start", "devhub_services_stop", "devhub_services_restart", "devhub_project_open"})
+                for (const auto& scenario : {"allow", "deny", "expiry", "lock", "stop", "crash", "context"})
+                    QTest::newRow(qPrintable(QString::fromLatin1(version) + '-' + tool + '-' + scenario)) << QString::fromLatin1(tool) << QString::fromLatin1(version) << QString::fromLatin1(scenario);
+    }
+    void selectedMutations() {
+        QFETCH(QString, tool); QFETCH(QString, version); QFETCH(QString, scenario);
+        MutationFixture f(version); QVERIFY(f.ready());
+        if (tool == "devhub_services_stop" || tool == "devhub_services_restart") {
+            QVERIFY(f.services.start(f.serviceRepo.rows.first(), f.h.scratch.path()));
+            f.launcher.processes.last()->running();
+        }
+        const int initialLaunches = f.launcher.launches, initialSaves = f.serviceRepo.saves;
+        const auto args = f.arguments(tool); f.call(tool, args); f.call(tool, args, "alias");
+        QCOMPARE(f.runtime.approvals().pending().size(), 1); QVERIFY(f.response().isEmpty());
+        QCOMPARE(f.notes.saves, 0); QCOMPARE(f.launcher.launches, initialLaunches); QCOMPARE(f.workspaceRepo.opened, 0);
+        const auto id = f.runtime.approvals().pending().first().id;
+        if (scenario == "expiry") f.runtime.approvals().expireNow(100000);
+        else if (scenario == "lock") f.h.controller.setSessionAllowed(false);
+        else if (scenario == "stop") f.h.controller.stopTurn();
+        else if (scenario == "crash") emit f.h.transport.stopped(1, true, f.h.transport.generation);
+        else if (scenario == "context") f.context.clear();
+        else QVERIFY(f.runtime.approvals().decide(id, scenario == "allow"));
+        QCOMPARE(f.runtime.approvals().pending().size(), 0);
+        QVERIFY(!f.runtime.approvals().decide(id, true));
+        if (scenario == "allow" && tool.startsWith("devhub_services_")) {
+            QVERIFY(f.response().isEmpty()); // Admission must not look like completion.
+            if (tool == "devhub_services_start") { QCOMPARE(f.launcher.launches, initialLaunches + 1); f.launcher.processes.last()->running(); }
+            else if (tool == "devhub_services_stop") { QCOMPARE(f.launcher.processes.first()->stops, 1); f.launcher.processes.first()->exited(); }
+            else {
+                auto old = f.launcher.processes.first(); QCOMPARE(old->stops, 1); old->exited();
+                QCOMPARE(f.launcher.launches, initialLaunches + 1); QVERIFY(f.response().isEmpty());
+                f.launcher.processes.last()->running(456);
+            }
+        }
+        if (scenario != "crash") {
+            QTRY_VERIFY(!f.response().isEmpty()); QCOMPARE(f.response("alias"), f.response());
+            QCOMPARE(f.response().value("success").toBool(), scenario == "allow");
+            if ((scenario == "allow" && tool != "devhub_project_open") || scenario == "deny" || scenario == "expiry") {
+                f.call(tool, args, "after"); QCOMPARE(f.response("after"), f.response());
+            }
+        }
+        QCOMPARE(f.notes.saves, scenario == "allow" && tool == "devhub_notes_edit" ? 1 : 0);
+        QCOMPARE(f.editRequests, f.notes.saves);
+        QCOMPARE(f.workspaceRepo.opened, scenario == "allow" && tool == "devhub_project_open" ? 1 : 0);
+        QCOMPARE(f.transitionRequests, f.workspaceRepo.opened);
+        QCOMPARE(f.serviceRepo.saves - initialSaves, scenario == "allow" && (tool == "devhub_services_start" || tool == "devhub_services_restart") ? 1 : 0);
+        QCOMPARE(f.launcher.launches - initialLaunches, scenario == "allow" && (tool == "devhub_services_start" || tool == "devhub_services_restart") ? 1 : 0);
+        // Count required admission/revalidation reads as well as effects. Aliases
+        // cause no additional reads or writes, including after completion.
+        QCOMPARE(f.notes.listCalls, tool == "devhub_notes_edit" ? (scenario == "allow" ? 2 : 1) : 0);
+        QCOMPARE(f.serviceRepo.listCalls, tool.startsWith("devhub_services_")
+            ? (scenario == "allow" ? (tool == "devhub_services_restart" ? 3 : 2) : 1) : 0);
+        QCOMPARE(f.workspaceRepo.listCalls, tool == "devhub_project_open" ? (scenario == "allow" ? 4 : 1) : 0);
+        for (const auto& message : f.h.controller.messages()) QVERIFY(!message.source.contains("PROPOSED_PRIVATE_CONTENT"));
+    }
+
+    void revalidateMutations_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto& s : {"dirty", "note-hash", "external-note", "service-definition", "service-pid", "transition-denied", "workspace-path", "delayed-start-failure", "restart-crash", "restart-definition", "restart-other-action", "start-stop", "cancel-auto-restart", "unknown-effect", "invalid-content"}) QTest::newRow(s) << QString::fromLatin1(s);
+    }
+    void revalidateMutations() {
+        QFETCH(QString, scenario); MutationFixture f("0.162.0-alpha.17.2"); QVERIFY(f.ready());
+        QString tool = "devhub_notes_edit";
+        if (scenario.startsWith("service-") || scenario == "delayed-start-failure" || scenario == "start-stop" || scenario == "cancel-auto-restart") tool = "devhub_services_start";
+        if (scenario == "service-pid" || scenario.startsWith("restart-")) {
+            tool = "devhub_services_restart"; QVERIFY(f.services.start(f.serviceRepo.rows.first(), f.h.scratch.path())); f.launcher.processes.last()->running();
+        }
+        if (scenario.startsWith("workspace-") || scenario == "transition-denied") tool = "devhub_project_open";
+        if (scenario == "unknown-effect") tool = "devhub_files_delete";
+        if (scenario == "cancel-auto-restart") f.serviceRepo.rows.first().restartPolicy = domain::services::RestartPolicy::Always;
+        auto args = f.arguments(tool); if (scenario == "invalid-content") args.insert("command", "FORBIDDEN");
+        const int initialLaunches = f.launcher.launches;
+        f.call(tool, args);
+        if (scenario == "unknown-effect" || scenario == "invalid-content") { QCOMPARE(f.runtime.approvals().pending().size(), 0); QVERIFY(!f.response().value("success").toBool()); return; }
+        QCOMPARE(f.runtime.approvals().pending().size(), 1);
+        const auto id = f.runtime.approvals().pending().first().id;
+        if (scenario == "dirty") f.dirty = true;
+        if (scenario == "note-hash") f.notes.nodes.first().contentHash = QString(64, 'b');
+        if (scenario == "external-note") f.notes.content = "Changed externally";
+        if (scenario == "service-definition") f.serviceRepo.rows.first().arguments.append("changed");
+        if (scenario == "service-pid") { auto p = f.launcher.processes.last(); p->exited(); QVERIFY(f.services.start(f.serviceRepo.rows.first(), f.h.scratch.path())); f.launcher.processes.last()->running(999); }
+        if (scenario == "transition-denied") f.transitionAllowed = false;
+        if (scenario == "workspace-path") f.workspaceRepo.rows.removeLast();
+        QVERIFY(f.runtime.approvals().decide(id, true));
+        if (scenario == "delayed-start-failure") { QVERIFY(f.response().isEmpty()); f.launcher.processes.last()->failed(); }
+        if (scenario == "restart-crash") {
+            QVERIFY(f.response().isEmpty()); emit f.h.transport.stopped(1, true, f.h.transport.generation); auto old = f.launcher.processes.first(); old->exited();
+            QCOMPARE(f.launcher.launches, initialLaunches); QVERIFY(f.response().isEmpty()); return;
+        }
+        if (scenario == "start-stop") { QVERIFY(f.response().isEmpty()); f.h.controller.stopTurn(); f.launcher.processes.last()->running(); }
+        if (scenario == "restart-definition") {
+            QVERIFY(f.response().isEmpty()); f.serviceRepo.rows.first().arguments.append("changed-after-stop");
+            f.launcher.processes.first()->exited(); QCOMPARE(f.launcher.launches, initialLaunches);
+            QCOMPARE(f.response().value("data").toObject().value("outcome").toString(), QString("stopped_without_restart"));
+        }
+        if (scenario == "restart-other-action") {
+            // An external state observer starts a different action after the old
+            // process stops. It must not complete this Assistant's restart ticket.
+            const auto connection = connect(&f.services, &services::ServiceCoordinator::stateChanged, &f.services,
+                [&](const QString&, const services::ServiceRuntimeState& state) {
+                    if (state.lifecycle == services::ServiceLifecycleState::Stopped) {
+                        const auto started = f.services.start(f.serviceRepo.rows.first(), f.h.scratch.path()); QVERIFY(started);
+                        f.launcher.processes.last()->running(999);
+                    }
+                });
+            f.launcher.processes.first()->exited(); disconnect(connection);
+        }
+        if (scenario == "cancel-auto-restart") {
+            QVERIFY(f.response().isEmpty()); f.h.controller.stopTurn(); f.launcher.processes.last()->failed();
+            bool restartWindowElapsed = false; QTimer::singleShot(1200, &f.h.controller, [&] { restartWindowElapsed = true; });
+            QTRY_VERIFY_WITH_TIMEOUT(restartWindowElapsed, 2000); QCOMPARE(f.launcher.launches, 1);
+        }
+        QTRY_VERIFY(!f.response().isEmpty()); QVERIFY(!f.response().value("success").toBool());
+        if (scenario == "start-stop") QCOMPARE(f.response().value("data").toObject().value("outcome").toString(), QString("uncertain"));
+        if (scenario == "external-note") QCOMPARE(f.notes.content, QString("Changed externally"));
+        else QCOMPARE(f.notes.saves, 0);
+        QCOMPARE(f.workspaceRepo.opened, 0);
+    }
     void allReadHandlersExecuteExistingCapabilitiesOnce_data()
     {
         QTest::addColumn<QString>("tool"); QTest::addColumn<QString>("version");
         for (const auto& version : {"0.160.1", "0.162.0-alpha.17.2"})
             for (const auto& spec : AssistantToolRuntime::experimentalToolSpecifications()) {
                 const QString tool = spec.toObject().value("name").toString();
+                if (tool == "devhub_notes_edit" || tool == "devhub_project_open"
+                    || (tool.startsWith("devhub_services_") && tool != "devhub_services_list")) continue;
                 QTest::newRow(qPrintable(QString::fromLatin1(version) + '-' + tool)) << tool << QString::fromLatin1(version);
             }
     }
@@ -423,7 +633,7 @@ private slots:
         AssistantToolRuntime runtime(client, controller, scheduler, manager, workspaceContext,
             serviceRepo, coordinator, noteRepo);
         QVERIFY(runtime.enabledForTestedWireProfile());
-        QCOMPARE(client.specifications.size(), 9);
+        QCOMPARE(client.specifications.size(), 14);
         client.call(11, QStringLiteral("devhub_workspace_metadata"));
         QTRY_COMPARE_WITH_TIMEOUT(client.replies.size(), 1, 1000);
         QCOMPARE(workspaceRepo.listCalls, 1);

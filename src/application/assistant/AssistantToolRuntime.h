@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AssistantToolRegistry.h"
+#include "AssistantApprovalCoordinator.h"
 #include "../files/WorkspaceFileService.h"
 #include "../notes/INotesRepository.h"
 #include "../services/IServiceDefinitionRepository.h"
@@ -12,7 +13,7 @@
 
 namespace devhub::application::assistant {
 
-// Application composition for the Phase 8 read-only dynamic-tool surface.
+// Application composition for scoped reads and Phase 9 approved mutations.
 // Repositories and coordinators are called only on their owning thread; only
 // immutable paths/value snapshots and existing service operations reach workers.
 class AssistantToolRuntime final : public QObject
@@ -32,9 +33,22 @@ public:
     [[nodiscard]] const AssistantToolRegistry& registry() const { return m_registry; }
     [[nodiscard]] static QJsonArray experimentalToolSpecifications();
     [[nodiscard]] static QString internalName(const QString& wireName);
+    struct MutationIntegration final {
+        std::function<bool(const QString&, const QString&)> noteEditable;
+        std::function<shared::common::Result<QString>(const QString&, const QString&, const QString&, const QString&)> editNote;
+        // Synchronous shared workflow: revalidate after transition prompts,
+        // call committed after activation succeeds and before scope changes.
+        std::function<bool(const QString&, std::function<bool()>, std::function<void()>)> openWorkspace;
+    };
+    void setMutationIntegration(MutationIntegration integration) { m_mutations = std::move(integration); }
+    [[nodiscard]] AssistantApprovalCoordinator& approvals() { return m_approvals; }
 
 private:
     void registerHandlers();
+    void registerMutationHandlers();
+    [[nodiscard]] bool scopeStillCurrent(const ToolCall& call) const;
+    void executeServiceAction(const ToolCall&, const ToolCancellation&, QString action,
+                              domain::services::ServiceDefinition, std::function<void(ToolResult)> done);
     void dispatch(const QJsonValue& requestId, const QJsonObject& parameters, quint64 processGeneration);
     [[nodiscard]] ToolScope scopeFor(const QJsonObject& parameters, quint64 processGeneration) const;
     void submitJsonTask(const ToolCall& call, const ToolCancellation& cancellation,
@@ -51,6 +65,8 @@ private:
     services::ServiceCoordinator& m_serviceCoordinator;
     notes::INotesRepository& m_notes;
     AssistantToolRegistry m_registry;
+    AssistantApprovalCoordinator m_approvals;
+    MutationIntegration m_mutations;
     QString m_registryFingerprint;
     bool m_profileConfigured = false;
 };

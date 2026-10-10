@@ -30,6 +30,10 @@
 #include <QSet>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QSemaphore>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 #include <memory>
 
@@ -344,6 +348,7 @@ private slots:
         QVERIFY(countTurnMessages(completedTurnId) == completedTurnMessages);
 
         bool liveReadToolPassed = false;
+        bool liveReadLifecyclePassed = false;
         if (m_toolRuntime) {
             QVERIFY(m_controller->send(QStringLiteral("Use the DevHub read-only tool devhub_git_status exactly once "
                 "for the currently selected disposable workspace. Then report only whether it is a Git repository.")));
@@ -356,12 +361,72 @@ private slots:
             QVERIFY(!lastActivity.at(1).toBool());
             QVERIFY(lastActivity.at(2).toBool());
             liveReadToolPassed = true;
+
+            // Explicit live opt-in also covers native read denial, Stop, lock
+            // and child crash. Hold the shared worker until revocation so the
+            // late-result boundary is exercised, not merely a finished read.
+            QFile fixture(QDir(m_toolWorkspace.path()).filePath(QStringLiteral("readonly-fixture.txt")));
+            QVERIFY(fixture.open(QIODevice::WriteOnly)); fixture.write("PRIVATE_LIVE_READ_FIXTURE"); fixture.close();
+            m_toolScheduler.setGlobalConcurrencyLimit(1);
+            for (const auto& scenario : {QStringLiteral("denial"), QStringLiteral("stop"), QStringLiteral("lock"), QStringLiteral("crash")}) {
+                if (!m_controller->accessAllowed()) m_controller->setSessionAllowed(true);
+                if (!m_client->isInitialized() || m_controller->operation() == AssistantOperation::Uncertain) m_controller->reconnect();
+                QTRY_VERIFY_WITH_TIMEOUT(m_client->isInitialized() && m_controller->operation() == AssistantOperation::Idle, 30000);
+                m_controller->newChat(); QTRY_VERIFY_WITH_TIMEOUT(m_controller->canSend(), 30000);
+                m_controller->setToolDisclosureGrants(false, scenario != QStringLiteral("denial"));
+                auto entered = std::make_shared<QSemaphore>(), release = std::make_shared<QSemaphore>();
+                struct ReleaseOnExit { std::shared_ptr<QSemaphore> semaphore; ~ReleaseOnExit() { semaphore->release(); } } releaseGuard{release};
+                devhub::application::tasks::TaskRequest request; request.moduleKey = QStringLiteral("live-read-blocker");
+                const auto blocker = m_toolScheduler.submit<int>(request, [entered, release](const auto& context) {
+                    entered->release();
+                    while (!context.cancellationToken.isCancellationRequested() && !release->tryAcquire(1, 100)) {}
+                    return devhub::shared::common::Result<int>::success(0);
+                }, [](auto) {});
+                Q_UNUSED(blocker);
+                QTRY_VERIFY_WITH_TIMEOUT(entered->available() > 0, 3000);
+                QSignalSpy calls(m_client.get(), &ICodexClient::dynamicToolCallReceived);
+                QSignalSpy activity(m_controller.get(), &AssistantController::toolActivityChanged);
+                bool revoked = false, crashIssued = false;
+                const auto revoke = connect(m_controller.get(), &AssistantController::toolActivityChanged, this,
+                    [&, scenario](const QString& tool, bool active) {
+                        if (tool != QStringLiteral("files.read") || !active || revoked) return;
+                        revoked = true;
+                        if (scenario == QStringLiteral("stop")) m_controller->stopTurn();
+                        else if (scenario == QStringLiteral("lock")) m_controller->setSessionAllowed(false);
+                        else if (scenario == QStringLiteral("crash")) {
+#ifdef Q_OS_WIN
+                            HANDLE handle = OpenProcess(PROCESS_TERMINATE, FALSE, static_cast<DWORD>(m_process->processId()));
+                            crashIssued = handle && TerminateProcess(handle, 42); if (handle) CloseHandle(handle);
+#endif
+                        }
+                    });
+                struct DisconnectOnExit { QMetaObject::Connection connection; ~DisconnectOnExit() { QObject::disconnect(connection); } } connectionGuard{revoke};
+                const auto previousFinished = finishedTurns.size();
+                QVERIFY(m_controller->send(QStringLiteral("Call devhub_files_read exactly once with path readonly-fixture.txt in the selected workspace. "
+                    "If denied or interrupted, do not retry. Do not use another tool. Do not quote file content.")));
+                QTRY_VERIFY_WITH_TIMEOUT(!calls.isEmpty(), 60000);
+                QCOMPARE(calls.first().at(1).toJsonObject().value(QStringLiteral("tool")).toString(), QStringLiteral("devhub_files_read"));
+                if (scenario == QStringLiteral("denial")) {
+                    QVERIFY(activity.isEmpty()); QTRY_COMPARE_WITH_TIMEOUT(finishedTurns.size(), previousFinished + 1, 60000);
+                } else {
+                    QVERIFY(revoked);
+                    if (scenario == QStringLiteral("crash")) { QVERIFY(crashIssued); QTRY_VERIFY_WITH_TIMEOUT(!m_client->isInitialized(), 10000); }
+                    QTRY_COMPARE_WITH_TIMEOUT(m_toolRuntime->registry().activeCount(), 0, 15000);
+                    QCOMPARE(activity.size(), 2); QVERIFY(!activity.last().at(2).toBool());
+                }
+                release->release(); QTRY_COMPARE_WITH_TIMEOUT(m_toolScheduler.activeTaskCount(), 0, 5000);
+                for (const auto& message : m_controller->messages()) QVERIFY(!message.source.contains(QStringLiteral("PRIVATE_LIVE_READ_FIXTURE")));
+                if (scenario == QStringLiteral("stop")) QTRY_COMPARE_WITH_TIMEOUT(finishedTurns.size(), previousFinished + 1, 15000);
+                if (scenario == QStringLiteral("lock")) QTRY_VERIFY_WITH_TIMEOUT(!m_client->isInitialized(), 15000);
+            }
+            liveReadLifecyclePassed = true;
         }
 
         qInfo().noquote() << "DEVHUB_LIVE_RESULT version=" << m_version
                           << " handshake=passed account=chatgpt profile=accepted"
                           << " stream=completed stop=interrupted resume=passed"
                           << " duplicate_history=none read_tool=" << (liveReadToolPassed ? "passed" : "not_in_profile")
+                          << " read_lifecycle=" << (liveReadLifecyclePassed ? "passed" : "not_in_profile")
                           << " duration_ms=" << m_started.elapsed();
     }
 

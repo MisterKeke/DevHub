@@ -102,7 +102,10 @@ unsupported profile fails before thread creation. When admitted, it checks
 streamed terminal completion, Stop/interruption, resume without duplicate
 history, and owned-child shutdown completion within ten seconds. On the exact
 dynamic-tool profile it also requires successful `devhub_git_status` activity
-through the production read-only handler. Output is
+through the production read-only handler. It also tests file-read denial, Stop,
+lock and child crash while holding the shared read worker until revocation.
+These real-inference scenarios use the same explicit opt-in; compiling them
+does not establish passing evidence. Output is
 sanitized and excludes transcript, account identity, thread IDs, raw
 configuration, and credentials. The development-validation policy is test
 infrastructure only; it is not release evidence or production approval.

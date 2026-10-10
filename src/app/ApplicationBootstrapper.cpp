@@ -56,6 +56,7 @@
 #include "../shared/security/RedactionService.h"
 #include "../application/assistant/AssistantController.h"
 #include "../application/assistant/AssistantToolRuntime.h"
+#include "../presentation/notes/NotesPage.h"
 #include "../infrastructure/codex/CodexClient.h"
 #include "../infrastructure/codex/CodexProcess.h"
 #include "../infrastructure/codex/CodexExecutableLocator.h"
@@ -421,6 +422,17 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
                                                 notesStorageRoot, session.account()->id().toString(), trashService, editorLauncher,
                                                 settingsService, *themeManager, eventHub, notificationRepository,
                                                 notifications, supportBundleBuilder, redactor, assistantController, assistantSetupLocator, shutdown);
+    auto* noteEditorOwner = mainWindow.findChild<presentation::notes::NotesPage*>();
+    assistantToolRuntime.setMutationIntegration({
+        [noteEditorOwner](const QString& workspace, const QString& note) {
+            return noteEditorOwner && noteEditorOwner->assistantEditAllowed(workspace, note);
+        },
+        [noteEditorOwner](const QString& workspace, const QString& note, const QString& content, const QString& hash) {
+            return noteEditorOwner->applyAssistantEdit(workspace, note, content, hash);
+        },
+        [&mainWindow](const QString& id, std::function<bool()> revalidate, std::function<void()> committed) {
+            return mainWindow.requestAssistantWorkspaceOpen(id, std::move(revalidate), std::move(committed));
+        }});
     QObject::connect(&session, &application::authentication::SessionController::stateChanged, &mainWindow,
         [&mainWindow](application::authentication::SessionState state) {
             using State = application::authentication::SessionState;

@@ -9,6 +9,7 @@
 #include <optional>
 
 namespace devhub::application::assistant {
+class AssistantApprovalCoordinator;
 class AssistantController final : public QObject {
     Q_OBJECT
 public:
@@ -48,6 +49,8 @@ public:
     [[nodiscard]] bool notesDisclosureGranted() const noexcept { return m_notesDisclosureGranted; }
     [[nodiscard]] bool filesDisclosureGranted() const noexcept { return m_filesDisclosureGranted; }
     void reportToolActivity(QString toolName, bool active, bool success = false);
+    void setApprovalCoordinator(AssistantApprovalCoordinator* coordinator);
+    [[nodiscard]] AssistantApprovalCoordinator* approvals() const { return m_approvals; }
     [[nodiscard]] bool canSend() const;
     [[nodiscard]] bool busy() const;
     [[nodiscard]] bool canStop() const;
@@ -78,6 +81,8 @@ signals:
     void shutdownFinished();
     void toolDisclosureChanged(bool notes, bool files);
     void toolActivityChanged(QString toolName, bool active, bool success);
+    void approvalCoordinatorChanged();
+    void toolMutationUncertain(QString toolName);
 private:
     void refreshConnection();
     void beginProbe();
@@ -102,6 +107,7 @@ private:
     AssistantMessage* mutableMessage(const QUuid&);
     qsizetype transcriptBytes() const;
     ICodexClient& m_client;
+    AssistantApprovalCoordinator* m_approvals = nullptr;
     shared::time::IApplicationClock& m_clock;
     shared::identifiers::IIdGenerator& m_ids;
     IConversationRepository* m_repository;

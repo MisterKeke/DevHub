@@ -116,7 +116,7 @@ include the public account fingerprint, canonical home/scratch directory and a
 version-scoped fingerprint of the actual canonical launch arguments,
 capability/history policy, and configured tool inventory.
 
-When the read-tool runtime is composed, both pinned profiles opt into the tagged
+When the application-tool runtime is composed, both pinned profiles opt into the tagged
 experimental inventory. Tool item notifications/history retain identity only,
 excluding arguments and content from transcript state.
 Reads/resumes with a different binding are refused.
@@ -131,10 +131,12 @@ remain the evidence for capability suppression; passing fake tests or initialize
 does not certify authenticated native model access or broaden those controls.
 
 Unknown server methods receive `-32601`. Native command/file approvals decline,
-legacy approvals abort, permission requests grant an empty profile, and dynamic
-tools return an unsuccessful text result. Native questions, MCP elicitation and
-external token refresh receive method-not-found errors. No executor, tool registry,
-credential refresh implementation or UI action is invoked by a server request.
+legacy approvals abort, and permission requests grant an empty profile. Dynamic
+calls reach only the configured scoped application registry; unknown/denied calls
+return unsuccessful text results. Phase 9 application mutations use separate
+one-use inline approvals and existing Notes/Services/workspace owners. Native
+questions, MCP elicitation and external token refresh receive method-not-found
+errors. Application approvals never enable native command/file execution.
 
 ## Threads, turns and items
 

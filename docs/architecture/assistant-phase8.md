@@ -2,6 +2,11 @@
 
 Date: 2026-10-10
 
+Follow-up: Phase 9 and the three outstanding Phase 8 points are tracked in
+`assistant-phase9.md` (2026-10-11). This report describes the earlier Phase 8 run;
+its Phase 9-pending statements are historical. Authenticated live gates remain
+pending.
+
 ## Scope and status
 
 Phase 8 implements the first read-only application-tool path. It composes the

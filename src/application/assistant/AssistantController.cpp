@@ -1,10 +1,18 @@
 #include "AssistantController.h"
+#include "AssistantApprovalCoordinator.h"
 #include "CodexLoginPolicy.h"
 #include <algorithm>
 #include <QDir>
 #include <utility>
 
 namespace devhub::application::assistant {
+void AssistantController::setApprovalCoordinator(AssistantApprovalCoordinator* coordinator) {
+    if (m_approvals == coordinator) return;
+    if (m_approvals) disconnect(m_approvals, nullptr, this, nullptr);
+    m_approvals = coordinator;
+    if (coordinator) connect(coordinator, &AssistantApprovalCoordinator::changed, this, &AssistantController::approvalCoordinatorChanged);
+    emit approvalCoordinatorChanged();
+}
 using domain::errors::ErrorCode;
 namespace {
 bool sameContextBinding(const AssistantContext& left, const AssistantContext& right)
@@ -179,6 +187,7 @@ QString AssistantController::statusText() const
     if (m_operation == AssistantOperation::CreatingThread) return tr("Creating conversation…");
     if (m_operation == AssistantOperation::Restoring) return tr("Restoring the last DevHub conversation…");
     if (m_operation == AssistantOperation::Submitting) return tr("Sending…");
+    if (m_approvals && !m_approvals->pending().isEmpty()) return tr("Waiting for your approval.");
     if (m_operation == AssistantOperation::Streaming) return tr("Codex is responding…");
     if (m_operation == AssistantOperation::Reconciling) return tr("Checking accepted history…");
     if (m_connection == AssistantConnectionState::Probing) return tr("Checking the installed native Codex executable…");

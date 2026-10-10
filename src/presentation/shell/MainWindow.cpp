@@ -1134,17 +1134,27 @@ void MainWindow::addWorkspace(QString initialPath)
     activateWorkspace(id);
 }
 
-void MainWindow::activateWorkspace(const QString& id)
+bool MainWindow::requestAssistantWorkspaceOpen(const QString& id,
+    std::function<bool()> revalidate, std::function<void()> committed)
 {
-    if (id.isEmpty()) return;
-    const auto& active = m_workspaceContext.activeWorkspace();
+    return activateWorkspace(id, std::move(revalidate), std::move(committed));
+}
+
+bool MainWindow::activateWorkspace(const QString& id, std::function<bool()> revalidate,
+    std::function<void()> committed)
+{
+    if (id.isEmpty() || (revalidate && !revalidate())) return false;
+    const auto active = m_workspaceContext.activeWorkspace();
     if (active && active->id().toString() != id && !confirmDatabaseTransition()) {
         const QSignalBlocker blocker(m_workspaceList->selectionModel());
         m_workspaceList->setCurrentIndex(m_workspaceModel->index(m_workspaceModel->rowForId(active->id().toString()), 0));
-        return;
+        return false;
     }
+    // Transition prompts may run a nested event loop. Recheck authorization,
+    // target path and scope after those prompts, immediately before activation.
+    if (revalidate && !revalidate()) return false;
     auto workspaceId = domain::workspace::WorkspaceId::fromString(id);
-    if (!workspaceId) return;
+    if (!workspaceId) return false;
     auto result = m_workspaceManager.activate(workspaceId.value());
     if (!result) {
         statusBar()->showMessage(result.error().userMessage, 6000);
@@ -1154,12 +1164,14 @@ void MainWindow::activateWorkspace(const QString& id)
         draft.title = tr("Workspace unavailable"); draft.message = result.error().userMessage;
         draft.deduplicationKey = QStringLiteral("workspace-unavailable:%1").arg(id);
         (void)m_notificationService.post(std::move(draft));
-        return;
+        return false;
     }
+    if (committed) committed();
     m_workspaceContext.activate(result.value());
     m_workspaceState.setSelected(m_workspaceManager.accountId(), result.value().id());
     const int row = m_workspaceModel->rowForId(id);
     if (row >= 0 && m_workspaceList->currentIndex().row() != row) m_workspaceList->setCurrentIndex(m_workspaceModel->index(row, 0));
+    return true;
 }
 
 void MainWindow::showWorkspaceMenu(const QPoint& position)

@@ -56,7 +56,7 @@ bool AssistantToolRegistry::registerTool(ToolDefinition definition, Handler hand
     Q_ASSERT(QThread::currentThread() == thread());
     static const QRegularExpression safeName(QStringLiteral("^[a-z][a-z0-9_]{0,63}$"));
     if (!safeName.match(definition.name).hasMatch() || definition.description.trimmed().isEmpty()
-        || !handler || definition.effect != ToolEffect::ReadOnly || definition.maximumOutputBytes < 128
+        || !handler || definition.effect == ToolEffect::UnsupportedMutation || definition.maximumOutputBytes < 128
         || definition.maximumOutputBytes > 256 * 1024 || m_definitions.contains(definition.name)) return false;
     if (!definition.allowedArguments.isEmpty() && !definition.validateArguments) return false;
     for (const auto& key : definition.allowedArguments) {
@@ -182,6 +182,14 @@ bool AssistantToolRegistry::invoke(ToolCall call)
     if (m_activeDedupe.size() >= m_maximumConcurrent || m_active.size() >= m_maximumCalls) {
         resolveRoute(call.routeId, call.scope.processGeneration(), failure(QStringLiteral("busy"))); return true;
     }
+    // Keep mutation outcomes for the entire runtime. Refuse new mutations at
+    // the budget rather than evicting an identity that could execute again.
+    if (entry->definition.effect == ToolEffect::ApprovedMutation) {
+        if (m_mutationKeys.size() >= 256) {
+            resolveRoute(call.routeId, call.scope.processGeneration(), failure(QStringLiteral("mutation_budget"))); return true;
+        }
+        m_mutationKeys.insert(key);
+    }
     if (call.expiresAtMonotonicMs > 0 && call.expiresAtMonotonicMs <= m_monotonicNow) {
         resolveRoute(call.routeId, call.scope.processGeneration(), failure(QStringLiteral("expired"))); return true;
     }
@@ -190,6 +198,9 @@ bool AssistantToolRegistry::invoke(ToolCall call)
     m_active.insert(call.routeId, active);
     m_activeDedupe.insert(key, call.routeId);
     emit activityStarted(call.callId, call.name);
+    // Activity observers may synchronously lock/revoke scope. Do not enter a
+    // handler after that revocation, even if its immutable call was admitted.
+    if (!m_active.contains(call.routeId) || active.cancellation.isCancellationRequested()) return true;
     const QString routeId = call.routeId;
     const auto handler = entry->handler;
     QPointer<AssistantToolRegistry> registry(this);
@@ -207,7 +218,8 @@ bool AssistantToolRegistry::invoke(ToolCall call)
                     registry->resolveActive(activeRoute, bounded, false);
             }
             emit registry->activityFinished(callId, name, bounded.success);
-        }, Qt::QueuedConnection);
+            if (bounded.data.value(QStringLiteral("outcome")) == QStringLiteral("uncertain")) emit registry->mutationUncertain(name);
+        }, Qt::AutoConnection);
     });
     return true;
 }
@@ -218,8 +230,10 @@ void AssistantToolRegistry::cacheTerminal(const QString& key, ToolResult result)
     m_terminalDedupe.insert(key, std::move(result));
     while (m_terminalOrder.size() > 256) {
         const auto expiredKey = m_terminalOrder.dequeue();
-        m_terminalDedupe.remove(expiredKey);
-        m_dedupeCallFingerprints.remove(expiredKey);
+        if (!m_mutationKeys.contains(expiredKey)) {
+            m_terminalDedupe.remove(expiredKey);
+            m_dedupeCallFingerprints.remove(expiredKey);
+        }
     }
 }
 
@@ -230,6 +244,10 @@ void AssistantToolRegistry::resolveActive(const QString& routeId, ToolResult res
     const QString key = dedupeKey(active.call);
     if (cancelWorker) {
         active.cancellation.cancel();
+        if (active.cancellation.mutationStarted->load()) {
+            result.data.insert(QStringLiteral("outcome"), QStringLiteral("uncertain"));
+            result.data.insert(QStringLiteral("retryAutomatically"), false);
+        }
         cacheTerminal(key, result);
         // Aliases belong to the same invocation and must terminate together.
         const auto routes = m_active.keys();
@@ -239,6 +257,7 @@ void AssistantToolRegistry::resolveActive(const QString& routeId, ToolResult res
     resolveRoute(routeId, active.call.scope.processGeneration(),
         capResult(result, m_definitions.value(active.call.name).definition.maximumOutputBytes));
     if (cancelWorker) emit activityFinished(active.call.callId, active.call.name, false);
+    if (cancelWorker && active.cancellation.mutationStarted->load()) emit mutationUncertain(active.call.name);
     if (!m_activeDedupe.contains(key)) return;
     const QString owner = m_activeDedupe.value(key);
     if (!m_active.contains(owner)) m_activeDedupe.remove(key);

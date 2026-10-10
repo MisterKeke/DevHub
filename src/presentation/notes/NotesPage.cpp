@@ -491,6 +491,31 @@ bool NotesPage::saveNow()
     m_status->setText(tr("Saved at %1").arg(QTime::currentTime().toString())); return true;
 }
 
+bool NotesPage::assistantEditAllowed(const QString& workspaceId, const QString& noteId) const
+{
+    if (workspaceId != m_workspaceId || !m_nodes.contains(noteId)
+        || m_nodes.value(noteId).trashed || m_nodes.value(noteId).kind != NoteNodeKind::Note) return false;
+    return !(noteId == m_currentNoteId && m_dirty) && !QFileInfo::exists(journalPath(noteId));
+}
+
+shared::common::Result<QString> NotesPage::applyAssistantEdit(const QString& workspaceId,
+    const QString& noteId, const QString& content, const QString& expectedHash)
+{
+    if (!assistantEditAllowed(workspaceId, noteId)) return shared::common::Result<QString>::failure(
+        domain::errors::AppError::failure(domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Internal,
+            tr("Resolve pending note edits or recovery copies before allowing this edit."), {}, QStringLiteral("assistant note edit")));
+    auto result = m_repository.saveContent(workspaceId, noteId, content, expectedHash);
+    if (!result) return result;
+    m_nodes[noteId].contentHash = result.value();
+    if (m_currentNoteId == noteId) {
+        m_saveTimer.stop(); m_journalTimer.stop(); m_loading = true;
+        m_editor->setPlainText(content); m_loading = false; m_dirty = false;
+        m_currentContentHash = result.value(); updatePreview();
+        m_status->setText(tr("Saved approved Assistant edit."));
+    }
+    return result;
+}
+
 void NotesPage::updatePreview()
 {
     QTextDocument* document = m_preview->document(); document->setMarkdown(m_editor->toPlainText());

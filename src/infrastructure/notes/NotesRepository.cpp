@@ -234,6 +234,8 @@ Result<QString> NotesRepository::saveContent(const QString& workspaceId, const Q
 {
     if (!ownsNode(workspaceId, id)) return noteFailure<QString>(QStringLiteral("The note could not be found."), id, QStringLiteral("save note"));
     const QString path = contentPath(workspaceId, id);
+    if (path.isEmpty() || application::files::WorkspaceFilePolicy::hasLinkComponent(path))
+        return noteFailure<QString>(QStringLiteral("The note storage path is not safe to write."), {}, QStringLiteral("save note"));
     QFile current(path);
     QByteArray currentBytes;
     if (current.exists()) {

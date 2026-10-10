@@ -1,4 +1,5 @@
 #include "../src/application/assistant/AssistantToolRegistry.h"
+#include "../src/application/assistant/AssistantApprovalCoordinator.h"
 #include "../src/application/assistant/AssistantToolHandlers.h"
 #include "../src/application/files/WorkspaceFileService.h"
 #include "../src/application/notes/NoteSearchService.h"
@@ -58,6 +59,47 @@ class AssistantToolsTest final : public QObject
 {
     Q_OBJECT
 private slots:
+    void approvalExpiryToleratesReentrantRevocation() {
+        AssistantApprovalCoordinator coordinator; int decisions = 0;
+        ToolCall first; first.callId = "first"; first.name = "approved_edit"; first.expiresAtMonotonicMs = 100000;
+        auto second = first; second.callId = "second";
+        const auto a = coordinator.request(first, {}, "Workspace", "Edit", {}, [&](bool allow) {
+            QVERIFY(!allow); ++decisions; coordinator.revokeAll();
+        });
+        const auto b = coordinator.request(second, {}, "Workspace", "Edit", {}, [&](bool allow) { QVERIFY(!allow); ++decisions; });
+        coordinator.expireNow(100001); QCOMPARE(decisions, 2); QVERIFY(coordinator.pending().isEmpty());
+        QVERIFY(!coordinator.decide(a, true)); QVERIFY(!coordinator.decide(b, true));
+    }
+    void mutationsKeepOutcomesBeyondReadCacheAndNeverReplayCancelledWork() {
+        QHash<QString, ToolResult> results; int mutations = 0;
+        AssistantToolRegistry registry([&](const QString& route, const ToolResult& result) { results.insert(route, result); });
+        ToolDefinition write; write.name = "approved_edit"; write.description = "Approved edit"; write.effect = ToolEffect::ApprovedMutation;
+        std::function<void(ToolResult)> pending;
+        QVERIFY(registry.registerTool(write, [&](const ToolCall&, const ToolCancellation& cancellation, auto done) {
+            ++mutations; cancellation.markMutationStarted(); pending = std::move(done);
+        }));
+        QSignalSpy uncertain(&registry, &AssistantToolRegistry::mutationUncertain);
+        ToolCall call{"write-route", "write-call", "approved_edit", {}, authorizedScope(), 100000};
+        QVERIFY(registry.invoke(call)); registry.cancelRoute(call.routeId); QCOMPARE(mutations, 1); QCOMPARE(uncertain.size(), 1);
+        QCOMPARE(results.value("write-route").data.value("outcome").toString(), QString("uncertain"));
+        ToolResult late; late.success = true; pending(late); QVERIFY(!results.value("write-route").success);
+        ToolDefinition read; read.name = "read_meta"; read.description = "Read metadata";
+        QVERIFY(registry.registerTool(read, [](const ToolCall&, const ToolCancellation&, auto done) { ToolResult r; r.success = true; done(r); }));
+        for (int i = 0; i < 600; ++i) {
+            const auto id = QString::number(i);
+            QVERIFY(registry.invoke({"read-route-" + id, "read-call-" + id, "read_meta", {}, authorizedScope(), 100000}));
+        }
+        call.routeId = "after-cache-eviction"; QVERIFY(registry.invoke(call)); QCOMPARE(mutations, 1);
+        QCOMPARE(results.value(call.routeId).data, results.value("write-route").data);
+    }
+
+    void synchronousScopeRevocationPreventsHandlerEntry() {
+        int invoked = 0; AssistantToolRegistry registry([](const QString&, const ToolResult&) {});
+        ToolDefinition def; def.name = "read_meta"; def.description = "Read metadata";
+        QVERIFY(registry.registerTool(def, [&](const ToolCall&, const ToolCancellation&, auto) { ++invoked; }));
+        connect(&registry, &AssistantToolRegistry::activityStarted, &registry, [&] { registry.cancelAll(); });
+        QVERIFY(registry.invoke({"route", "call", def.name, {}, authorizedScope(), 100000})); QCOMPARE(invoked, 0);
+    }
     void registryStrictArgumentsAndReadOnlyAdmission()
     {
         QStringList resolved;

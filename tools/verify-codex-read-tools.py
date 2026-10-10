@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import queue
 import tempfile
+import hashlib
 
 
 def module(name, filename):
@@ -48,9 +49,17 @@ def main():
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--version", choices=("0.160.1", "0.162.0-alpha.17.2"), required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--specifications", type=Path, help="Inventory exported by assistant_native_probe --tool-specs; validates all tagged specs.")
     args = parser.parse_args()
     executable = args.executable.resolve(strict=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    default_spec = {"type": "function", "name": "devhub_git_status",
+        "description": "Read Git status in the selected workspace.",
+        "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}
+    specs = json.loads(args.specifications.read_text(encoding="utf-8")) if args.specifications else [default_spec]
+    if not isinstance(specs, list) or not specs:
+        parser.error("specifications must be a nonempty exported inventory")
+    expected_tools = sorted([item["name"] for item in specs] + ["request_user_input"])
     checks = {}
     with tempfile.TemporaryDirectory(prefix="dynamic-tools-", dir=args.output.parent) as temporary:
         root = Path(temporary).resolve()
@@ -65,12 +74,9 @@ def main():
                 "capabilities": {"experimentalApi": True}})
             checks["isolatedHome"] = Path(result["result"]["codexHome"]).resolve() == home
             probe.send({"method": "initialized"})
-            spec = {"type": "function", "name": "devhub_git_status",
-                "description": "Read Git status in the selected workspace.",
-                "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}
             result = probe.request("thread/start", {"cwd": str(cwd), "ephemeral": True,
                 "sandbox": "read-only", "approvalPolicy": "on-request", "historyMode": "legacy",
-                "environments": [], "dynamicTools": [spec]})
+                "environments": [], "dynamicTools": specs})
             checks["taggedSpecAccepted"] = "result" in result
             thread_id = result["result"]["thread"]["id"]
             result = probe.request("turn/start", {"threadId": thread_id, "environments": [],
@@ -78,7 +84,7 @@ def main():
             completed = probe.wait_turn(thread_id, result["result"]["turn"]["id"])
             checks["turnCompleted"] = completed.get("status") == "completed"
             checks["singleValidCall"] = probe.tool_calls == 1 and probe.valid_call
-            checks["restrictedOfferedSurface"] = bool(model.requests) and capabilities.tools_in(model.requests[0]) == ["devhub_git_status", "request_user_input"]
+            checks["restrictedOfferedSurface"] = bool(model.requests) and sorted(capabilities.tools_in(model.requests[0])) == expected_tools
             outputs = [item for request in model.requests[1:] for item in request.get("input", [])
                        if item.get("type") == "function_call_output"]
             checks["responseConsumed"] = any("isRepository" in json.dumps(item) for item in outputs)
@@ -90,6 +96,9 @@ def main():
     evidence = {"format": 1, "codexVersion": args.version, "realInference": False,
         "authenticated": False, "releaseEligible": False, "checks": checks,
         "fixtureScopePassed": bool(checks) and all(checks.values())}
+    if args.specifications:
+        evidence["toolInventory"] = [item["name"] for item in specs]
+        evidence["inventorySha256"] = hashlib.sha256(args.specifications.read_bytes()).hexdigest()
     args.output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(evidence, sort_keys=True))
     return int(not evidence["fixtureScopePassed"])

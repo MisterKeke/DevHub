@@ -29,6 +29,26 @@ def nodes(value):
 
 
 class CodexContractTest(unittest.TestCase):
+    def test_phase9_native_inventory_evidence(self):
+        path = ALPHA_FIXTURES / "phase9-tool-specifications.json"
+        specs = json.loads(path.read_text(encoding="utf-8"))
+        evidence = json.loads((ALPHA_FIXTURES / "phase9-offline-tool-verification.json").read_text(encoding="utf-8"))
+        self.assertEqual(evidence["codexVersion"], "0.162.0-alpha.17.2")
+        self.assertFalse(evidence["authenticated"])
+        self.assertFalse(evidence["realInference"])
+        self.assertFalse(evidence["releaseEligible"])
+        self.assertTrue(evidence["fixtureScopePassed"])
+        self.assertTrue(all(evidence["checks"].values()))
+        self.assertEqual(evidence["inventorySha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertEqual(evidence["toolInventory"], [item["name"] for item in specs])
+        self.assertEqual(len(specs), 14)
+        self.assertEqual(len({item["name"] for item in specs}), 14)
+        for item in specs:
+            self.assertEqual(item["type"], "function")
+            self.assertFalse(item["inputSchema"]["additionalProperties"])
+            self.assertFalse({"command", "shell", "argv", "root", "accountId", "effect"}
+                             & set(item["inputSchema"]["properties"]))
+
     @classmethod
     def setUpClass(cls):
         cls.snapshots = {mode: json.loads((FIXTURES / (mode + ".json")).read_text(encoding="utf-8"))

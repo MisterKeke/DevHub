@@ -1,9 +1,12 @@
 // Opt-in developer probe. Never reads/copies the user's Codex home or runs a turn.
 #include "infrastructure/codex/CodexExecutableLocator.h"
 #include "infrastructure/codex/CodexProcess.h"
+#include "application/assistant/AssistantToolRuntime.h"
+#include <QFile>
 #include <QCoreApplication>
 #include <QDir>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QSet>
 #include <QHash>
 #include <QTemporaryDir>
@@ -19,6 +22,12 @@ using namespace devhub::infrastructure::codex;
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
+    if (app.arguments().value(1) == QStringLiteral("--tool-specs")) {
+        if (app.arguments().size() != 3) return 2;
+        QFile file(app.arguments().at(2)); if (!file.open(QIODevice::WriteOnly)) return 3;
+        const auto bytes = QJsonDocument(AssistantToolRuntime::experimentalToolSpecifications()).toJson();
+        return file.write(bytes) == bytes.size() ? 0 : 4;
+    }
     if (app.arguments().size() < 2 || app.arguments().size() > 3) return 2;
     const auto mode = app.arguments().value(2, QStringLiteral("stop"));
     if (mode != QStringLiteral("stop") && mode != QStringLiteral("crash") && mode != QStringLiteral("kill")) return 2;

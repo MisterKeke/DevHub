@@ -1,4 +1,6 @@
 #include "AssistantPage.h"
+#include "application/assistant/AssistantApprovalCoordinator.h"
+#include "application/assistant/AssistantToolRuntime.h"
 #include "presentation/widgets/SafeMarkdownBrowser.h"
 #include "presentation/theme/ThemeTokens.h"
 #include <QApplication>
@@ -47,6 +49,14 @@ AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) :
     m_toolActivity->setTextFormat(Qt::PlainText); m_toolActivity->setAccessibleName(tr("Assistant tool activity"));
     disclosureRow->addWidget(m_allowNotes); disclosureRow->addWidget(m_allowFiles); disclosureRow->addWidget(m_toolActivity, 1);
     root->addLayout(disclosureRow);
+    auto* uncertainAction = new QLabel(this); uncertainAction->setObjectName(QStringLiteral("assistantUncertainAction"));
+    uncertainAction->setTextFormat(Qt::PlainText); uncertainAction->setWordWrap(true); uncertainAction->hide(); root->addWidget(uncertainAction);
+    connect(&controller, &AssistantController::toolMutationUncertain, uncertainAction, [uncertainAction](const QString& name) {
+        uncertainAction->setText(tr("The outcome of %1 is uncertain. Check the affected service or note before requesting it again. The action will not be retried automatically.").arg(name));
+        uncertainAction->show();
+    });
+    m_approvalCards = new QVBoxLayout; root->addLayout(m_approvalCards);
+    connect(&controller, &AssistantController::approvalCoordinatorChanged, this, &AssistantPage::refreshApprovals);
     m_scroll = new QScrollArea(this); m_scroll->setObjectName(QStringLiteral("assistantTranscript")); m_scroll->setWidgetResizable(true); m_scroll->setFrameShape(QFrame::NoFrame);
     auto* content = new QWidget(m_scroll); m_messages = new QVBoxLayout(content); m_messages->setContentsMargins(0, 0, 0, 0); m_messages->setSpacing(12); m_messages->addStretch();
     m_scroll->setWidget(content); root->addWidget(m_scroll, 1);
@@ -91,7 +101,7 @@ AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) :
             else m_activeTools.removeAll(tool);
             QStringList labels;
             for (const auto& name : m_activeTools) labels.append(name);
-            m_toolActivity->setText(!labels.isEmpty() ? tr("Reading with %1…").arg(labels.join(QStringLiteral(", ")))
+            m_toolActivity->setText(!labels.isEmpty() ? tr("Using %1…").arg(labels.join(QStringLiteral(", ")))
                 : tool.isEmpty() ? QString{} : tr("Finished %1 (%2)").arg(tool, success ? tr("success") : tr("not completed")));
         });
     connect(&controller, &AssistantController::stateChanged, this, &AssistantPage::refreshState);
@@ -105,6 +115,39 @@ AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) :
         m_cards.clear(); m_latest->hide(); refreshState();
     });
     for (const auto& value : controller.messages()) addMessage(value.id);
+    refreshState();
+    refreshApprovals();
+}
+void AssistantPage::hideEvent(QHideEvent* event) {
+    QWidget::hideEvent(event);
+    if (auto* approvals = m_controller.approvals()) approvals->revokeAll();
+}
+void AssistantPage::refreshApprovals() {
+    while (auto* item = m_approvalCards->takeAt(0)) {
+        if (item->widget()) { item->widget()->setEnabled(false); item->widget()->hide(); item->widget()->deleteLater(); }
+        delete item;
+    }
+    auto* approvals = m_controller.approvals(); if (!approvals) { refreshState(); return; }
+    for (const auto& request : approvals->pending()) {
+        auto* card = new QWidget(this); card->setObjectName(QStringLiteral("assistantApprovalCard"));
+        auto* layout = new QVBoxLayout(card);
+        auto* label = new QLabel(tr("Assistant requests: %1\nWorkspace: %2\nEffect: %3\nExpires in 30 seconds; approval applies once.")
+            .arg(AssistantToolRuntime::internalName(request.tool), request.workspace, request.effect), card);
+        label->setTextFormat(Qt::PlainText); label->setWordWrap(true); layout->addWidget(label);
+        if (!request.preview.isEmpty() || request.tool == QStringLiteral("devhub_notes_edit")) {
+            auto* preview = new QPlainTextEdit(card); preview->setObjectName(QStringLiteral("assistantApprovalPreview"));
+            preview->setReadOnly(true); preview->setPlainText(request.preview); preview->setMaximumHeight(150);
+            preview->setAccessibleName(tr("Proposed note content")); layout->addWidget(preview);
+        }
+        auto* row = new QHBoxLayout;
+        auto* deny = new QPushButton(tr("Deny"), card); deny->setObjectName(QStringLiteral("assistantApprovalDeny"));
+        auto* allow = new QPushButton(tr("Allow once"), card); allow->setObjectName(QStringLiteral("assistantApprovalAllow"));
+        deny->setDefault(true); allow->setAutoDefault(false);
+        deny->setAccessibleName(tr("Deny Assistant action")); allow->setAccessibleName(tr("Allow Assistant action once"));
+        row->addWidget(deny); row->addWidget(allow); row->addStretch(); layout->addLayout(row); m_approvalCards->addWidget(card);
+        connect(deny, &QPushButton::clicked, approvals, [approvals, id = request.id] { (void)approvals->decide(id, false); });
+        connect(allow, &QPushButton::clicked, approvals, [approvals, id = request.id] { (void)approvals->decide(id, true); });
+    }
     refreshState();
 }
 void AssistantPage::activate() { m_controller.open(); m_composer->setFocus(); }

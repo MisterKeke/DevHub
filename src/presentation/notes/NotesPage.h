@@ -32,6 +32,9 @@ public:
     [[nodiscard]] QStringList previewTitles(int limit = 3) const;
     [[nodiscard]] bool flushPendingSave();
     [[nodiscard]] bool prepareForTransition();
+    [[nodiscard]] bool assistantEditAllowed(const QString& workspaceId, const QString& noteId) const;
+    [[nodiscard]] shared::common::Result<QString> applyAssistantEdit(const QString& workspaceId,
+        const QString& noteId, const QString& content, const QString& expectedHash);
 
 private:
     void reloadTree();

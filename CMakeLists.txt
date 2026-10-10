@@ -108,6 +108,8 @@ set(DEVHUB_ASSISTANT_SOURCES
     src/application/assistant/AssistantToolHandlers.cpp
     src/application/assistant/AssistantToolRuntime.h
     src/application/assistant/AssistantToolRuntime.cpp
+    src/application/assistant/AssistantApprovalCoordinator.h
+    src/application/assistant/AssistantApprovalCoordinator.cpp
     src/application/assistant/ICodexTransport.h
     src/infrastructure/codex/CodexExecutableLocator.h
     src/infrastructure/codex/CodexExecutableLocator.cpp

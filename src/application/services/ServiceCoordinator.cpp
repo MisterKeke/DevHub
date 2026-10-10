@@ -8,6 +8,9 @@ namespace devhub::application::services {
 ServiceCoordinator::ServiceCoordinator(IServiceDefinitionRepository& repository, IProcessLauncher& launcher, QObject* parent)
     : QObject(parent), m_repository(repository), m_launcher(launcher) {}
 shared::common::Result<void> ServiceCoordinator::start(domain::services::ServiceDefinition definition, QString workspaceRoot) {
+    return startWithAction(std::move(definition), std::move(workspaceRoot), ++m_actionIdentity);
+}
+shared::common::Result<void> ServiceCoordinator::startWithAction(domain::services::ServiceDefinition definition, QString workspaceRoot, quint64 actionIdentity) {
     const QString id = definition.id;
     if (id.isEmpty() || (m_processes.contains(id) && m_processes.value(id))) return shared::common::Result<void>::failure(
         domain::errors::AppError::failure(domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Process,
@@ -17,6 +20,9 @@ shared::common::Result<void> ServiceCoordinator::start(domain::services::Service
     auto saved = m_repository.save(validated.value());
     if (!saved) return saved;
     ServiceRuntimeState state; state.definition = validated.value(); state.lifecycle = ServiceLifecycleState::Starting;
+    state.generation = ++m_processGeneration;
+    state.actionIdentity = actionIdentity;
+    m_serviceActions.insert(id, actionIdentity);
     state.health = state.definition.expectedPorts.isEmpty() ? ServiceHealthState::Unknown : ServiceHealthState::Checking;
     setState(id, state);
     IManagedProcess* process = m_launcher.launch(state.definition, this);
@@ -70,29 +76,38 @@ shared::common::Result<void> ServiceCoordinator::start(domain::services::Service
     return shared::common::Result<void>::success();
 }
 shared::common::Result<void> ServiceCoordinator::stop(const QString& serviceId) {
+    return stopWithAction(serviceId, ++m_actionIdentity);
+}
+shared::common::Result<void> ServiceCoordinator::stopWithAction(const QString& serviceId, quint64 actionIdentity) {
+    m_serviceActions.insert(serviceId, actionIdentity);
     ++m_restartGeneration[serviceId];
     auto process = m_processes.value(serviceId);
     if (!process) return shared::common::Result<void>::success();
     auto state = m_states.value(serviceId); state.lifecycle = ServiceLifecycleState::Stopping; setState(serviceId, state);
     process->stop(state.definition.stopTimeoutMs); return shared::common::Result<void>::success();
 }
-shared::common::Result<void> ServiceCoordinator::restart(const QString& serviceId, QString workspaceRoot) {
+shared::common::Result<void> ServiceCoordinator::restart(const QString& serviceId, QString workspaceRoot, std::function<bool()> replacementAuthorized) {
     const auto it = m_states.constFind(serviceId);
     if (it == m_states.cend()) return shared::common::Result<void>::failure(domain::errors::AppError::failure(
         domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Process,
         QStringLiteral("Service definition was not found."), serviceId, QStringLiteral("restart service")));
     auto definition = it->definition;
+    const quint64 actionIdentity = ++m_actionIdentity;
     if (m_processes.contains(serviceId) && m_processes.value(serviceId)) {
         const quint64 generation = m_restartGeneration.value(serviceId) + 1;
         connect(m_processes.value(serviceId), &IManagedProcess::finished, this,
-            [this, definition, workspaceRoot, generation](int, int) mutable {
+            [this, definition, workspaceRoot, generation, actionIdentity, replacementAuthorized](int, int) mutable {
                 if (m_restartGeneration.value(definition.id) != generation) return;
-                const auto result=start(std::move(definition), std::move(workspaceRoot));
+                if (replacementAuthorized && !replacementAuthorized()) return;
+                const auto result=startWithAction(std::move(definition), std::move(workspaceRoot), actionIdentity);
                 if (!result) qWarning().noquote()<<result.error().technicalMessage;
             }, Qt::SingleShotConnection);
-        return stop(serviceId);
+        return stopWithAction(serviceId, actionIdentity);
     }
-    return start(std::move(definition), std::move(workspaceRoot));
+    if (replacementAuthorized && !replacementAuthorized()) return shared::common::Result<void>::failure(domain::errors::AppError::failure(
+        domain::errors::ErrorCode::OperationCancelled, domain::errors::ErrorCategory::Process,
+        QStringLiteral("Service restart was revoked."), {}, QStringLiteral("restart service")));
+    return startWithAction(std::move(definition), std::move(workspaceRoot), actionIdentity);
 }
 QVector<ServiceRuntimeState> ServiceCoordinator::states() const { return m_states.values().toVector(); }
 bool ServiceCoordinator::hasRunningServices() const {
@@ -101,7 +116,14 @@ bool ServiceCoordinator::hasRunningServices() const {
     return false;
 }
 void ServiceCoordinator::setState(const QString& id, ServiceRuntimeState state) { m_states.insert(id,state); emit stateChanged(id,state); }
+void ServiceCoordinator::cancelPendingRestart(const QString& serviceId, quint64 actionIdentity) {
+    if (actionIdentity && m_serviceActions.value(serviceId) != actionIdentity) return;
+    ++m_restartGeneration[serviceId];
+    m_cancelledRestartProcesses.insert(serviceId, m_states.value(serviceId).generation);
+}
 void ServiceCoordinator::scheduleRestart(const QString& id) {
+    if (m_cancelledRestartProcesses.contains(id)
+        && m_cancelledRestartProcesses.value(id) == m_states.value(id).generation) return;
     const int attempts = m_restartAttempts.value(id);
     if (attempts >= 5) return;
     m_restartAttempts.insert(id, attempts+1);

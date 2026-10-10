@@ -149,6 +149,8 @@ AssistantToolRuntime::AssistantToolRuntime(ICodexClient& client, AssistantContro
       })
 {
     registerHandlers();
+    registerMutationHandlers();
+    m_controller.setApprovalCoordinator(&m_approvals);
     const auto specifications = experimentalToolSpecifications();
     m_profileConfigured = m_client.configureDynamicTools(specifications);
     if (m_profileConfigured) {
@@ -156,6 +158,10 @@ AssistantToolRuntime::AssistantToolRuntime(ICodexClient& client, AssistantContro
         m_registryFingerprint = QString::fromLatin1(QCryptographicHash::hash(identity, QCryptographicHash::Sha256).toHex());
     }
     m_registry.bindLifecycle(m_controller, m_client);
+    connect(&m_registry, &AssistantToolRegistry::activityFinished, &m_approvals,
+        [this](const QString& callId) { m_approvals.revokeCall(callId); });
+    connect(&m_registry, &AssistantToolRegistry::mutationUncertain, &m_controller,
+        [this](const QString& tool) { emit m_controller.toolMutationUncertain(internalName(tool)); });
     connect(&m_client, &ICodexClient::dynamicToolCallReceived, this, &AssistantToolRuntime::dispatch);
     connect(&m_controller, &AssistantController::accessRevoked, &m_registry, [this] { m_registry.cancelAll(); });
     connect(&m_workspaceContext, &workspaces::WorkspaceContext::workspaceChanged, &m_registry,
@@ -177,6 +183,8 @@ AssistantToolRuntime::AssistantToolRuntime(ICodexClient& client, AssistantContro
 AssistantToolRuntime::~AssistantToolRuntime()
 {
     m_registry.cancelAll(QStringLiteral("runtime_stopped"));
+    m_approvals.revokeAll();
+    m_controller.setApprovalCoordinator(nullptr);
 }
 
 QJsonArray AssistantToolRuntime::experimentalToolSpecifications()
@@ -201,7 +209,14 @@ QJsonArray AssistantToolRuntime::experimentalToolSpecifications()
         {QStringLiteral("devhub_notes_read"), {QStringLiteral("Read a selected-workspace note after note-text disclosure is enabled."), noteArgs}},
         {QStringLiteral("devhub_notes_search"), {QStringLiteral("Search note text in the selected workspace after disclosure is enabled."), searchArgs}},
         {QStringLiteral("devhub_files_read"), {QStringLiteral("Read a bounded file range after file-text disclosure is enabled."), fileArgs}},
-        {QStringLiteral("devhub_files_search"), {QStringLiteral("Search workspace file names and relative paths."), searchArgs}}};
+        {QStringLiteral("devhub_files_search"), {QStringLiteral("Search workspace file names and relative paths."), searchArgs}},
+        {QStringLiteral("devhub_notes_edit"), {QStringLiteral("Propose replacing a note with human approval and a current SHA-256 hash."),
+            objectSchema({{"noteId", stringSchema(64)}, {"expectedHash", stringSchema(64)},
+                {"content", QJsonObject{{"type", "string"}, {"minLength", 0}, {"maxLength", 32768}}}}, {"noteId", "expectedHash", "content"})}},
+        {QStringLiteral("devhub_services_start"), {QStringLiteral("Request approval to start an existing service; waits for process startup."), objectSchema({{"serviceId", stringSchema(64)}}, {"serviceId"})}},
+        {QStringLiteral("devhub_services_stop"), {QStringLiteral("Request approval to stop an existing managed service; waits for process exit."), objectSchema({{"serviceId", stringSchema(64)}}, {"serviceId"})}},
+        {QStringLiteral("devhub_services_restart"), {QStringLiteral("Request approval to restart an existing managed service; waits for its replacement process."), objectSchema({{"serviceId", stringSchema(64)}}, {"serviceId"})}},
+        {QStringLiteral("devhub_project_open"), {QStringLiteral("Request approval to open a registered workspace through Notes and Database transition guards; ends this chat's workspace scope."), objectSchema({{"workspaceId", stringSchema(64)}}, {"workspaceId"})}}};
     QJsonArray result;
     for (const auto& entry : tools)
         result.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("function")},
@@ -221,8 +236,214 @@ QString AssistantToolRuntime::internalName(const QString& wireName)
         {QStringLiteral("devhub_notes_read"), QStringLiteral("notes.read")},
         {QStringLiteral("devhub_notes_search"), QStringLiteral("notes.search")},
         {QStringLiteral("devhub_files_read"), QStringLiteral("files.read")},
-        {QStringLiteral("devhub_files_search"), QStringLiteral("files.search")}};
+        {QStringLiteral("devhub_files_search"), QStringLiteral("files.search")},
+        {QStringLiteral("devhub_notes_edit"), QStringLiteral("notes.edit")},
+        {QStringLiteral("devhub_services_start"), QStringLiteral("services.start")},
+        {QStringLiteral("devhub_services_stop"), QStringLiteral("services.stop")},
+        {QStringLiteral("devhub_services_restart"), QStringLiteral("services.restart")},
+        {QStringLiteral("devhub_project_open"), QStringLiteral("project.open")}};
     return map.value(wireName);
+}
+
+namespace {
+QByteArray serviceIdentity(const domain::services::ServiceDefinition& d) {
+    QJsonArray ports; for (auto port : d.expectedPorts) ports.append(port);
+    return QJsonDocument(QJsonArray{d.id, d.workspaceId, d.name, d.program,
+        QJsonArray::fromStringList(d.arguments), d.workingDirectory, d.shellMode,
+        QJsonArray::fromStringList(d.environmentNames), ports, static_cast<int>(d.restartPolicy), d.stopTimeoutMs})
+        .toJson(QJsonDocument::Compact);
+}
+QString runtimeIdentity(const QVector<services::ServiceRuntimeState>& states, const QString& id) {
+    for (const auto& state : states) if (state.definition.id == id)
+        return QString::fromLatin1(QCryptographicHash::hash(serviceIdentity(state.definition), QCryptographicHash::Sha256).toHex())
+            + QStringLiteral("|%1|%2|%3").arg(state.generation).arg(state.processId).arg(static_cast<int>(state.lifecycle));
+    return QStringLiteral("never-started");
+}
+}
+
+bool AssistantToolRuntime::scopeStillCurrent(const ToolCall& call) const {
+    const auto now = scopeFor({{"threadId", m_client.threadBinding().threadId}, {"turnId", m_client.activeTurnId()}}, m_client.processGeneration());
+    return now.authorized() && now.scopeId() == call.scope.scopeId()
+        && now.accountId() == call.scope.accountId() && now.workspaceRoot() == call.scope.workspaceRoot()
+        && now.accessGeneration() == call.scope.accessGeneration()
+        && (call.expiresAtMonotonicMs <= 0 || m_registry.monotonicMilliseconds() < call.expiresAtMonotonicMs);
+}
+
+void AssistantToolRuntime::registerMutationHandlers() {
+    for (const auto& value : experimentalToolSpecifications()) {
+        const auto spec = value.toObject(); const auto name = spec.value("name").toString();
+        if (name != "devhub_notes_edit" && name != "devhub_project_open" && !name.startsWith("devhub_services_")) continue;
+        if (name == "devhub_services_list") continue;
+        const auto schema = spec.value("inputSchema").toObject(); QStringList required;
+        for (const auto& item : schema.value("required").toArray()) required.append(item.toString());
+        auto def = definition(name, spec.value("description").toString(), schema.value("properties").toObject(), required);
+        def.effect = ToolEffect::ApprovedMutation; def.affinity = ToolAffinity::OwnerThread;
+        const bool registered = m_registry.registerTool(std::move(def), [this, name](const ToolCall& call, const ToolCancellation& cancellation, auto done) {
+            if (!scopeStillCurrent(call)) { done(failed("scope_denied")); return; }
+            const QString workspaceName = m_controller.conversation().context.name;
+            if (name == "devhub_notes_edit") {
+                const QString id = call.arguments.value("noteId").toString(), hash = call.arguments.value("expectedHash").toString();
+                const QString content = call.arguments.value("content").toString();
+                static const QRegularExpression sha(QStringLiteral("^[a-f0-9]{64}$"));
+                if (!sha.match(hash).hasMatch() || content.toUtf8().size() > 32768) { done(failed("invalid_arguments")); return; }
+                auto validNote = [this, call, id, hash] {
+                    if (!m_mutations.noteEditable || !m_mutations.editNote || !m_mutations.noteEditable(call.scope.workspaceId(), id)) return false;
+                    const auto nodes = m_notes.list(call.scope.workspaceId(), false);
+                    if (!nodes) return false;
+                    for (const auto& node : nodes.value())
+                        if (node.id == id && node.workspaceId == call.scope.workspaceId() && node.kind == notes::NoteNodeKind::Note
+                            && !node.trashed && node.contentHash == hash) return true;
+                    return false;
+                };
+                if (!validNote()) { done(failed("note_conflict")); return; }
+                m_approvals.request(call, cancellation, workspaceName, tr("Replace note %1; unsaved edits and recovery copies must be resolved first.").arg(id), content,
+                    [this, call, cancellation, validNote, id, hash, content, done](bool allow) {
+                        if (!allow) { done(failed("approval_denied")); return; }
+                        if (cancellation.isCancellationRequested() || !scopeStillCurrent(call) || !validNote()) { done(failed("note_conflict")); return; }
+                        cancellation.markMutationStarted();
+                        const auto saved = m_mutations.editNote(call.scope.workspaceId(), id, content, hash);
+                        if (!saved) { auto result = failed("note_conflict"); result.data.insert("outcome", "uncertain"); result.data.insert("retryAutomatically", false); done(result); return; }
+                        ToolResult result; result.success = true; result.data = {{"noteId", id}, {"contentHash", saved.value()}}; done(result);
+                    });
+                return;
+            }
+            if (name == "devhub_project_open") {
+                const QString id = call.arguments.value("workspaceId").toString();
+                if (!m_mutations.openWorkspace) { done(failed("transition_unavailable")); return; }
+                const auto rows = m_workspaces.list();
+                if (!rows) { done(failed("workspace_unavailable")); return; }
+                for (const auto& target : rows.value()) if (target.id().toString() == id && target.accountId() == m_workspaces.accountId()) {
+                    const QString root = target.path().canonicalPath();
+                    auto revalidate = [this, call, cancellation, id, root] {
+                        if (cancellation.isCancellationRequested() || !scopeStillCurrent(call)) return false;
+                        const auto rowsNow = m_workspaces.list(); if (!rowsNow) return false;
+                        for (const auto& row : rowsNow.value()) if (row.id().toString() == id && row.path().canonicalPath() == root
+                            && row.accountId() == m_workspaces.accountId()) {
+                            const auto validated = m_workspaces.validator().validate(row.path().enteredPath());
+                            return validated && exactRepositoryRoot(root, validated.value().path.canonicalPath());
+                        }
+                        return false;
+                    };
+                    m_approvals.request(call, cancellation, workspaceName,
+                        tr("Open workspace %1 after checking pending Notes and Database changes. This ends the current workspace chat scope.").arg(target.displayName()), {},
+                        [this, cancellation, id, revalidate, done](bool allow) {
+                            if (!allow) { done(failed("approval_denied")); return; }
+                            if (!revalidate()) { done(failed("scope_changed")); return; }
+                            // The shared workflow calls committed after activation succeeds,
+                            // before workspaceChanged revokes the old chat scope.
+                            auto committed = std::make_shared<bool>(false);
+                            const bool opened = m_mutations.openWorkspace(id, revalidate, [committed, cancellation, id, done] {
+                                *committed = true; cancellation.markMutationStarted();
+                                ToolResult result; result.success = true; result.data = {{"workspaceId", id}, {"opened", true}}; done(result);
+                            });
+                            if (!opened || !*committed) done(failed("transition_denied"));
+                        });
+                    return;
+                }
+                done(failed("workspace_unavailable")); return;
+            }
+            const QString id = call.arguments.value("serviceId").toString();
+            const auto definitions = m_serviceDefinitions.list(call.scope.workspaceId());
+            if (!definitions) { done(failed("service_unavailable")); return; }
+            for (const auto& d : definitions.value()) if (d.id == id && d.workspaceId == call.scope.workspaceId()) {
+                const auto states = m_serviceCoordinator.states();
+                for (const auto& state : states) if (state.definition.id == id
+                    && (state.lifecycle == services::ServiceLifecycleState::Starting || state.lifecycle == services::ServiceLifecycleState::Stopping
+                        || serviceIdentity(state.definition) != serviceIdentity(d))) { done(failed("service_busy_or_changed")); return; }
+                const QString identity = runtimeIdentity(states, id), action = name.mid(QStringLiteral("devhub_services_").size());
+                m_approvals.request(call, cancellation, workspaceName,
+                    tr("%1 service %2 using its saved definition (restart policy: %3). No command or environment changes.")
+                        .arg(action, d.name, d.restartPolicy == domain::services::RestartPolicy::Never ? tr("never")
+                            : d.restartPolicy == domain::services::RestartPolicy::Always ? tr("always") : tr("on failure")), {},
+                    [this, call, cancellation, d, action, identity, done](bool allow) {
+                        if (!allow) { done(failed("approval_denied")); return; }
+                        if (cancellation.isCancellationRequested() || !scopeStillCurrent(call)
+                            || runtimeIdentity(m_serviceCoordinator.states(), d.id) != identity) { done(failed("service_identity_changed")); return; }
+                        const auto current = m_serviceDefinitions.list(call.scope.workspaceId());
+                        if (current) for (const auto& row : current.value()) if (row.id == d.id && serviceIdentity(row) == serviceIdentity(d)) {
+                            executeServiceAction(call, cancellation, action, d, done); return;
+                        }
+                        done(failed("service_definition_changed"));
+                    });
+                return;
+            }
+            done(failed("service_unavailable"));
+        });
+        if (!registered) qFatal("Assistant mutation registration failed.");
+    }
+}
+
+void AssistantToolRuntime::executeServiceAction(const ToolCall& call, const ToolCancellation& cancellation,
+    QString action, domain::services::ServiceDefinition definition, std::function<void(ToolResult)> done) {
+    using Life = services::ServiceLifecycleState;
+    quint64 initialGeneration = 0; Life initial = Life::Stopped;
+    for (const auto& state : m_serviceCoordinator.states()) if (state.definition.id == definition.id) {
+        initialGeneration = state.generation; initial = state.lifecycle;
+    }
+    if ((action == "start" && initial == Life::Running) || (action == "restart" && initial != Life::Running)) {
+        done(failed("service_state_conflict")); return;
+    }
+    if (action == "stop" && (initial == Life::Stopped || initial == Life::Failed)) {
+        ToolResult result; result.success = true; result.data = {{"serviceId", definition.id}, {"state", "stopped"}}; done(result); return;
+    }
+    struct Await { bool finished = false; quint64 replacement = 0; };
+    const quint64 expectedAction = m_serviceCoordinator.nextActionIdentity();
+    auto await = std::make_shared<Await>();
+    auto* watch = new QObject(this);
+    auto finish = [watch = QPointer<QObject>(watch), coordinator = QPointer<services::ServiceCoordinator>(&m_serviceCoordinator),
+        action, definition, expectedAction, cancellation, await, done](ToolResult result) {
+        if (await->finished) return;
+        if (!result.success) cancellation.cancel();
+        if (!result.success && action != "stop" && coordinator) coordinator->cancelPendingRestart(definition.id, expectedAction);
+        await->finished = true; if (watch) { watch->disconnect(); watch->deleteLater(); } done(result);
+    };
+    connect(&m_serviceCoordinator, &services::ServiceCoordinator::stateChanged, watch,
+        [definition, action, initialGeneration, expectedAction, await, finish](const QString& id, const services::ServiceRuntimeState& state) {
+            if (id != definition.id || await->finished) return;
+            if (serviceIdentity(state.definition) != serviceIdentity(definition)) {
+                auto result = failed("service_identity_changed"); result.data.insert("outcome", "uncertain"); finish(result); return;
+            }
+            if (action != "stop" && state.lifecycle == Life::Starting && state.generation > initialGeneration) {
+                if (state.actionIdentity != expectedAction) { auto r = failed("service_identity_changed"); r.data.insert("outcome", "uncertain"); finish(r); return; }
+                if (await->replacement && await->replacement != state.generation) { auto r = failed("service_identity_changed"); r.data.insert("outcome", "uncertain"); finish(r); return; }
+                await->replacement = state.generation;
+            }
+            const bool matches = action == "stop" ? state.generation == initialGeneration : await->replacement && state.generation == await->replacement;
+            if (!matches) return;
+            if ((action == "stop" && state.lifecycle == Life::Stopped) || (action != "stop" && state.lifecycle == Life::Running)) {
+                ToolResult result; result.success = true; result.data = {{"serviceId", id}, {"state", lifeName(state.lifecycle)}, {"generation", static_cast<qint64>(state.generation)}}; finish(result);
+            } else if (state.lifecycle == Life::Failed || (action != "stop" && state.lifecycle == Life::Stopped)) finish(failed("service_action_failed"));
+        });
+    connect(&m_registry, &AssistantToolRegistry::activityFinished, watch,
+        [this, call, cancellation, action, definition, expectedAction, await, finish](const QString& callId) {
+            if (callId != call.callId || !cancellation.isCancellationRequested() || await->finished) return;
+            if (action != "stop") m_serviceCoordinator.cancelPendingRestart(definition.id, expectedAction);
+            auto result = failed("action_interrupted"); result.data.insert("outcome", "uncertain"); finish(result);
+        });
+    auto* timer = new QTimer(watch); timer->setInterval(50);
+    connect(timer, &QTimer::timeout, watch, [this, call, cancellation, action, definition, expectedAction, await, finish] {
+        if (await->finished) return;
+        if (cancellation.isCancellationRequested() || !scopeStillCurrent(call)
+            || m_registry.monotonicMilliseconds() >= call.expiresAtMonotonicMs) {
+            // Cancel delayed replacement/restart scheduling, without pretending a
+            // process already launched can be rolled back by cancelling the chat.
+            if (action != "stop") m_serviceCoordinator.cancelPendingRestart(definition.id, expectedAction);
+            auto r = failed("action_interrupted"); r.data.insert("outcome", "uncertain"); finish(r);
+        }
+    }); timer->start();
+    cancellation.markMutationStarted();
+    const auto admitted = action == "start" ? m_serviceCoordinator.start(definition, call.scope.workspaceRoot())
+        : action == "stop" ? m_serviceCoordinator.stop(definition.id) : m_serviceCoordinator.restart(definition.id, call.scope.workspaceRoot(),
+            [runtime = QPointer<AssistantToolRuntime>(this), call, cancellation, definition, finish] {
+                if (!runtime) return false;
+                if (!cancellation.isCancellationRequested() && runtime->scopeStillCurrent(call)
+                    && runtime->m_registry.monotonicMilliseconds() < call.expiresAtMonotonicMs) {
+                    const auto rows = runtime->m_serviceDefinitions.list(call.scope.workspaceId());
+                    if (rows) for (const auto& row : rows.value()) if (serviceIdentity(row) == serviceIdentity(definition)) return true;
+                }
+                auto result = failed("restart_revoked"); result.data.insert("outcome", "stopped_without_restart"); finish(result); return false;
+            });
+    if (!admitted) finish(failed("service_admission_failed"));
 }
 
 void AssistantToolRuntime::registerHandlers()
@@ -339,7 +560,8 @@ void AssistantToolRuntime::registerHandlers()
         const auto content = m_notes.readContentBounded(call.scope.workspaceId(), id, toolNoteBytes);
         if (!content || cancellation.isCancellationRequested()) { done(failed(content ? QStringLiteral("cancelled") : QStringLiteral("note_unavailable"))); return; }
         ToolResult result; result.success = true;
-        result.data = {{QStringLiteral("noteId"), id}, {QStringLiteral("text"), content.value()}}; done(std::move(result));
+        result.data = {{QStringLiteral("noteId"), id}, {QStringLiteral("text"), content.value()},
+            {QStringLiteral("contentHash"), QString::fromLatin1(QCryptographicHash::hash(content.value().toUtf8(), QCryptographicHash::Sha256).toHex())}}; done(std::move(result));
     });
 
     auto noteSearch = definition(QStringLiteral("devhub_notes_search"), QStringLiteral("Search note text after explicit disclosure."),

@@ -1,5 +1,9 @@
 #include "../src/infrastructure/assistant/SqlConversationRepository.h"
 #include "../src/infrastructure/notes/NotesRepository.h"
+#include <QProcess>
+#include <QFile>
+#include <QFileInfo>
+#include <QDir>
 #include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
@@ -111,11 +115,46 @@ private slots:
         QVERIFY(bounded); QCOMPARE(bounded.value(), QStringLiteral("bounded body"));
         QVERIFY(!repository.readContentBounded(QUuid::createUuid().toString(QUuid::WithoutBraces), created.value().id, 100));
         QVERIFY(!repository.readContentBounded(workspaceId, created.value().id, 2));
+        const auto savedRows = repository.list(workspaceId, false); QVERIFY(savedRows);
+        const auto expected = savedRows.value().first().contentHash;
+        const auto edited = repository.saveContent(workspaceId, created.value().id, QStringLiteral("approved body"), expected); QVERIFY(edited);
+        QVERIFY(!repository.saveContent(workspaceId, created.value().id, QStringLiteral("stale overwrite"), expected));
+        QCOMPARE(repository.readContent(workspaceId, created.value().id).value(), QStringLiteral("approved body"));
+        QVERIFY(!repository.saveContent(QUuid::createUuid().toString(QUuid::WithoutBraces), created.value().id, QStringLiteral("other workspace"), edited.value()));
+        QVERIFY(!repository.saveContent(workspaceId, QStringLiteral("../outside"), QStringLiteral("escape"), edited.value()));
         QVERIFY(repository.setTrashed(workspaceId, created.value().id, true));
         QVERIFY(!repository.readContentBounded(workspaceId, created.value().id, 100));
         const auto otherAccount = domain::account::AccountId::fromString(QUuid::createUuid().toString(QUuid::WithoutBraces)); QVERIFY(otherAccount);
         infrastructure::notes::NotesRepository wrongAccount(db, otherAccount.value(), temp.filePath(QStringLiteral("other-notes")));
         QVERIFY(!wrongAccount.readContentBounded(workspaceId, created.value().id, 100));
+        QVERIFY(!wrongAccount.saveContent(workspaceId, created.value().id, QStringLiteral("other account"), edited.value()));
+    }
+    void noteWritesRejectStorageJunctions() {
+#ifdef Q_OS_WIN
+        QTemporaryDir temp; QVERIFY(temp.isValid());
+        infrastructure::database::InternalDatabaseManager db(temp.filePath("db.sqlite"), temp.filePath("backups"));
+        QVERIFY(db.open()); QVERIFY(db.migrate()); const auto accountId = createAccount(db);
+        const auto parsed = domain::account::AccountId::fromString(accountId); QVERIFY(parsed);
+        const auto workspaceId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QSqlQuery row(db.database()); row.prepare("INSERT INTO workspaces(id,display_name,root_path,account_id,entered_path,canonical_root_path) VALUES(?,?,?,?,?,?)");
+        for (const auto& value : {workspaceId, QString("Notes"), temp.path(), accountId, temp.path(), temp.path()}) row.addBindValue(value);
+        QVERIFY(row.exec());
+        infrastructure::notes::NotesRepository repository(db, parsed.value(), temp.filePath("notes"));
+        const auto note = repository.create(workspaceId, {}, "Safe note", application::notes::NoteNodeKind::Note); QVERIFY(note);
+        const auto path = repository.contentPath(workspaceId, note.value().id);
+        QVERIFY(QFile::remove(path)); const auto folder = QFileInfo(path).absolutePath(); QVERIFY(QDir().rmdir(folder));
+        const auto outside = temp.filePath("outside"); QVERIFY(QDir().mkpath(outside));
+        const auto outsideFile = QDir(outside).filePath(QFileInfo(path).fileName());
+        QFile file(outsideFile); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("OUTSIDE_NOTE_SENTINEL"); file.close();
+        QProcess mklink; mklink.setProgram("C:/Windows/System32/cmd.exe"); mklink.setArguments({"/c", "mklink", "/J", QDir::toNativeSeparators(folder), QDir::toNativeSeparators(outside)});
+        mklink.start(); QVERIFY(mklink.waitForStarted(3000)); QVERIFY(mklink.waitForFinished(5000));
+        if (mklink.exitCode() != 0 || !QFileInfo(folder).isJunction()) QSKIP("Temporary note-storage junction unavailable in this runner.");
+        const bool denied = !repository.saveContent(workspaceId, note.value().id, "OVERWRITE", {});
+        QVERIFY(file.open(QIODevice::ReadOnly)); const auto unchanged = file.readAll(); file.close();
+        QVERIFY(QDir().rmdir(folder)); QVERIFY(denied); QCOMPARE(unchanged, QByteArray("OUTSIDE_NOTE_SENTINEL"));
+#else
+        QSKIP("Windows note-storage junction regression.");
+#endif
     }
 };
 
