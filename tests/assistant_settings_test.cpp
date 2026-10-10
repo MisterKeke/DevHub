@@ -71,6 +71,31 @@ private slots:
         QVERIFY(!settings.setValue("assistant/model", QString(513, QChar('x')))); QVERIFY(!settings.setValue("assistant/model", "bad\nmodel"));
         QVERIFY(!settings.setValue("assistant/executable", 123));
     }
+    void descriptorDefaultsAreValid() {
+        SettingsRepository repository; SettingsService settings(repository);
+        for (const auto& descriptor : settings.descriptors()) {
+            QVERIFY2(descriptor.validate, qPrintable(descriptor.id));
+            QVERIFY2(descriptor.validate(descriptor.defaultValue), qPrintable(descriptor.id));
+        }
+    }
+    void restoreConversationPreferenceUsesBooleanValidation() {
+        SettingsRepository repository; SettingsService settings(repository);
+        const auto id = QStringLiteral("assistant/restoreConversation");
+        QCOMPARE(settings.value(id).metaType().id(), QMetaType::Bool);
+        QCOMPARE(settings.value(id).toBool(), true);
+        for (const bool enabled : {false, true}) {
+            QVERIFY(settings.setValue(id, enabled));
+            QCOMPARE(repository.values.value(id).metaType().id(), QMetaType::Bool);
+            SettingsService reloaded(repository);
+            QCOMPARE(reloaded.value(id).metaType().id(), QMetaType::Bool);
+            QCOMPARE(reloaded.value(id).toBool(), enabled);
+        }
+        QVERIFY(!settings.setValue(id, QStringLiteral("false")));
+        QVERIFY(!settings.setValue(id, QString{}));
+        QVERIFY(!settings.setValue(id, 0));
+        QVERIFY(!settings.setValue(id, QVariant{}));
+        QCOMPARE(repository.values.value(id).toBool(), true);
+    }
     void asyncRecheckUsesDraftAndIgnoresStaleResult() {
         Harness h; SetupProbe probe; AssistantSettingsPanel panel(h.controller, probe, {});
         auto* executable = panel.executableControl(); executable->setText(QString::fromUtf8("C:/Native İ path/codex.exe"));

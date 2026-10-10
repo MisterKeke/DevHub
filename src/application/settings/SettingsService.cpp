@@ -50,7 +50,8 @@ SettingsService::SettingsService(ISettingsRepository& repository) : m_repository
         string(QStringLiteral("terminal/customExecutable"), QStringLiteral("Custom terminal executable"), QStringLiteral("Terminal"), {}, false, SettingSensitivity::Sensitive),
         string(QStringLiteral("terminal/customArguments"), QStringLiteral("Custom terminal arguments"), QStringLiteral("Terminal"), {}, false, SettingSensitivity::Sensitive)
     };
-    for (auto& item : m_descriptors) if (item.section == QStringLiteral("Assistant")) {
+    for (auto& item : m_descriptors) if (item.id == QStringLiteral("assistant/executable")
+        || item.id == QStringLiteral("assistant/model")) {
         const bool executable = item.id == QStringLiteral("assistant/executable");
         item.validate = [executable](const QVariant& value) {
             if (value.metaType().id() != QMetaType::QString) return false;
