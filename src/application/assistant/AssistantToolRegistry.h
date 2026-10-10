@@ -26,7 +26,8 @@ public:
     ToolScope() = default;
     ToolScope(QString scopeId, QString accountId, QString workspaceId, QString workspaceRoot,
               quint64 accessGeneration, quint64 processGeneration, bool authorized,
-              QStringList explicitlySelectedNoteIds = {}, bool notesReadGrant = false);
+              QStringList explicitlySelectedNoteIds = {}, bool notesReadGrant = false,
+              bool filesReadGrant = false);
     [[nodiscard]] const QString& scopeId() const { return m_scopeId; }
     [[nodiscard]] const QString& accountId() const { return m_accountId; }
     [[nodiscard]] const QString& workspaceId() const { return m_workspaceId; }
@@ -37,12 +38,14 @@ public:
     [[nodiscard]] bool notesReadAllowed() const { return m_notesReadGrant || !m_explicitlySelectedNoteIds.isEmpty(); }
     [[nodiscard]] bool allowsNoteRead(const QString& noteId) const
     { return m_authorized && (m_notesReadGrant || m_explicitlySelectedNoteIds.contains(noteId)); }
+    [[nodiscard]] bool filesReadAllowed() const { return m_authorized && m_filesReadGrant; }
 private:
     QString m_scopeId, m_accountId, m_workspaceId, m_workspaceRoot;
     quint64 m_accessGeneration = 0, m_processGeneration = 0;
     bool m_authorized = false;
     QStringList m_explicitlySelectedNoteIds;
     bool m_notesReadGrant = false;
+    bool m_filesReadGrant = false;
 };
 
 struct ToolDefinition final {
@@ -55,6 +58,7 @@ struct ToolDefinition final {
     qsizetype maximumOutputBytes = 16 * 1024;
     bool requiresWorkspace = false;
     bool requiresNoteReadDisclosure = false;
+    bool requiresFileReadDisclosure = false;
     std::function<bool(const QJsonObject& input, QJsonObject* normalized)> validateArguments;
 };
 
@@ -96,9 +100,11 @@ public:
     void cancelScope(const QString& scopeId, quint64 accessGeneration);
     void cancelScopesBefore(quint64 accessGeneration);
     void cancelProcess(quint64 processGeneration);
+    void cancelAll(QString reason = QStringLiteral("scope_revoked"));
     void bindLifecycle(AssistantController& controller, ICodexClient& client);
     void expireNow(qint64 monotonicMilliseconds);
     [[nodiscard]] int activeCount() const { return static_cast<int>(m_activeDedupe.size()); }
+    [[nodiscard]] qint64 monotonicMilliseconds() const { return m_clock.elapsed(); }
     [[nodiscard]] static QString schedulerModuleKey(const ToolCall& call);
 
 signals:
@@ -122,6 +128,7 @@ private:
     QHash<QString, Active> m_active;
     QHash<QString, QString> m_activeDedupe;
     QHash<QString, ToolResult> m_terminalDedupe;
+    QHash<QString, QByteArray> m_dedupeCallFingerprints;
     QQueue<QString> m_terminalOrder;
     QSet<QString> m_resolvedRouteKeys;
     QQueue<QString> m_resolvedRouteOrder;

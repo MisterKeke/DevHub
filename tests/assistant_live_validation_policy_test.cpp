@@ -92,6 +92,8 @@ private slots:
         };
 
         QVERIFY(authorized());
+        QVERIFY(CodexRuntimeProfile::developmentLiveInferenceAuthorized(
+            executable, QStringLiteral("0.162.0-alpha.17.2"), childEnvironment));
         optIn.set("no");
         QVERIFY(!authorized());
         optIn.set("I_ACKNOWLEDGE_REAL_CODEX_INFERENCE");

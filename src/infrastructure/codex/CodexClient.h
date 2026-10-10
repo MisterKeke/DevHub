@@ -5,6 +5,7 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QPointer>
+#include <QSet>
 #include <QTimer>
 #include <optional>
 
@@ -35,6 +36,9 @@ public:
     [[nodiscard]] application::assistant::CodexAccount account() const override { return m_account; }
     [[nodiscard]] application::assistant::CodexThreadBinding threadBinding() const override { return m_thread; }
     [[nodiscard]] QString activeTurnId() const override { return m_turnId; }
+    [[nodiscard]] quint64 processGeneration() const override { return m_generation; }
+    [[nodiscard]] bool configureDynamicTools(QJsonArray specifications) override;
+    [[nodiscard]] bool resolveDynamicToolCall(const QJsonValue& requestId, const QJsonObject& response) override;
 private:
     enum class Operation { Initialize, Account, LoginStart, LoginCancel, Models, Config, Requirements,
         ThreadStart, ThreadResume, ThreadRead, TurnStart, TurnInterrupt };
@@ -78,6 +82,7 @@ private:
     CodexWireContract m_wire;
     QHash<qint64, Pending> m_pending;
     QHash<QByteArray, QByteArray> m_serverRequests;
+    QSet<QByteArray> m_resolvedServerRequests;
     QHash<QString, application::assistant::CodexItem> m_items;
     QStringList m_itemOrder;
     QList<QJsonObject> m_earlyTurns;
@@ -99,6 +104,9 @@ private:
     bool m_developmentLiveValidationAuthorized = false;
     bool m_uncertain = false;
     bool m_interruptAccepted = false;
+    bool m_dynamicToolsEnabled = false;
+    QJsonArray m_dynamicToolSpecifications;
+    QString m_dynamicToolFingerprint;
     QString m_scratch;
     QString m_expectedHome;
     QString m_profileFingerprint;

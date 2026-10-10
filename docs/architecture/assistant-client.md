@@ -98,17 +98,27 @@ requests managed requirements. Until both succeed, thread operations are denied.
 Effective restricted features must be explicitly false, every inherited MCP
 entry explicitly disabled, legacy notify absent/empty, and provider/login/default
 policy compatible. Missing/malformed values, provider overrides, extra roots,
-unknown/managed config sources, nonempty managed requirements and attached runtime
+unknown/enterprise/MDM config sources, unimplemented managed requirements and attached runtime
 configuration are rejected. This deliberately supports fewer managed profiles
 than the native server. Raw config/layer values exist only transiently during the
 check and are discarded; rejection diagnostics contain fixed policy reasons.
 
-Thread creation uses legacy history, no dynamic tools, no selected/runtime roots
+Local `system` file layers use the same effective restrictions as user/project
+layers. A non-null `allowedLoginMethods` requirement is compatible only when its
+known method list includes `chatgpt`; DevHub still enforces and independently
+verifies ChatGPT authentication. All other non-null requirements remain rejected.
+
+Thread creation uses legacy history, no selected/runtime roots
 and `environments=[]`. Every admitted turn repeats empty environments and read-only
 policy. Resume has no environments/dynamicTools fields in the frozen contract;
 the returned thread must confirm empty environments before any turn. Bindings
 include the public account fingerprint, canonical home/scratch directory and a
-fingerprint of the actual canonical launch arguments and capability/history policy.
+version-scoped fingerprint of the actual canonical launch arguments,
+capability/history policy, and configured tool inventory.
+
+When the read-tool runtime is composed, both pinned profiles opt into the tagged
+experimental inventory. Tool item notifications/history retain identity only,
+excluding arguments and content from transcript state.
 Reads/resumes with a different binding are refused.
 
 Native inference remains blocked by the compile-time

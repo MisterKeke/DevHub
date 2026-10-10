@@ -42,6 +42,11 @@ bool CodexWireContract::setVersion(const QString& version)
     return !m_contracts.isEmpty() && !m_definitions.isEmpty();
 }
 bool CodexWireContract::contains(const QString& contract) const { return m_contracts.contains(contract); }
+bool CodexWireContract::acceptsDefinition(const QString& definition, const QJsonValue& value) const
+{
+    int budget = 100000;
+    return m_definitions.contains(definition) && validate(m_definitions.value(definition), value, 0, budget);
+}
 bool CodexWireContract::accepts(const QString& contract, const QJsonValue& value) const
 {
     int budget = 100000;

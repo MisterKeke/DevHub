@@ -10,6 +10,7 @@ public:
     [[nodiscard]] bool setVersion(const QString& version);
     [[nodiscard]] QString version() const { return m_version; }
     [[nodiscard]] bool accepts(const QString& contract, const QJsonValue& value) const;
+    [[nodiscard]] bool acceptsDefinition(const QString& definition, const QJsonValue& value) const;
     [[nodiscard]] bool contains(const QString& contract) const;
 private:
     [[nodiscard]] bool validate(const QJsonValue& schema, const QJsonValue& value, int depth, int& budget) const;

@@ -106,6 +106,8 @@ set(DEVHUB_ASSISTANT_SOURCES
     src/application/assistant/AssistantToolRegistry.cpp
     src/application/assistant/AssistantToolHandlers.h
     src/application/assistant/AssistantToolHandlers.cpp
+    src/application/assistant/AssistantToolRuntime.h
+    src/application/assistant/AssistantToolRuntime.cpp
     src/application/assistant/ICodexTransport.h
     src/infrastructure/codex/CodexExecutableLocator.h
     src/infrastructure/codex/CodexExecutableLocator.cpp
@@ -123,6 +125,11 @@ set(DEVHUB_ASSISTANT_SOURCES
     src/infrastructure/codex/CodexRuntimeProfile.cpp
     src/infrastructure/codex/CodexWireContract.h
     src/infrastructure/codex/CodexWireContract.cpp
+    src/application/git/GitExecutableLocator.cpp
+    src/application/git/GitCommandRunner.cpp
+    src/application/git/GitStatusParser.cpp
+    src/application/git/GitRepositoryLocator.cpp
+    src/application/git/GitService.cpp
     resources/codex_contracts.qrc
 )
 
@@ -138,7 +145,7 @@ target_link_libraries(devhub_file_services PUBLIC project_options devhub_core Qt
 
 function(configure_devhub_assistant target)
     target_include_directories(${target} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(${target} PUBLIC project_options devhub_core devhub_file_services Qt6::Core
+    target_link_libraries(${target} PUBLIC project_options devhub_core devhub_file_services devhub_services devhub_workspaces Qt6::Core
         PRIVATE project_warnings devhub_database Qt6::Sql)
 endfunction()
 
@@ -310,11 +317,6 @@ add_executable(devhub WIN32
     src/infrastructure/notifications/SqlNotificationRepository.cpp
     src/infrastructure/logging/ApplicationLogManager.cpp
     src/infrastructure/workspace/WindowsTerminalLauncher.cpp
-    src/application/git/GitExecutableLocator.cpp
-    src/application/git/GitCommandRunner.cpp
-    src/application/git/GitStatusParser.cpp
-    src/application/git/GitRepositoryLocator.cpp
-    src/application/git/GitService.cpp
     src/application/git/GitStateStore.cpp
     src/presentation/workspaces/AddWorkspaceDialog.cpp
     src/presentation/workspaces/WorkspaceListDelegate.cpp

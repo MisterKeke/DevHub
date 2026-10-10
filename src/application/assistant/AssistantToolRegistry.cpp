@@ -24,11 +24,12 @@ ToolResult failure(QString code)
 
 ToolScope::ToolScope(QString scopeId, QString accountId, QString workspaceId, QString workspaceRoot,
                      quint64 accessGeneration, quint64 processGeneration, bool authorized,
-                     QStringList explicitlySelectedNoteIds, bool notesReadGrant)
+                     QStringList explicitlySelectedNoteIds, bool notesReadGrant, bool filesReadGrant)
     : m_scopeId(std::move(scopeId)), m_accountId(std::move(accountId)), m_workspaceId(std::move(workspaceId)),
       m_workspaceRoot(std::move(workspaceRoot)), m_accessGeneration(accessGeneration),
       m_processGeneration(processGeneration), m_authorized(authorized),
-      m_explicitlySelectedNoteIds(std::move(explicitlySelectedNoteIds)), m_notesReadGrant(notesReadGrant) {}
+      m_explicitlySelectedNoteIds(std::move(explicitlySelectedNoteIds)), m_notesReadGrant(notesReadGrant),
+      m_filesReadGrant(filesReadGrant) {}
 
 QByteArray ToolResult::compactJson() const
 {
@@ -149,7 +150,18 @@ bool AssistantToolRegistry::invoke(ToolCall call)
         || (entry->definition.requiresNoteReadDisclosure && !call.scope.notesReadAllowed())) {
         resolveRoute(call.routeId, call.scope.processGeneration(), failure(QStringLiteral("scope_denied"))); return true;
     }
+    if (entry->definition.requiresFileReadDisclosure && !call.scope.filesReadAllowed()) {
+        resolveRoute(call.routeId, call.scope.processGeneration(), failure(QStringLiteral("scope_denied"))); return true;
+    }
     const QString key = dedupeKey(call);
+    const QByteArray callFingerprint = QCryptographicHash::hash(QJsonDocument(
+        QJsonArray{call.name, call.arguments}).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256);
+    const auto priorFingerprint = m_dedupeCallFingerprints.constFind(key);
+    if (priorFingerprint != m_dedupeCallFingerprints.cend() && priorFingerprint.value() != callFingerprint) {
+        resolveRoute(call.routeId, call.scope.processGeneration(), failure(QStringLiteral("duplicate_conflict")));
+        return true;
+    }
+    m_dedupeCallFingerprints.insert(key, callFingerprint);
     if (m_terminalDedupe.contains(key)) { resolveRoute(call.routeId, call.scope.processGeneration(), m_terminalDedupe.value(key)); return true; }
     if (m_activeDedupe.contains(key)) {
         // A duplicate server route receives the existing in-flight terminal result through its own route.
@@ -191,7 +203,8 @@ bool AssistantToolRegistry::invoke(ToolCall call)
             registry->cacheTerminal(key, bounded);
             const auto routes = registry->m_active.keys();
             for (const auto& activeRoute : routes) {
-                if (registry->m_active.value(activeRoute).call.callId == callId) registry->resolveActive(activeRoute, bounded, false);
+                if (registry->dedupeKey(registry->m_active.value(activeRoute).call) == key)
+                    registry->resolveActive(activeRoute, bounded, false);
             }
             emit registry->activityFinished(callId, name, bounded.success);
         }, Qt::QueuedConnection);
@@ -203,17 +216,29 @@ void AssistantToolRegistry::cacheTerminal(const QString& key, ToolResult result)
 {
     if (!m_terminalDedupe.contains(key)) m_terminalOrder.enqueue(key);
     m_terminalDedupe.insert(key, std::move(result));
-    while (m_terminalOrder.size() > 256) m_terminalDedupe.remove(m_terminalOrder.dequeue());
+    while (m_terminalOrder.size() > 256) {
+        const auto expiredKey = m_terminalOrder.dequeue();
+        m_terminalDedupe.remove(expiredKey);
+        m_dedupeCallFingerprints.remove(expiredKey);
+    }
 }
 
 void AssistantToolRegistry::resolveActive(const QString& routeId, ToolResult result, bool cancelWorker)
 {
     if (!m_active.contains(routeId)) return;
     const Active active = m_active.take(routeId);
-    if (cancelWorker) active.cancellation.cancel();
+    const QString key = dedupeKey(active.call);
+    if (cancelWorker) {
+        active.cancellation.cancel();
+        cacheTerminal(key, result);
+        // Aliases belong to the same invocation and must terminate together.
+        const auto routes = m_active.keys();
+        for (const auto& alias : routes)
+            if (dedupeKey(m_active.value(alias).call) == key) resolveActive(alias, result, false);
+    }
     resolveRoute(routeId, active.call.scope.processGeneration(),
         capResult(result, m_definitions.value(active.call.name).definition.maximumOutputBytes));
-    const QString key = dedupeKey(active.call);
+    if (cancelWorker) emit activityFinished(active.call.callId, active.call.name, false);
     if (!m_activeDedupe.contains(key)) return;
     const QString owner = m_activeDedupe.value(key);
     if (!m_active.contains(owner)) m_activeDedupe.remove(key);
@@ -257,6 +282,12 @@ void AssistantToolRegistry::cancelProcess(quint64 processGeneration)
     const auto routes = m_active.keys();
     for (const auto& route : routes) if (m_active.value(route).call.scope.processGeneration() == processGeneration)
         resolveActive(route, failure(QStringLiteral("process_lost")), true);
+}
+void AssistantToolRegistry::cancelAll(QString reason)
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+    const auto routes = m_active.keys();
+    for (const auto& route : routes) resolveActive(route, failure(reason), true);
 }
 void AssistantToolRegistry::bindLifecycle(AssistantController& controller, ICodexClient& client)
 {

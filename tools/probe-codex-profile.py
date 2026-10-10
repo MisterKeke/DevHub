@@ -31,14 +31,14 @@ OVERRIDES = (
 
 
 class Probe:
-    def __init__(self, executable, cwd, codex_home, overrides=OVERRIDES, extra_args=()):
+    def __init__(self, executable, cwd, codex_home, overrides=OVERRIDES, extra_args=(), expected_version="0.160.1"):
         allow = {name.casefold() for name in ENVIRONMENT_NAMES}
         env = {k: v for k, v in os.environ.items() if k.casefold() in allow}
         # Test-only state selector. No auth files are read or copied.
         env["CODEX_HOME"] = str(codex_home)
         version = subprocess.run([str(executable), "--version"], env=env, cwd=cwd,
                                  capture_output=True, timeout=5, check=True)
-        if version.stdout.strip() != b"codex-cli 0.160.1":
+        if version.stdout.strip() != ("codex-cli " + expected_version).encode():
             raise RuntimeError("candidate-version-mismatch")
         args = [str(executable), *extra_args, "app-server", "--listen", "stdio://", "--strict-config"]
         for override in overrides:

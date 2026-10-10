@@ -114,6 +114,7 @@ private slots:
     {
         QHash<QString, ToolResult> resolved;
         AssistantToolRegistry registry([&](const QString& route, const ToolResult& result) { resolved.insert(route, result); }, 2, 8);
+        QSignalSpy finished(&registry, &AssistantToolRegistry::activityFinished);
         std::function<void(ToolResult)> pending;
         ToolCancellation workerCancellation;
         ToolDefinition def; def.name = QStringLiteral("notes_search"); def.description = QStringLiteral("Search authorized notes.");
@@ -135,6 +136,13 @@ private slots:
         registry.cancelScope(QStringLiteral("scope-a"), 4);
         QCOMPARE(resolved.size(), 2);
         QVERIFY(workerCancellation.isCancellationRequested());
+        QCOMPARE(finished.size(), 1);
+        QVERIFY(!finished.first().at(2).toBool());
+        auto cancelledAlias = call; cancelledAlias.routeId = QStringLiteral("cancelled-alias");
+        QVERIFY(registry.invoke(cancelledAlias));
+        QCOMPARE(resolved.value(QStringLiteral("cancelled-alias")).errorCode, QStringLiteral("scope_revoked"));
+        QCOMPARE(registry.activeCount(), 0);
+        resolved.remove(QStringLiteral("cancelled-alias"));
 
         ToolCall processCall{QStringLiteral("r-process"), QStringLiteral("process-call"), QStringLiteral("notes_search"),
             {{QStringLiteral("query"), QStringLiteral("x")}}, authorizedScope(QStringLiteral("scope-b"), 5, 9), 100000};
@@ -177,6 +185,25 @@ private slots:
         QTRY_VERIFY(busyResults.contains(QStringLiteral("held-alias")));
     }
 
+    void identicalCallIdsInDifferentScopesKeepIndependentResults()
+    {
+        QHash<QString, ToolResult> resolved;
+        AssistantToolRegistry registry([&](const QString& route, const ToolResult& result) { resolved.insert(route, result); });
+        QList<std::function<void(ToolResult)>> callbacks;
+        ToolDefinition definition; definition.name = QStringLiteral("scoped_read"); definition.description = QStringLiteral("Scoped read.");
+        QVERIFY(registry.registerTool(definition, [&](const ToolCall&, const ToolCancellation&, auto done) { callbacks.append(std::move(done)); }));
+        ToolCall first{QStringLiteral("scope-a-route"), QStringLiteral("same-id"), definition.name, {}, authorizedScope(QStringLiteral("scope-a")), 0};
+        ToolCall second = first; second.routeId = QStringLiteral("scope-b-route"); second.scope = authorizedScope(QStringLiteral("scope-b"));
+        QVERIFY(registry.invoke(first)); QVERIFY(registry.invoke(second)); QCOMPARE(callbacks.size(), 2);
+        ToolResult firstResult; firstResult.success = true; firstResult.data.insert(QStringLiteral("body"), QStringLiteral("scope-a-only"));
+        callbacks.first()(firstResult); QTRY_COMPARE(resolved.size(), 1);
+        QVERIFY(!resolved.contains(second.routeId)); QCOMPARE(registry.activeCount(), 1);
+        ToolResult secondResult; secondResult.success = true; secondResult.data.insert(QStringLiteral("body"), QStringLiteral("scope-b-only"));
+        callbacks.last()(secondResult); QTRY_COMPARE(resolved.size(), 2);
+        QCOMPARE(resolved.value(first.routeId).data, firstResult.data);
+        QCOMPARE(resolved.value(second.routeId).data, secondResult.data);
+    }
+
     void registryDeduplicatesCompletedCallAndCapsOutput()
     {
         QHash<QString, ToolResult> resolved;
@@ -184,6 +211,11 @@ private slots:
         int calls = 0;
         ToolDefinition def; def.name = QStringLiteral("bounded"); def.description = QStringLiteral("Bounded read.");
         def.maximumOutputBytes = 128;
+        def.allowedArguments = {QStringLiteral("tag")};
+        def.validateArguments = [](const QJsonObject& input, QJsonObject* normalized) {
+            if (input.contains(QStringLiteral("tag")) && !input.value(QStringLiteral("tag")).isString()) return false;
+            *normalized = input; return true;
+        };
         QVERIFY(registry.registerTool(def, [&](const ToolCall&, const ToolCancellation&, auto done) {
             ++calls; ToolResult result; result.success = true; result.data.insert(QStringLiteral("text"), QString(1000, QLatin1Char('x'))); done(result);
         }));
@@ -195,6 +227,11 @@ private slots:
         QVERIFY(registry.invoke(second));
         QCOMPARE(calls, 1);
         QVERIFY(resolved.contains(QStringLiteral("r2")));
+        ToolCall conflicting = first; conflicting.routeId = QStringLiteral("r3");
+        conflicting.arguments.insert(QStringLiteral("tag"), QStringLiteral("different request"));
+        QVERIFY(registry.invoke(conflicting));
+        QCOMPARE(calls, 1);
+        QCOMPARE(resolved.value(QStringLiteral("r3")).errorCode, QStringLiteral("duplicate_conflict"));
     }
 
     void boundedNoteHandlerUsesRepositoryOwnershipBoundaryOnce()

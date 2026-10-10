@@ -7,6 +7,7 @@ class QLabel;
 class QPushButton;
 class QScrollArea;
 class QVBoxLayout;
+class QCheckBox;
 namespace devhub::presentation::widgets { class SafeMarkdownBrowser; }
 namespace devhub::presentation::assistant {
 class AssistantPage final : public QWidget {
@@ -30,6 +31,9 @@ private:
     QLabel* m_title;
     QLabel* m_status;
     QLabel* m_context;
+    QLabel* m_toolActivity;
+    QCheckBox* m_allowNotes;
+    QCheckBox* m_allowFiles;
     QLabel* m_error;
     QPlainTextEdit* m_composer;
     QPushButton* m_send;
@@ -45,5 +49,6 @@ private:
     bool m_adjustingScroll = false;
     quint64 m_scrollGeneration = 0;
     quint64 m_scrollRevision = 0;
+    QStringList m_activeTools;
 };
 }

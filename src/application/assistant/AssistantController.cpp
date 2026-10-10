@@ -412,6 +412,7 @@ void AssistantController::retry(const QUuid& id)
 void AssistantController::setContext(AssistantContext context)
 {
     if (context == m_selectedContext) return;
+    if (m_notesDisclosureGranted || m_filesDisclosureGranted) setToolDisclosureGrants(false, false);
     if (!m_messages.isEmpty() && !sameContextBinding(context, m_conversation.context)) revokeAccess();
     m_selectedContext = std::move(context);
     if (m_messages.isEmpty()) m_conversation.context = m_selectedContext;
@@ -445,8 +446,26 @@ void AssistantController::setSessionAllowed(bool allowed, bool clearTranscript)
 }
 void AssistantController::revokeAccess()
 {
+    setToolDisclosureGrants(false, false);
     ++m_accessGeneration;
     emit accessRevoked(m_accessGeneration);
+}
+
+void AssistantController::setToolDisclosureGrants(bool notes, bool files)
+{
+    if (m_notesDisclosureGranted == notes && m_filesDisclosureGranted == files) return;
+    m_notesDisclosureGranted = notes;
+    m_filesDisclosureGranted = files;
+    emit toolDisclosureChanged(notes, files);
+}
+
+void AssistantController::reportToolActivity(QString toolName, bool active, bool success)
+{
+    static const QSet<QString> safeTools{QStringLiteral("git.status"), QStringLiteral("git.branches"),
+        QStringLiteral("git.log"), QStringLiteral("workspace.metadata"), QStringLiteral("services.list"),
+        QStringLiteral("notes.read"), QStringLiteral("notes.search"), QStringLiteral("files.read"),
+        QStringLiteral("files.search")};
+    if (safeTools.contains(toolName)) emit toolActivityChanged(std::move(toolName), active, success);
 }
 void AssistantController::stopBackendAfterInterrupt()
 {

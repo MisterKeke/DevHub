@@ -79,9 +79,25 @@ class CodexContractTest(unittest.TestCase):
                                  alpha_requirements["properties"]["requirements"])
                 self.assertEqual(alpha_requirements["properties"]["supportsIndependentSpeedModes"]["type"],
                                  ["boolean", "null"])
+                if mode == "experimental":
+                    for name in ("DynamicToolSpec", "DynamicToolCallParams", "DynamicToolCallOutputContentItem"):
+                        self.assertEqual(snapshot["definitions"][name], self.snapshots[mode]["definitions"][name])
+                    for name in ("ServerRequest:item/tool/call", "Response:DynamicToolCallResponse"):
+                        self.assertEqual(snapshot["contracts"][name], self.snapshots[mode]["contracts"][name])
                 for name in ("TurnStartParams", "Turn"):
                     self.assertIn("parentTurnId" if name == "TurnStartParams" else "rootTurnId",
                                   snapshot["definitions"][name]["properties"])
+
+    def test_alpha_native_offline_read_tool_evidence(self):
+        evidence = json.loads((ALPHA_FIXTURES / "offline-read-tool-verification.json").read_text(encoding="utf-8"))
+        self.assertEqual(evidence["codexVersion"], "0.162.0-alpha.17.2")
+        self.assertFalse(evidence["realInference"])
+        self.assertFalse(evidence["authenticated"])
+        self.assertFalse(evidence["releaseEligible"])
+        self.assertTrue(evidence["fixtureScopePassed"])
+        self.assertEqual(set(evidence["checks"]), {"isolatedHome", "responseConsumed", "restrictedOfferedSurface",
+                                                "singleValidCall", "taggedSpecAccepted", "turnCompleted"})
+        self.assertTrue(all(evidence["checks"].values()))
 
     def test_required_client_methods_and_rpc_envelope(self):
         for snapshot in self.snapshots.values():

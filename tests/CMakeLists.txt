@@ -89,7 +89,16 @@ qt_add_executable(devhub_assistant_tools_tests assistant_tools_test.cpp)
 target_link_libraries(devhub_assistant_tools_tests PRIVATE devhub_assistant Qt6::Test project_warnings)
 add_test(NAME devhub.assistant-tools COMMAND devhub_assistant_tools_tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-tools-tests.txt,txt")
-set_tests_properties(devhub.assistant-tools PROPERTIES TIMEOUT 45)
+set_tests_properties(devhub.assistant-tools PROPERTIES TIMEOUT 45
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
+qt_add_executable(devhub_assistant_tool_runtime_tests assistant_tool_runtime_test.cpp)
+target_link_libraries(devhub_assistant_tool_runtime_tests PRIVATE devhub_assistant Qt6::Test project_warnings)
+add_test(NAME devhub.assistant-tool-runtime COMMAND devhub_assistant_tool_runtime_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-tool-runtime-tests.txt,txt")
+set_tests_properties(devhub.assistant-tool-runtime PROPERTIES TIMEOUT 45
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins;TMP=${CMAKE_CURRENT_BINARY_DIR};TEMP=${CMAKE_CURRENT_BINARY_DIR}"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(devhub_file_browser_ui_tests
     file_browser_ui_test.cpp

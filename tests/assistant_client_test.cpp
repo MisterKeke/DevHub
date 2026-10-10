@@ -1,8 +1,12 @@
 #include "infrastructure/codex/CodexClient.h"
 #include "infrastructure/codex/CodexRuntimeProfile.h"
+#include "infrastructure/codex/CodexProcess.h"
+#include "infrastructure/codex/CodexVersionSupport.h"
+#include "application/assistant/AssistantToolRuntime.h"
 #include "support/MemoryCodexTransport.h"
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QProcess>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -40,6 +44,48 @@ private:
 class AssistantClientTest final : public QObject {
     Q_OBJECT
 private slots:
+    void nativeAlphaOfflineProfile()
+    {
+        const QString executable = qEnvironmentVariable("DEVHUB_OFFLINE_CODEX_EXE");
+        if (executable.isEmpty()) QSKIP("Explicit native executable required for isolated offline profile check.");
+        QTemporaryDir home; QTemporaryDir scratch;
+        QVERIFY(home.isValid()); QVERIFY(scratch.isValid());
+        auto environment = codexBaseEnvironment(QProcessEnvironment::systemEnvironment());
+        environment.insert(QStringLiteral("CODEX_HOME"), home.path());
+        QProcess versionProbe; versionProbe.setProgram(executable); versionProbe.setArguments({"--version"});
+        versionProbe.setProcessEnvironment(environment); versionProbe.start();
+        QVERIFY(versionProbe.waitForStarted(3000)); QVERIFY(versionProbe.waitForFinished(5000));
+        QCOMPARE(versionProbe.exitCode(), 0);
+        QCOMPARE(CodexVersionSupport::parseVersionResponse(QString::fromUtf8(versionProbe.readAllStandardOutput())).value_or(QString{}),
+            QStringLiteral("0.162.0-alpha.17.2"));
+        CodexProcess process; CodexClient client(process);
+        connect(&process, &ICodexTransport::objectReceived, &client, [](const QJsonObject& message, quint64) {
+            const auto result = message.value("result").toObject();
+            if (result.contains("config")) {
+                QStringList sources;
+                for (const auto& layer : result.value("layers").toArray())
+                    sources.append(layer.toObject().value("name").toObject().value("type").toString());
+                qInfo().noquote() << "Offline config source types:" << sources.join(',');
+            }
+            if (result.value("requirements").isObject()) {
+                const auto requirements = result.value("requirements").toObject();
+                for (auto it = requirements.begin(); it != requirements.end(); ++it)
+                    if (!it.value().isNull()) qInfo().noquote() << "Offline non-null requirement:" << it.key();
+            }
+        });
+        QVERIFY(client.configureDynamicTools(AssistantToolRuntime::experimentalToolSpecifications()));
+        QSignalSpy checked(&client, &ICodexClient::profileChecked);
+        QSignalSpy stopped(&client, &ICodexClient::backendStopped);
+        QVERIFY(client.launch({{executable, QStringLiteral("0.162.0-alpha.17.2")},
+            CodexRuntimeProfile::launchArguments().value(), scratch.path(), environment, 1}));
+        QTRY_VERIFY_WITH_TIMEOUT(!checked.isEmpty(), 15000);
+        const auto reasons = checked.first().at(1).toStringList();
+        QVERIFY2(client.profileVerified(), qPrintable(reasons.join(',')));
+        QVERIFY(!client.canStartConversation()); // no auth or inference in this test
+        QVERIFY(!client.startThread(QStringLiteral("fixture-model")));
+        client.stop(); QTRY_COMPARE_WITH_TIMEOUT(stopped.size(), 1, 10000);
+    }
+
     void handshakeAndRequiredFields()
     {
         Session s; QSignalSpy initialized(&s.client, &CodexClient::initialized);
@@ -47,7 +93,7 @@ private slots:
         const auto initialize = s.transport.lastRequest("initialize");
         QCOMPARE(initialize.value("params").toObject().value("clientInfo").toObject(),
             (QJsonObject{{"name", "devhub"}, {"title", "DevHub"}, {"version", DEVHUB_VERSION}}));
-        QVERIFY(initialize.value("params").toObject().value("capabilities").toObject().value("experimentalApi").toBool());
+        QVERIFY(!initialize.value("params").toObject().value("capabilities").toObject().value("experimentalApi").toBool());
         QCOMPARE(s.transport.sent.size(), 1); QVERIFY(!s.client.isInitialized()); QVERIFY(!s.client.startThread("fixture-model"));
         emit s.transport.started(s.transport.generation); QCOMPARE(s.transport.sent.size(), 1);
         s.reply("initialize", {{"codexHome", s.scratch.path()}, {"userAgent", "fixture"}, {"platformFamily", "windows"}, {"platformOs", "windows"}});
@@ -62,9 +108,12 @@ private slots:
     {
         constexpr auto alpha = "0.162.0-alpha.17.2";
         Session s;
+        QVERIFY(s.client.configureDynamicTools(AssistantToolRuntime::experimentalToolSpecifications()));
         QVERIFY(s.client.launch(s.spec(1, CodexRuntimeProfile::launchArguments().value(), QString::fromLatin1(alpha))));
         const auto initialize = s.transport.lastRequest("initialize");
         QVERIFY(!initialize.isEmpty());
+        QVERIFY(initialize.value(QStringLiteral("params")).toObject().value(QStringLiteral("capabilities")).toObject()
+            .value(QStringLiteral("experimentalApi")).toBool());
         s.reply("initialize", {{"codexHome", s.scratch.path()}, {"userAgent", "fixture"},
             {"platformFamily", "windows"}, {"platformOs", "windows"}});
         s.reply("account/read", chatGptAccount());
@@ -79,9 +128,11 @@ private slots:
         const auto start = s.transport.lastRequest("thread/start");
         QVERIFY(!start.isEmpty());
         s.reply("thread/start", s.threadResult());
-        QCOMPARE(s.client.threadBinding().profileFingerprint,
+        QVERIFY(s.client.threadBinding().profileFingerprint !=
             CodexRuntimeProfile::fingerprint(QString::fromLatin1(alpha), CodexRuntimeProfile::launchArguments().value()));
         QVERIFY(s.client.threadBinding().profileFingerprint != previousVersionBinding.profileFingerprint);
+        QCOMPARE(s.transport.lastRequest(QStringLiteral("thread/start")).value(QStringLiteral("params")).toObject()
+            .value(QStringLiteral("dynamicTools")).toArray(), AssistantToolRuntime::experimentalToolSpecifications());
         QVERIFY(s.client.startTurn(QStringLiteral("alpha contract fixture")));
         QVERIFY(s.transport.lastRequest("turn/start").contains("params"));
     }
@@ -159,6 +210,30 @@ private slots:
         QTest::addColumn<QString>("variant");
         for (const auto& name : {"shell", "mcp", "notify", "managed", "unknown layer", "missing layers", "attached", "provider", "missing features"}) QTest::newRow(name) << QString::fromLatin1(name);
     }
+    void localSystemLayerAndLoginConstraints_data()
+    {
+        QTest::addColumn<QJsonValue>("methods"); QTest::addColumn<bool>("accepted");
+        QTest::newRow("chatgpt-only") << QJsonValue(QJsonArray{"chatgpt"}) << true;
+        QTest::newRow("chatgpt-and-api") << QJsonValue(QJsonArray{"chatgpt", "api"}) << true;
+        QTest::newRow("api-only") << QJsonValue(QJsonArray{"api"}) << false;
+        QTest::newRow("empty") << QJsonValue(QJsonArray{}) << false;
+        QTest::newRow("unknown") << QJsonValue(QJsonArray{"chatgpt", "unknown"}) << false;
+        QTest::newRow("wrong-type") << QJsonValue("chatgpt") << false;
+    }
+    void localSystemLayerAndLoginConstraints()
+    {
+        QFETCH(QJsonValue, methods); QFETCH(bool, accepted);
+        auto config = safeConfig();
+        config.insert("layers", QJsonArray{QJsonObject{{"name", QJsonObject{{"type", "system"}, {"file", "C:/fixture/config.toml"}}},
+            {"config", QJsonObject{}}, {"version", "fixture"}}});
+        const QJsonObject requirements{{"allowedLoginMethods", methods}};
+        QCOMPARE(CodexRuntimeProfile::rejectionReasons(config, {{"requirements", requirements}}).isEmpty(), accepted);
+        auto extraRequirement = requirements; extraRequirement.insert("hooks", QJsonObject{});
+        QVERIFY(!CodexRuntimeProfile::rejectionReasons(config, {{"requirements", extraRequirement}}).isEmpty());
+        auto unsafe = config.value("config").toObject(); auto features = unsafe.value("features").toObject();
+        features.insert("shell_tool", true); unsafe.insert("features", features); config.insert("config", unsafe);
+        QVERIFY(!CodexRuntimeProfile::rejectionReasons(config, {{"requirements", requirements}}).isEmpty());
+    }
     void admissionRejectsUnsafeProfiles()
     {
         QFETCH(QString, variant); Session s; QVERIFY(s.start()); s.reply("account/read", chatGptAccount());
@@ -198,6 +273,138 @@ private slots:
         s.reply("turn/interrupt", {}); QCOMPARE(s.client.activeTurnId(), QStringLiteral("turn-1")); QVERIFY(!s.client.interruptTurn());
         s.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", turn("turn-1", "interrupted")}});
         QVERIFY(s.client.activeTurnId().isEmpty()); QVERIFY(s.client.canSend());
+    }
+    void experimentalDynamicToolCallUsesPinnedSchemaAndTypedRequestIds_data()
+    {
+        QTest::addColumn<QString>("version");
+        for (const auto& version : CodexVersionSupport::supportedVersions())
+            QTest::newRow(qPrintable(version)) << version;
+    }
+    void experimentalDynamicToolCallUsesPinnedSchemaAndTypedRequestIds()
+    {
+        QFETCH(QString, version);
+        Session s;
+        const auto specs = AssistantToolRuntime::experimentalToolSpecifications();
+        QVERIFY(!specs.isEmpty());
+        QVERIFY(s.client.configureDynamicTools(specs));
+        QSignalSpy calls(&s.client, &ICodexClient::dynamicToolCallReceived);
+        QVERIFY(s.client.launch(s.spec(1, CodexRuntimeProfile::launchArguments().value(), version)));
+        s.reply("initialize", {{"codexHome", s.scratch.path()}, {"userAgent", "fixture"}, {"platformFamily", "windows"}, {"platformOs", "windows"}});
+        s.reply("account/read", chatGptAccount()); s.reply("config/read", safeConfig());
+        s.reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)}});
+        QVERIFY(s.client.profileVerified());
+        const auto initialize = s.transport.lastRequest(QStringLiteral("initialize"));
+        QVERIFY(initialize.value(QStringLiteral("params")).toObject().value(QStringLiteral("capabilities")).toObject()
+            .value(QStringLiteral("experimentalApi")).toBool());
+        QVERIFY(s.openThread());
+        const auto dynamic = s.transport.lastRequest(QStringLiteral("thread/start")).value(QStringLiteral("params")).toObject()
+            .value(QStringLiteral("dynamicTools")).toArray();
+        QCOMPARE(dynamic, specs);
+        QVERIFY(s.client.threadBinding().profileFingerprint != CodexRuntimeProfile::fingerprint(QStringList{}));
+        QVERIFY(s.beginTurn());
+
+        QSignalSpy items(&s.client, &ICodexClient::itemChanged);
+        QJsonObject toolItem{{"type", "dynamicToolCall"}, {"id", "tool-item"}, {"tool", "devhub_git_status"},
+            {"arguments", QJsonObject{{"private", "PLANTED_TOOL_ARGUMENT"}}}, {"status", "inProgress"}};
+        s.item("item/started", toolItem);
+        QVERIFY(s.client.isInitialized()); QCOMPARE(items.size(), 1);
+        QVERIFY(qvariant_cast<CodexItem>(items.first().at(0)).text.isEmpty());
+
+        const QJsonObject request{{QStringLiteral("id"), 27}, {QStringLiteral("method"), QStringLiteral("item/tool/call")},
+            {QStringLiteral("params"), QJsonObject{{QStringLiteral("threadId"), QStringLiteral("thread-1")},
+                {QStringLiteral("turnId"), QStringLiteral("turn-1")}, {QStringLiteral("callId"), QStringLiteral("call-27")},
+                {QStringLiteral("tool"), QStringLiteral("devhub_git_status")},
+                {QStringLiteral("arguments"), QJsonObject{}}}}};
+        s.transport.deliver(request);
+        QCOMPARE(calls.size(), 1);
+        const auto args = calls.front();
+        QCOMPARE(args.at(0).value<QJsonValue>(), QJsonValue(27));
+        QCOMPARE(args.at(1).toJsonObject().value(QStringLiteral("callId")).toString(), QStringLiteral("call-27"));
+        QJsonObject response{{QStringLiteral("success"), true},
+            {QStringLiteral("contentItems"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("inputText")},
+                {QStringLiteral("text"), QStringLiteral("{\\\"success\\\":true,\\\"data\\\":{}}")}}}}};
+        QVERIFY(s.client.resolveDynamicToolCall(QJsonValue(27), response));
+        QVERIFY(!s.client.resolveDynamicToolCall(QJsonValue(27), response));
+        QCOMPARE(s.transport.sent.back().value(QStringLiteral("id")), QJsonValue(27));
+        QCOMPARE(s.transport.sent.back().value(QStringLiteral("result")), response);
+        CodexWireContract wire(version);
+        QVERIFY(wire.accepts(QStringLiteral("Response:DynamicToolCallResponse"), s.transport.sent.back().value(QStringLiteral("result"))));
+        const auto sentCount = s.transport.sent.size();
+        s.transport.deliver(request);
+        QCOMPARE(calls.size(), 1);
+        QCOMPARE(s.transport.sent.size(), sentCount);
+
+        toolItem.insert("status", "completed"); toolItem.insert("success", true);
+        toolItem.insert("contentItems", QJsonArray{QJsonObject{{"type", "inputText"}, {"text", "PLANTED_TOOL_BODY"}}});
+        s.item("item/completed", toolItem);
+        QCOMPARE(items.size(), 2); QVERIFY(qvariant_cast<CodexItem>(items.last().at(0)).text.isEmpty());
+        QVERIFY(s.client.isInitialized());
+
+        auto stringRequest = request;
+        stringRequest.insert(QStringLiteral("id"), QStringLiteral("request-string-id"));
+        stringRequest.insert(QStringLiteral("params"), QJsonObject{{QStringLiteral("threadId"), QStringLiteral("thread-1")},
+            {QStringLiteral("turnId"), QStringLiteral("turn-1")}, {QStringLiteral("callId"), QStringLiteral("call-string")},
+            {QStringLiteral("tool"), QStringLiteral("devhub_git_status")}, {QStringLiteral("arguments"), QJsonObject{}}});
+        s.transport.deliver(stringRequest);
+        QCOMPARE(calls.size(), 2);
+        QVERIFY(s.client.resolveDynamicToolCall(QJsonValue(QStringLiteral("request-string-id")), response));
+        QCOMPARE(s.transport.sent.back().value(QStringLiteral("id")), QJsonValue(QStringLiteral("request-string-id")));
+        const QJsonArray terminalItems{toolItem, agent("final", "Done")};
+        s.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", turn("turn-1", "completed", terminalItems)}});
+        QVERIFY(s.client.isInitialized()); QVERIFY(s.client.activeTurnId().isEmpty());
+        QSignalSpy history(&s.client, &ICodexClient::threadReceived);
+        QVERIFY(s.client.readThread(s.client.threadBinding()));
+        s.reply("thread/read", s.threadResult(s.thread("thread-1", QJsonArray{turn("turn-1", "completed", terminalItems)})));
+        QCOMPARE(history.size(), 1);
+        const auto restored = qvariant_cast<CodexThread>(history.first().at(0));
+        QCOMPARE(restored.turns.size(), 1); QCOMPARE(restored.turns.first().items.size(), 2);
+        QVERIFY(restored.turns.first().items.first().text.isEmpty());
+        QCOMPARE(restored.turns.first().items.last().text, QStringLiteral("Done"));
+    }
+
+    void persistedDynamicToolInventoryCannotRestoreUnderDifferentRegistry()
+    {
+        Session toolEnabled;
+        QVERIFY(toolEnabled.client.configureDynamicTools(AssistantToolRuntime::experimentalToolSpecifications()));
+        QVERIFY(toolEnabled.ready());
+        QVERIFY(toolEnabled.openThread());
+        const auto staleBinding = toolEnabled.client.threadBinding();
+        QVERIFY(staleBinding.profileFingerprint != CodexRuntimeProfile::fingerprint(QStringList{}));
+
+        Session currentRegistry;
+        QVERIFY(currentRegistry.ready());
+        QVERIFY(currentRegistry.openThread());
+        auto stale = staleBinding;
+        stale.accountFingerprint = currentRegistry.client.account().identityFingerprint;
+        stale.codexHome = currentRegistry.client.threadBinding().codexHome;
+        stale.scratchDirectory = currentRegistry.client.threadBinding().scratchDirectory;
+        QVERIFY(!currentRegistry.client.resumeThread(stale));
+        QVERIFY(currentRegistry.client.threadBinding().profileFingerprint
+            == CodexRuntimeProfile::fingerprint(QStringList{}));
+    }
+
+    void dynamicToolCallsFailClosedForUnknownMalformedAndStaleScope()
+    {
+        Session s; QVERIFY(s.client.configureDynamicTools(AssistantToolRuntime::experimentalToolSpecifications()));
+        QSignalSpy calls(&s.client, &ICodexClient::dynamicToolCallReceived);
+        QVERIFY(s.ready()); QVERIFY(s.openThread()); QVERIFY(s.beginTurn());
+        const auto deliver = [&s](QJsonValue id, QString thread, QString turnId, QString name, QJsonValue arguments) {
+            s.transport.deliver({{QStringLiteral("id"), id}, {QStringLiteral("method"), QStringLiteral("item/tool/call")},
+                {QStringLiteral("params"), QJsonObject{{QStringLiteral("threadId"), thread}, {QStringLiteral("turnId"), turnId},
+                    {QStringLiteral("callId"), QStringLiteral("safe-call")}, {QStringLiteral("tool"), name}, {QStringLiteral("arguments"), arguments}}}});
+        };
+        deliver(1, QStringLiteral("wrong-thread"), QStringLiteral("turn-1"), QStringLiteral("devhub_git_status"), QJsonObject{});
+        deliver(2, QStringLiteral("thread-1"), QStringLiteral("wrong-turn"), QStringLiteral("devhub_git_status"), QJsonObject{});
+        QCOMPARE(calls.size(), 0);
+        QVERIFY(!s.transport.sent.at(s.transport.sent.size() - 2).value(QStringLiteral("result")).toObject().value(QStringLiteral("success")).toBool());
+        QVERIFY(!s.transport.sent.back().value(QStringLiteral("result")).toObject().value(QStringLiteral("success")).toBool());
+        deliver(3, QStringLiteral("thread-1"), QStringLiteral("turn-1"), QStringLiteral("devhub_unknown"), QJsonObject{});
+        QCOMPARE(calls.size(), 1); // The client validates association; registry rejects the unknown name.
+        auto malformed = QJsonObject{{QStringLiteral("id"), 4}, {QStringLiteral("method"), QStringLiteral("item/tool/call")},
+            {QStringLiteral("params"), QJsonObject{{QStringLiteral("threadId"), QStringLiteral("thread-1")}}}};
+        s.transport.deliver(malformed);
+        QCOMPARE(calls.size(), 1);
+        QVERIFY(!s.transport.sent.back().value(QStringLiteral("result")).toObject().value(QStringLiteral("success")).toBool());
     }
     void idCollisionDirectionsAndTypes()
     {

@@ -5,6 +5,7 @@
 #include "presentation/theme/ThemeManager.h"
 #include <QApplication>
 #include <QClipboard>
+#include <QCheckBox>
 #include <QFontDatabase>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
@@ -65,6 +66,27 @@ private slots:
         composer->setPlainText("private draft"); h.controller.setSessionAllowed(false);
         for (const auto& name : {"assistantSend", "assistantStop", "assistantNewChat", "assistantReconnect"}) QVERIFY(!page.findChild<QPushButton*>(name)->isEnabled());
         QCOMPARE(composer->toPlainText(), QStringLiteral("private draft"));
+    }
+    void readDisclosureControlsAndToolActivityAreExplicit()
+    {
+        Harness h; QVERIFY(h.readyController()); AssistantPage page(h.controller);
+        auto* notes = page.findChild<QCheckBox*>(QStringLiteral("assistantAllowNoteText"));
+        auto* files = page.findChild<QCheckBox*>(QStringLiteral("assistantAllowFileText"));
+        auto* activity = page.findChild<QLabel*>(QStringLiteral("assistantToolActivity"));
+        QVERIFY(notes && files && activity);
+        QVERIFY(!notes->isChecked() && !files->isChecked());
+        QVERIFY(!h.controller.notesDisclosureGranted() && !h.controller.filesDisclosureGranted());
+        h.controller.setContext({QStringLiteral("workspace-id"), QStringLiteral("Workspace"), QStringLiteral("C:/Workspace")});
+        QVERIFY(notes->isEnabled() && files->isEnabled());
+        notes->click(); QVERIFY(h.controller.notesDisclosureGranted()); QVERIFY(!h.controller.filesDisclosureGranted());
+        files->click(); QVERIFY(h.controller.notesDisclosureGranted() && h.controller.filesDisclosureGranted());
+        h.controller.reportToolActivity(QStringLiteral("files.read"), true);
+        QVERIFY(activity->text().contains(QStringLiteral("files.read")));
+        h.controller.reportToolActivity(QStringLiteral("files.read"), false, true);
+        QVERIFY(activity->text().contains(QStringLiteral("success")));
+        h.controller.setSessionAllowed(false);
+        QVERIFY(!notes->isChecked() && !files->isChecked());
+        QVERIFY(!h.controller.notesDisclosureGranted() && !h.controller.filesDisclosureGranted());
     }
     void shiftEnterAndIme()
     {

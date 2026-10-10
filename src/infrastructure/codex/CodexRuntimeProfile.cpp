@@ -1,4 +1,5 @@
 #include "CodexRuntimeProfile.h"
+#include "CodexVersionSupport.h"
 #include "application/assistant/CodexLoginPolicy.h"
 #include <QCryptographicHash>
 #include <QJsonArray>
@@ -116,23 +117,33 @@ QStringList CodexRuntimeProfile::rejectionReasons(const QJsonObject& configResul
     const auto serverObjects = servers.toObject();
     for (auto it = serverObjects.begin(); it != serverObjects.end(); ++it)
         if (!it.value().isObject() || !disabled(it.value().toObject().value("enabled"))) { reasons << "inherited-mcp-enabled"; break; }
-    // Raw config layers are inspected transiently. Unknown/managed sources are
-    // outside the bounded evidence and cannot inherit a development approval.
+    // Local file layers share the same effective-config checks above. Unknown
+    // and enterprise/MDM sources remain outside the bounded profile.
     const auto layers = configResult.value("layers");
     if (!layers.isArray()) reasons << "missing-config-layers";
     for (const auto& layer : layers.toArray()) {
         const auto source = layer.toObject().value("name").toObject().value("type").toString();
-        if (source != "user" && source != "project" && source != "sessionFlags") reasons << "unverified-config-source";
+        if (source != "user" && source != "project" && source != "sessionFlags" && source != "system") reasons << "unverified-config-source";
     }
     const auto required = requirementsResult.value("requirements");
     if (!required.isUndefined() && !required.isNull()) {
         if (!required.isObject()) reasons << "invalid-managed-requirements";
         else {
             const auto requirements = required.toObject();
-            // Reject every nonempty managed requirement until that exact policy
-            // has controls. This includes hooks, feature conflicts and roots.
-            for (auto it = requirements.begin(); it != requirements.end(); ++it)
-                if (!it.value().isNull()) { reasons << "unverified-managed-requirements"; break; }
+            // Login-method constraints are compatible only when they permit the
+            // ChatGPT method we force and verify independently. Every other
+            // non-null requirement still needs its own policy implementation.
+            for (auto it = requirements.begin(); it != requirements.end(); ++it) {
+                if (it.value().isNull()) continue;
+                if (it.key() == QStringLiteral("allowedLoginMethods") && it.value().isArray()) {
+                    const auto methods = it.value().toArray();
+                    bool compatible = methods.contains(QJsonValue(QStringLiteral("chatgpt")));
+                    for (const auto& method : methods)
+                        compatible = compatible && (method == "chatgpt" || method == "api");
+                    if (compatible) continue;
+                }
+                reasons << "unverified-managed-requirements"; break;
+            }
         }
     }
     for (const auto& key : {"browser_use", "computer_use", "desktop"}) {
@@ -180,7 +191,7 @@ bool CodexRuntimeProfile::developmentLiveValidationBuild()
 bool CodexRuntimeProfile::developmentLiveInferenceAuthorized(
     const QString& executablePath, const QString& version, const QProcessEnvironment& childEnvironment)
 {
-    if (!developmentLiveValidationBuild() || version != QStringLiteral("0.160.1")
+    if (!developmentLiveValidationBuild() || !CodexVersionSupport::isSupported(version)
         || !acceptsEnvironment(childEnvironment)) return false;
 
     const auto processEnvironment = QProcessEnvironment::systemEnvironment();

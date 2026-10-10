@@ -4,7 +4,9 @@
 #include <QApplication>
 #include <QAbstractTextDocumentLayout>
 #include <QScopedValueRollback>
+#include <QSignalBlocker>
 #include <QClipboard>
+#include <QCheckBox>
 #include <QDesktopServices>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
@@ -36,6 +38,15 @@ AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) :
     m_context = new QLabel(this); m_context->setObjectName(QStringLiteral("assistantContext")); m_context->setTextFormat(Qt::PlainText); m_context->setWordWrap(true);
     m_reconnect = new QPushButton(tr("Reconnect"), this); m_reconnect->setObjectName(QStringLiteral("assistantReconnect"));
     contextRow->addWidget(m_context, 1); contextRow->addWidget(m_reconnect); root->addLayout(contextRow);
+    auto* disclosureRow = new QHBoxLayout;
+    m_allowNotes = new QCheckBox(tr("Allow note text for this chat"), this); m_allowNotes->setObjectName(QStringLiteral("assistantAllowNoteText"));
+    m_allowFiles = new QCheckBox(tr("Allow file text for this chat"), this); m_allowFiles->setObjectName(QStringLiteral("assistantAllowFileText"));
+    m_allowNotes->setToolTip(tr("Allows read-only Assistant tools to return bounded text from notes in the selected workspace."));
+    m_allowFiles->setToolTip(tr("Allows read-only Assistant tools to return bounded text from files in the selected workspace."));
+    m_toolActivity = new QLabel(this); m_toolActivity->setObjectName(QStringLiteral("assistantToolActivity"));
+    m_toolActivity->setTextFormat(Qt::PlainText); m_toolActivity->setAccessibleName(tr("Assistant tool activity"));
+    disclosureRow->addWidget(m_allowNotes); disclosureRow->addWidget(m_allowFiles); disclosureRow->addWidget(m_toolActivity, 1);
+    root->addLayout(disclosureRow);
     m_scroll = new QScrollArea(this); m_scroll->setObjectName(QStringLiteral("assistantTranscript")); m_scroll->setWidgetResizable(true); m_scroll->setFrameShape(QFrame::NoFrame);
     auto* content = new QWidget(m_scroll); m_messages = new QVBoxLayout(content); m_messages->setContentsMargins(0, 0, 0, 0); m_messages->setSpacing(12); m_messages->addStretch();
     m_scroll->setWidget(content); root->addWidget(m_scroll, 1);
@@ -62,6 +73,27 @@ AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) :
     connect(m_reconnect, &QPushButton::clicked, &controller, &AssistantController::reconnect);
     connect(m_latest, &QPushButton::clicked, this, [this] { m_followLatest = true; m_scroll->verticalScrollBar()->setValue(m_scroll->verticalScrollBar()->maximum()); m_latest->hide(); });
     connect(m_composer, &QPlainTextEdit::textChanged, this, &AssistantPage::refreshState);
+    m_allowNotes->setChecked(controller.notesDisclosureGranted());
+    m_allowFiles->setChecked(controller.filesDisclosureGranted());
+    connect(m_allowNotes, &QCheckBox::toggled, this, [this] {
+        m_controller.setToolDisclosureGrants(m_allowNotes->isChecked(), m_allowFiles->isChecked());
+    });
+    connect(m_allowFiles, &QCheckBox::toggled, this, [this] {
+        m_controller.setToolDisclosureGrants(m_allowNotes->isChecked(), m_allowFiles->isChecked());
+    });
+    connect(&controller, &AssistantController::toolDisclosureChanged, this, [this](bool notes, bool files) {
+        const QSignalBlocker notesBlock(m_allowNotes), filesBlock(m_allowFiles);
+        m_allowNotes->setChecked(notes); m_allowFiles->setChecked(files); refreshState();
+    });
+    connect(&controller, &AssistantController::toolActivityChanged, this,
+        [this](const QString& tool, bool active, bool success) {
+            if (active) { if (!m_activeTools.contains(tool)) m_activeTools.append(tool); }
+            else m_activeTools.removeAll(tool);
+            QStringList labels;
+            for (const auto& name : m_activeTools) labels.append(name);
+            m_toolActivity->setText(!labels.isEmpty() ? tr("Reading with %1…").arg(labels.join(QStringLiteral(", ")))
+                : tool.isEmpty() ? QString{} : tr("Finished %1 (%2)").arg(tool, success ? tr("success") : tr("not completed")));
+        });
     connect(&controller, &AssistantController::stateChanged, this, &AssistantPage::refreshState);
     connect(&controller, &AssistantController::messageAdded, this, &AssistantPage::addMessage);
     connect(&controller, &AssistantController::messageChanged, this, &AssistantPage::updateMessage);
@@ -98,6 +130,9 @@ void AssistantPage::refreshState()
     m_context->setText(context.workspaceId.isEmpty() ? tr("Context: General chat · no workspace access") : tr("Context: %1 · no native workspace access").arg(context.name));
     const auto bytes = m_composer->toPlainText().toUtf8().size();
     m_send->setEnabled(m_controller.canSend() && !m_composer->toPlainText().trimmed().isEmpty() && bytes <= 64 * 1024);
+    const bool workspaceSelected = !context.workspaceId.isEmpty();
+    m_allowNotes->setEnabled(workspaceSelected && m_controller.accessAllowed());
+    m_allowFiles->setEnabled(workspaceSelected && m_controller.accessAllowed());
     if (bytes > 64 * 1024) m_error->setText(tr("The message exceeds the 64 KiB text limit."));
     m_stop->setEnabled(m_controller.canStop()); m_new->setEnabled(m_controller.canNewChat());
     m_reconnect->setEnabled(m_controller.canReconnect());

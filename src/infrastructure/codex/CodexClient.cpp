@@ -3,7 +3,6 @@
 #include "CodexVersionSupport.h"
 #include <QCryptographicHash>
 #include <QDir>
-#include <QCryptographicHash>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -78,7 +77,7 @@ CodexClient::CodexClient(ICodexTransport& transport, QObject* parent, CodexClien
         m_initializeSent = true;
         const auto sent = request(Operation::Initialize, QJsonObject{{"clientInfo", QJsonObject{
             {"name", "devhub"}, {"title", "DevHub"}, {"version", DEVHUB_VERSION}}},
-            {"capabilities", QJsonObject{{"experimentalApi", true}}}});
+            {"capabilities", QJsonObject{{"experimentalApi", m_dynamicToolsEnabled}}}});
         if (!sent) fatal(QStringLiteral("The initialize request could not be sent."), generation);
     });
     connect(&transport, &ICodexTransport::objectReceived, this, &CodexClient::receive);
@@ -98,6 +97,38 @@ CodexClient::CodexClient(ICodexTransport& transport, QObject* parent, CodexClien
         if (m_active) disconnectClient(error(ErrorCode::CodexConnectionLost, QStringLiteral("The Codex transport was destroyed.")));
     });
 }
+bool CodexClient::configureDynamicTools(QJsonArray specifications)
+{
+    if (m_active || m_transportBusy || specifications.size() > 32) return false;
+    for (const auto& value : specifications) {
+        const auto spec = value.toObject();
+        const QString name = spec.value(QStringLiteral("name")).toString();
+        if (!value.isObject() || !m_wire.acceptsDefinition(QStringLiteral("DynamicToolSpec"), value)
+            || spec.value(QStringLiteral("type")) != QLatin1String("function")
+            || !name.startsWith(QStringLiteral("devhub_"))) return false;
+    }
+    if (specifications.isEmpty()) {
+        m_dynamicToolSpecifications = {};
+        m_dynamicToolFingerprint.clear();
+        return true;
+    }
+    // Every admitted version has an independently pinned tagged-tool contract.
+    // Validate the inventory against all supported profiles before storing it.
+    for (const auto& version : CodexVersionSupport::supportedVersions()) {
+        const CodexWireContract wire(version);
+        if (!wire.contains(QStringLiteral("ServerRequest:item/tool/call"))
+            || !wire.contains(QStringLiteral("Response:DynamicToolCallResponse"))) return false;
+        for (const auto& value : specifications)
+            if (!wire.acceptsDefinition(QStringLiteral("DynamicToolSpec"), value)) return false;
+    }
+    m_dynamicToolSpecifications = std::move(specifications);
+    // The selected native version belongs to the launch profile fingerprint;
+    // inventory identity must not depend on the last version this client used.
+    const auto identity = QJsonDocument(QJsonArray{QStringLiteral("devhub-dynamic-read-tools-v2"),
+        m_dynamicToolSpecifications}).toJson(QJsonDocument::Compact);
+    m_dynamicToolFingerprint = QString::fromLatin1(QCryptographicHash::hash(identity, QCryptographicHash::Sha256).toHex());
+    return true;
+}
 Result<void> CodexClient::launch(const CodexLaunchSpec& spec)
 {
     if (!m_transport || m_active || m_transportBusy || spec.processGeneration <= m_generation
@@ -107,14 +138,20 @@ Result<void> CodexClient::launch(const CodexLaunchSpec& spec)
     m_generation = spec.processGeneration; m_active = true; m_initialized = false; m_profileVerified = false;
     m_transportBusy = true; m_initializeSent = false;
     m_uncertain = false; m_interruptAccepted = false; m_scratch = QFileInfo(spec.scratchDirectory).canonicalFilePath();
+    m_dynamicToolsEnabled = !m_dynamicToolSpecifications.isEmpty()
+        && !m_dynamicToolFingerprint.isEmpty();
     m_profileFingerprint = CodexRuntimeProfile::fingerprint(spec.executable.version, spec.arguments);
+    if (m_dynamicToolsEnabled) {
+        const auto profileBytes = (m_profileFingerprint + QLatin1Char('|') + m_dynamicToolFingerprint).toUtf8();
+        m_profileFingerprint = QString::fromLatin1(QCryptographicHash::hash(profileBytes, QCryptographicHash::Sha256).toHex());
+    }
     m_expectedHome.clear();
     for (const auto& key : spec.environment.keys()) if (key.compare("CODEX_HOME", Qt::CaseInsensitive) == 0)
         m_expectedHome = QFileInfo(spec.environment.value(key)).canonicalFilePath();
     m_developmentLiveValidationAuthorized = CodexRuntimeProfile::developmentLiveInferenceAuthorized(
         spec.executable.path, spec.executable.version, spec.environment);
     m_initializeInfo = {}; m_account = {}; m_thread = {}; m_turnId.clear(); m_lastTurnId.clear();
-    m_items.clear(); m_itemOrder.clear(); m_earlyTurns.clear(); m_earlyLogins.clear(); m_earlyBytes = 0; m_earlyLoginBytes = 0; m_serverRequests.clear();
+    m_items.clear(); m_itemOrder.clear(); m_earlyTurns.clear(); m_earlyLogins.clear(); m_earlyBytes = 0; m_earlyLoginBytes = 0; m_serverRequests.clear(); m_resolvedServerRequests.clear();
     m_config.reset(); m_requirements.reset(); ++m_accountEpoch;
     m_deadlineTimer.start(); m_transport->launch(spec);
     return Result<void>::success();
@@ -205,7 +242,8 @@ Result<qint64> CodexClient::startThread(const QString& model)
         || m_login || hasPending(Operation::LoginStart)) return Result<qint64>::failure(denied());
     return request(Operation::ThreadStart, QJsonObject{{"cwd", m_scratch}, {"model", model}, {"sandbox", "read-only"},
         {"approvalPolicy", "on-request"}, {"historyMode", "legacy"}, {"environments", QJsonArray{}},
-        {"runtimeWorkspaceRoots", QJsonArray{}}, {"selectedCapabilityRoots", QJsonArray{}}, {"dynamicTools", QJsonArray{}},
+        {"runtimeWorkspaceRoots", QJsonArray{}}, {"selectedCapabilityRoots", QJsonArray{}},
+        {"dynamicTools", m_dynamicToolsEnabled ? m_dynamicToolSpecifications : QJsonArray{}},
         {"allowProviderModelFallback", false}});
 }
 Result<qint64> CodexClient::resumeThread(const CodexThreadBinding& binding)
@@ -423,7 +461,16 @@ void CodexClient::finishProfileCheck()
 bool CodexClient::decodeItem(const QJsonObject& value, const QString& threadId, const QString& turnId, CodexItem& item) const
 {
     item = {threadId, turnId, value.value("id").toString(), value.value("type").toString(), {}, true, false};
-    if (!stringId(item.id) || !safeTextItem(item.type)) return false;
+    if (!stringId(item.id)) return false;
+    if (item.type == "dynamicToolCall") {
+        // Retain identity only; arguments and contentItems never enter text state.
+        if (!m_dynamicToolsEnabled || !value.value("namespace").toString().isEmpty()) return false;
+        const QString name = value.value("tool").toString();
+        for (const auto& specification : m_dynamicToolSpecifications)
+            if (specification.toObject().value("name").toString() == name) return true;
+        return false;
+    }
+    if (!safeTextItem(item.type)) return false;
     if (item.type == "agentMessage" || item.type == "plan") item.text = value.value("text").toString();
     if (item.type == "userMessage") {
         for (const auto& input : value.value("content").toArray()) {
@@ -598,11 +645,52 @@ void CodexClient::serverRequest(const QJsonObject& object)
     if (name == "item/commandExecution/requestApproval" || name == "item/fileChange/requestApproval") reply.insert("result", QJsonObject{{"decision", "decline"}});
     else if (name == "execCommandApproval" || name == "applyPatchApproval") reply.insert("result", QJsonObject{{"decision", "abort"}});
     else if (name == "item/permissions/requestApproval") reply.insert("result", QJsonObject{{"permissions", QJsonObject{}}, {"scope", "turn"}});
-    else if (name == "item/tool/call") reply.insert("result", QJsonObject{{"success", false}, {"contentItems", QJsonArray{
-        QJsonObject{{"type", "inputText"}, {"text", "This capability is disabled in DevHub."}}}}});
+    else if (name == "item/tool/call") {
+        const auto failureResponse = [this, &id](const QString& code) {
+            const QJsonObject body{{QStringLiteral("success"), false},
+                {QStringLiteral("data"), QJsonObject{{QStringLiteral("error"), code}}}};
+            const QJsonObject result{{QStringLiteral("success"), false},
+                {QStringLiteral("contentItems"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("inputText")},
+                    {QStringLiteral("text"), QString::fromUtf8(QJsonDocument(body).toJson(QJsonDocument::Compact))}}}}};
+            return resolveDynamicToolCall(id, result);
+        };
+        const auto params = object.value(QStringLiteral("params")).toObject();
+        if (!m_wire.accepts(QStringLiteral("ServerRequest:item/tool/call"), object)) {
+            if (!failureResponse(QStringLiteral("invalid_request"))) fatal(QStringLiteral("A dynamic-tool rejection could not be queued."));
+            return;
+        }
+        if (!m_dynamicToolsEnabled || !m_initialized || !m_profileVerified || !bindingMatches(m_thread)
+            || m_turnId.isEmpty() || params.value(QStringLiteral("threadId")).toString() != m_thread.threadId
+            || params.value(QStringLiteral("turnId")).toString() != m_turnId
+            || params.value(QStringLiteral("callId")).toString().isEmpty()
+            || !params.value(QStringLiteral("arguments")).isObject()) {
+            if (!failureResponse(QStringLiteral("scope_denied"))) fatal(QStringLiteral("A dynamic-tool denial could not be queued."));
+            return;
+        }
+        emit dynamicToolCallReceived(id, params, m_generation);
+        return;
+    }
     else reply.insert("error", QJsonObject{{"code", -32601}, {"message", "This server method is not supported by DevHub."}});
     const auto sent = m_transport->sendObject(reply);
     if (!sent) fatal(QStringLiteral("A server-request denial could not be queued."));
+    else if (name == QStringLiteral("item/commandExecution/requestApproval")
+        || name == QStringLiteral("item/fileChange/requestApproval")
+        || name == QStringLiteral("execCommandApproval") || name == QStringLiteral("applyPatchApproval")
+        || name == QStringLiteral("item/permissions/requestApproval")) m_resolvedServerRequests.insert(key);
+}
+bool CodexClient::resolveDynamicToolCall(const QJsonValue& requestId, const QJsonObject& response)
+{
+    if (!m_active || !m_transport || ( !requestId.isString() && !requestId.isDouble())) return false;
+    const QByteArray key = idKey(requestId);
+    if (!m_serverRequests.contains(key) || m_resolvedServerRequests.contains(key)) return false;
+    const QJsonObject envelope{{QStringLiteral("id"), requestId}, {QStringLiteral("result"), response}};
+    if (!m_wire.accepts(QStringLiteral("Response:DynamicToolCallResponse"), response)) return false;
+    m_resolvedServerRequests.insert(key);
+    if (!m_transport->sendObject(envelope)) {
+        fatal(QStringLiteral("A dynamic-tool response could not be queued."));
+        return false;
+    }
+    return true;
 }
 void CodexClient::loginCompleted(const QJsonObject& params)
 {

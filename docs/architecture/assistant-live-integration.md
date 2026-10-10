@@ -14,7 +14,8 @@ repository is an in-memory metadata-only fixture.
 
 - The exact native executable must be provided as an absolute path. The
   production locator and client accept only the tested version (currently
-  `0.160.1`). The validation library also requires the executable path to match
+  `0.160.1` or `0.162.0-alpha.17.2`). The validation library also requires the
+  executable path to match
   the explicit path environment variable.
 - The Codex home must be a separate, developer-created profile directory, not
   the default `.codex` directory or a directory that contains/overlaps it.
@@ -29,10 +30,13 @@ repository is an in-memory metadata-only fixture.
   client account identity/authentication and effective capability-profile
   checks remain mandatory. The harness never starts login or logout. Do not
   copy the default Codex home or its credentials.
-- The harness uses only a newly created thread and fixed prompts: one asks for
-  the exact word `READY`; the other asks for a harmless rain explanation and
-  interrupts it after the first streamed text delta. It does not use an
-  existing conversation or a dynamic tool.
+- The harness uses only a newly created thread and fixed harmless prompts: one
+  asks for the exact word `READY`; another asks for a rain explanation and
+  interrupts it after the first streamed delta. For either pinned tool-enabled
+  profile, a final prompt requests `devhub_git_status` exactly once against a
+  freshly initialized disposable Git repository. The request routes through
+  the production `AssistantToolRuntime`, `TaskScheduler`, and `GitService`; no
+  note/file disclosure or existing conversation is used.
 - `CodexRuntimeProfile::liveInferenceApproved()` remains false and is never
   changed by the harness. A compile definition exists only in the separate
   library linked by `devhub_assistant_live_tests`; it cannot be activated by
@@ -51,7 +55,7 @@ manually in a separate Codex CLI invocation:
 
 ```powershell
 $codexExe = (Resolve-Path 'C:\path\to\tested\codex.exe').Path
-$liveHome = Join-Path $env:LOCALAPPDATA 'DevHub\CodexLive-0.160.1'
+$liveHome = Join-Path $env:LOCALAPPDATA 'DevHub\CodexLive-0.162.0-alpha.17.2'
 if (Test-Path $liveHome) { throw 'Choose a new empty disposable profile directory.' }
 New-Item -ItemType Directory -Path $liveHome | Out-Null
 $marker = Join-Path $liveHome '.devhub-disposable-codex-profile'
@@ -96,7 +100,9 @@ native handshake, authenticated ChatGPT account identity, effective capability
 profile, and admission before creating its new thread. A rejected or
 unsupported profile fails before thread creation. When admitted, it checks
 streamed terminal completion, Stop/interruption, resume without duplicate
-history, and owned-child shutdown completion within ten seconds. Output is
+history, and owned-child shutdown completion within ten seconds. On the exact
+dynamic-tool profile it also requires successful `devhub_git_status` activity
+through the production read-only handler. Output is
 sanitized and excludes transcript, account identity, thread IDs, raw
 configuration, and credentials. The development-validation policy is test
 infrastructure only; it is not release evidence or production approval.

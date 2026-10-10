@@ -2,6 +2,9 @@
 #include "AssistantTypes.h"
 #include "shared/common/Result.h"
 #include <QObject>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonValue>
 
 namespace devhub::application::assistant {
 // Application-facing protocol port. Tests still exercise the concrete client
@@ -28,6 +31,9 @@ public:
     virtual CodexAccount account() const = 0;
     virtual CodexThreadBinding threadBinding() const = 0;
     virtual QString activeTurnId() const = 0;
+    virtual quint64 processGeneration() const = 0;
+    virtual bool configureDynamicTools(QJsonArray specifications) = 0;
+    virtual bool resolveDynamicToolCall(const QJsonValue& requestId, const QJsonObject& response) = 0;
 signals:
     void initialized(CodexInitializeInfo info);
     void accountChanged(CodexAccount account);
@@ -45,5 +51,6 @@ signals:
     void protocolFailed(devhub::domain::errors::AppError error);
     void connectionClosed(quint64 generation);
     void backendStopped(quint64 generation);
+    void dynamicToolCallReceived(QJsonValue requestId, QJsonObject parameters, quint64 processGeneration);
 };
 }

@@ -41,6 +41,13 @@ public:
     void beginShutdown(std::function<void()> completion = {});
     [[nodiscard]] QStringList diagnosticsSnapshot() const;
     [[nodiscard]] quint64 accessGeneration() const noexcept { return m_accessGeneration; }
+    [[nodiscard]] quint64 processGeneration() const noexcept { return m_processGeneration; }
+    [[nodiscard]] bool accessAllowed() const noexcept { return m_allowed && !m_shuttingDown; }
+    [[nodiscard]] const QString& accountId() const noexcept { return m_accountId; }
+    void setToolDisclosureGrants(bool notes, bool files);
+    [[nodiscard]] bool notesDisclosureGranted() const noexcept { return m_notesDisclosureGranted; }
+    [[nodiscard]] bool filesDisclosureGranted() const noexcept { return m_filesDisclosureGranted; }
+    void reportToolActivity(QString toolName, bool active, bool success = false);
     [[nodiscard]] bool canSend() const;
     [[nodiscard]] bool busy() const;
     [[nodiscard]] bool canStop() const;
@@ -69,6 +76,8 @@ signals:
     // this generation before asynchronous work is interrupted or discarded.
     void accessRevoked(quint64 generation);
     void shutdownFinished();
+    void toolDisclosureChanged(bool notes, bool files);
+    void toolActivityChanged(QString toolName, bool active, bool success);
 private:
     void refreshConnection();
     void beginProbe();
@@ -144,6 +153,8 @@ private:
     bool m_shuttingDown = false;
     bool m_shutdownStopRequested = false;
     bool m_shutdownComplete = false;
+    bool m_notesDisclosureGranted = false;
+    bool m_filesDisclosureGranted = false;
     quint64 m_accessGeneration = 0;
     std::function<void()> m_shutdownCompletion;
 };

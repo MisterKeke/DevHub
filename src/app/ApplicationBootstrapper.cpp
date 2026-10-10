@@ -55,6 +55,7 @@
 #include "../presentation/theme/ThemePalette.h"
 #include "../shared/security/RedactionService.h"
 #include "../application/assistant/AssistantController.h"
+#include "../application/assistant/AssistantToolRuntime.h"
 #include "../infrastructure/codex/CodexClient.h"
 #include "../infrastructure/codex/CodexProcess.h"
 #include "../infrastructure/codex/CodexExecutableLocator.h"
@@ -387,6 +388,8 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
     assistantController.applyConfiguration({settingsService.value(QStringLiteral("assistant/executable")).toString(), settingsService.value(QStringLiteral("assistant/model")).toString()});
     assistantController.setPersistenceContext(session.account()->id().toString(),
         settingsService.value(QStringLiteral("assistant/restoreConversation")).toBool());
+    application::assistant::AssistantToolRuntime assistantToolRuntime(assistantClient, assistantController,
+        scheduler, workspaceManager, workspaceContext, serviceRepository, serviceCoordinator, notesRepository);
     QObject::connect(&assistantController, &application::assistant::AssistantController::executableProbeRequested,
         &assistantLocator, [&assistantLocator](const QString& path, quint64 generation) { assistantLocator.locate(path, generation); });
     QObject::connect(&assistantController, &application::assistant::AssistantController::cancelProbeRequested,

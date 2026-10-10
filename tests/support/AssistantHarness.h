@@ -37,13 +37,14 @@ private:
 struct Harness : codex::Session {
     FixedClock clock;
     SequenceIds ids;
+    QString runtimeVersion;
     application::assistant::AssistantController controller;
     explicit Harness(application::assistant::AssistantLimits limits = {}, application::assistant::CodexClientLimits clientLimits = {},
-        application::assistant::IConversationRepository* repository = nullptr)
-        : codex::Session(clientLimits), controller(client, clock, ids, scratch.path(), infrastructure::codex::CodexRuntimeProfile::launchArguments().value(), {}, repository, nullptr, limits)
+        application::assistant::IConversationRepository* repository = nullptr, QString version = QStringLiteral("0.160.1"))
+        : codex::Session(clientLimits), runtimeVersion(std::move(version)), controller(client, clock, ids, scratch.path(), infrastructure::codex::CodexRuntimeProfile::launchArguments().value(), {}, repository, nullptr, limits)
     {
         QObject::connect(&controller, &application::assistant::AssistantController::executableProbeRequested, &controller,
-            [this](const QString&, quint64 generation) { controller.executableFound({"C:/fixture/codex.exe", "0.160.1"}, generation); });
+            [this](const QString&, quint64 generation) { controller.executableFound({"C:/fixture/codex.exe", runtimeVersion}, generation); });
     }
     bool readyController()
     {
