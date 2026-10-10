@@ -54,12 +54,15 @@ regression evidence below. Phase 6 checklist entries 9 and 10 remain unchecked.
 | Bounded filename/path search | `searchNames` applies the plan budgets and cancellation; `filenameSearchBoundsPrunesSecretsAndCancels` covers defaults/caps/path matching/pruning/cancellation. |
 | Extracted Notes content search | `application::notes::NoteSearchService` is used by `NotesPage`; source cap/cancellation/link tests and Notes UI title/content/clear regressions. |
 | Bounded note reads with repository ownership | Injected handler spy confirms a single delegated bounded read and explicit disclosure denial; repository-backed test verifies wrong account/workspace, trashed note, and byte cap rejection. |
+| Extracted Files/Notes UI behavior | `file-browser-ui` verifies the shared UTF-8 preview result; `notes-search-ui` verifies content-only filtering, title filtering, and clearing the filter. |
+| Phase 7 path/security/cap/cancel cases | `assistant-tools` verifies traversal, ADS, secret paths, a real junction, repository ownership, 1 MiB/2 MiB limits, bounded ranges, cancellation, expiry, and stale callbacks. |
 
-The shared Section 37 checks remain unchecked. Phase 7 verifies the Notes handler's
-repository invocation count, use of shared Files/Notes logic, and the Phase 7
-traversal, junction, ADS, secret, denial, and cancellation cases. Full capability
-invocation accounting for Git/workspace/service handlers, plus lock/crash and
-no-mutation-replay scenarios, depend on later-phase handlers and are not claimed.
+The Phase 7 UI-preservation and security subset is now checked separately in
+Section 37. The Notes handler spy verifies one bounded repository invocation,
+and the Files/Notes UI use the extracted shared implementations. The broader
+cross-phase checks remain unchecked: complete invocation accounting for
+Git/workspace/service handlers, plus lock/crash and no-mutation-replay scenarios
+depend on later-phase handlers and lifecycle scenarios that are not claimed.
 
 ## Verification
 
