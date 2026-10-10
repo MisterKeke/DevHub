@@ -126,12 +126,14 @@ void SettingsWindow::saveSettings()
     for (auto i = pending.cbegin(); i != pending.cend(); ++i) {
         const auto saved = m_settings.setValue(i.key(), i.value(), m_workspaceId);
         if (!saved) {
-            QMessageBox message(this);
-            message.setIcon(QMessageBox::Warning);
-            message.setWindowTitle(tr("Could not save settings"));
-            message.setText(saved.error().userMessage);
-            message.setDetailedText(saved.error().technicalMessage);
-            message.exec();
+            auto* message = new QMessageBox(this);
+            message->setIcon(QMessageBox::Warning);
+            message->setStandardButtons(QMessageBox::Ok);
+            message->setWindowTitle(tr("Could not save settings"));
+            message->setText(saved.error().userMessage);
+            message->setDetailedText(saved.error().technicalMessage);
+            message->setAttribute(Qt::WA_DeleteOnClose);
+            message->open();
             return;
         }
     }
