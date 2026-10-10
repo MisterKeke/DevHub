@@ -6,12 +6,15 @@ namespace devhub::infrastructure::codex {
 // annotations; profile policy supplies the additional semantic checks.
 class CodexWireContract final {
 public:
-    CodexWireContract();
+    explicit CodexWireContract(QString version = QStringLiteral("0.160.1"));
+    [[nodiscard]] bool setVersion(const QString& version);
+    [[nodiscard]] QString version() const { return m_version; }
     [[nodiscard]] bool accepts(const QString& contract, const QJsonValue& value) const;
     [[nodiscard]] bool contains(const QString& contract) const;
 private:
     [[nodiscard]] bool validate(const QJsonValue& schema, const QJsonValue& value, int depth, int& budget) const;
     QJsonObject m_contracts;
     QJsonObject m_definitions;
+    QString m_version;
 };
 }

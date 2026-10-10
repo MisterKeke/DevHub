@@ -41,6 +41,10 @@ the transcript and composer; it never replays a message. On a new app session,
 Phase 5 resumes only compatible conversations associated by DevHub. An unavailable
 or incompatible association requires New Chat.
 
+The saved runtime profile fingerprint includes the Codex version. Switching
+between supported versions therefore does not silently resume a conversation
+under a different runtime contract.
+
 ## Status and models
 
 Version, process/connection state, account mode and restrictions are transient
@@ -48,6 +52,17 @@ controller values. Installation/probe failures, disconnected/starting/running,
 signed out, ChatGPT, unsupported API-key/other accounts and expired sign-in are
 distinct. Raw account identifiers, credential paths, email and server diagnostics
 are not displayed.
+
+DevHub supports the tested native `codex-cli 0.160.1` and
+`codex-cli 0.162.0-alpha.17.2` profiles. Version output accepts semantic
+prerelease/build suffixes and preserves the complete detected version; a valid
+but untested version is rejected with that version shown in the setup error.
+The protocol contracts embedded in DevHub are generated from each supported
+executable's stable and experimental `app-server generate-json-schema` bundles.
+The 0.162.0 alpha schemas retain the requests and responses DevHub uses. Their
+differences are additive optional `supportsIndependentSpeedModes`, `parentTurnId`
+and `rootTurnId` fields; DevHub ignores these additions and continues validating
+its required fields, so no request adaptation was needed.
 
 Model choices come from the tested `model/list` response's first 100 entries.
 Hidden/non-text entries are omitted; duplicates are collapsed and availability

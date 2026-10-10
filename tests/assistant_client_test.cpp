@@ -58,6 +58,33 @@ private slots:
         QVERIFY(s.transport.lastRequest("configRequirements/read").value("params").isNull());
         s.transport.reply(initialize.value("id").toInteger(), {}); QCOMPARE(initialized.size(), 1);
     }
+    void alphaContractsAndVersionScopedConversationBinding()
+    {
+        constexpr auto alpha = "0.162.0-alpha.17.2";
+        Session s;
+        QVERIFY(s.client.launch(s.spec(1, CodexRuntimeProfile::launchArguments().value(), QString::fromLatin1(alpha))));
+        const auto initialize = s.transport.lastRequest("initialize");
+        QVERIFY(!initialize.isEmpty());
+        s.reply("initialize", {{"codexHome", s.scratch.path()}, {"userAgent", "fixture"},
+            {"platformFamily", "windows"}, {"platformOs", "windows"}});
+        s.reply("account/read", chatGptAccount());
+        s.reply("config/read", safeConfig());
+        s.reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)},
+            {"supportsIndependentSpeedModes", true}});
+        QVERIFY(s.client.profileVerified());
+        const CodexThreadBinding previousVersionBinding{"saved-thread", s.client.account().identityFingerprint,
+            s.scratch.path(), {}, s.scratch.path(), CodexRuntimeProfile::fingerprint(QStringList{})};
+        QVERIFY(!s.client.resumeThread(previousVersionBinding));
+        QVERIFY(s.client.startThread(QStringLiteral("fixture-model")));
+        const auto start = s.transport.lastRequest("thread/start");
+        QVERIFY(!start.isEmpty());
+        s.reply("thread/start", s.threadResult());
+        QCOMPARE(s.client.threadBinding().profileFingerprint,
+            CodexRuntimeProfile::fingerprint(QString::fromLatin1(alpha), CodexRuntimeProfile::launchArguments().value()));
+        QVERIFY(s.client.threadBinding().profileFingerprint != previousVersionBinding.profileFingerprint);
+        QVERIFY(s.client.startTurn(QStringLiteral("alpha contract fixture")));
+        QVERIFY(s.transport.lastRequest("turn/start").contains("params"));
+    }
     void failedInitializeNeverSendsInitialized()
     {
         Session s; QSignalSpy failed(&s.client, &CodexClient::requestFailed);

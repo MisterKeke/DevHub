@@ -63,10 +63,12 @@ int main(int argc, char** argv)
     auto observe = [&] { if (process.processId()) owned.insert(process.processId()); };
 #endif
     bool initialized = false, configRead = false, failed = false;
+    QString candidateVersion;
     int stoppedCount = 0;
     QObject::connect(&sample, &QTimer::timeout, &app, observe);
     QObject::connect(&locator, &CodexExecutableLocator::probeFailed, &app, [&](const auto&, quint64) { failed = true; app.exit(4); });
     QObject::connect(&locator, &CodexExecutableLocator::executableFound, &app, [&](const CodexExecutable& executable, quint64) {
+        candidateVersion = executable.version;
         QStringList args{QStringLiteral("app-server"), QStringLiteral("--listen"), QStringLiteral("stdio://"), QStringLiteral("--strict-config")};
         const QStringList overrides = {"features.shell_tool=false", "features.unified_exec=false", "web_search=\"disabled\"",
             "sandbox_mode=\"read-only\"", "approval_policy=\"on-request\"", "forced_login_method=\"chatgpt\"",
@@ -134,7 +136,8 @@ int main(int argc, char** argv)
     survivors = static_cast<int>(liveIds.size());
 #endif
     const bool expectedFailure = mode == QStringLiteral("crash");
-    const QJsonObject evidence{{"candidateVersion", "0.160.1"}, {"isolatedHome", true}, {"inference", false}, {"scenario", mode},
+    const QJsonObject evidence{{"candidateVersion", candidateVersion}, {"isolatedHome", true}, {"loginRequested", false},
+        {"inference", false}, {"scenario", mode},
         {"initialized", initialized}, {"configRead", configRead}, {"observedOwnedProcessCount", owned.size()},
         {"survivingOwnedProcessCount", survivors}, {"stoppedCount", stoppedCount}, {"transportFailed", failed},
         {"treeContainmentClaim", false}};

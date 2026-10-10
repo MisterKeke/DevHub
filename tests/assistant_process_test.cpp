@@ -213,10 +213,19 @@ private slots:
         QCOMPARE(found.size(), 1);
         const auto value = qvariant_cast<CodexExecutable>(found.front().at(0));
         QCOMPARE(value.version, QStringLiteral("0.160.1")); QCOMPARE(found.front().at(1).toULongLong(), quint64(11));
-        locator.locate(scratch.filePath("missing.exe"), 12); QCOMPARE(failed.size(), 1);
-        locator.locate(scratch.path(), 13); QCOMPARE(failed.size(), 2);
+        const auto alpha = scratch.filePath(QStringLiteral("codex-alpha.exe"));
+        QVERIFY(QFile::copy(QStringLiteral(DEVHUB_FAKE_CODEX), alpha));
+        locator.locate(alpha, 111); QTRY_COMPARE(found.size(), 2);
+        QCOMPARE(qvariant_cast<CodexExecutable>(found.back().at(0)).version, QStringLiteral("0.162.0-alpha.17.2"));
+        const auto unsupported = scratch.filePath(QStringLiteral("codex-unsupported.exe"));
+        QVERIFY(QFile::copy(QStringLiteral(DEVHUB_FAKE_CODEX), unsupported));
+        locator.locate(unsupported, 112); QTRY_COMPARE(failed.size(), 1);
+        QVERIFY(qvariant_cast<devhub::domain::errors::AppError>(failed.back().at(0)).userMessage
+            .contains(QStringLiteral("0.163.0")));
+        locator.locate(scratch.filePath("missing.exe"), 12); QCOMPARE(failed.size(), 2);
+        locator.locate(scratch.path(), 13); QCOMPARE(failed.size(), 3);
         const auto wrapper = scratch.filePath("codex.cmd"); QVERIFY(QFile::copy(QStringLiteral(DEVHUB_FAKE_CODEX), wrapper));
-        locator.locate(wrapper, 14); QCOMPARE(failed.size(), 3);
+        locator.locate(wrapper, 14); QCOMPARE(failed.size(), 4);
         // qputenv's byte API cannot represent İ on an English Windows code
         // page. Keep Unicode coverage in the explicit override above and use
         // an ASCII directory with spaces for this independent PATH fixture.
@@ -227,10 +236,10 @@ private slots:
         QVERIFY(qputenv("PATH", QDir::toNativeSeparators(pathDirectory).toLocal8Bit() + ';' + previousPath));
         locator.locate({}, 15);
         qputenv("PATH", previousPath); // findExecutable has already resolved it synchronously.
-        QTRY_VERIFY(found.size() == 2 || failed.size() > 3);
-        const auto pathError = failed.size() <= 3 ? QString{} : qvariant_cast<devhub::domain::errors::AppError>(failed.back().at(0)).userMessage;
-        QVERIFY2(failed.size() == 3, qPrintable(pathError));
-        QTRY_COMPARE(found.size(), 2);
+        QTRY_VERIFY(found.size() == 3 || failed.size() > 4);
+        const auto pathError = failed.size() <= 4 ? QString{} : qvariant_cast<devhub::domain::errors::AppError>(failed.back().at(0)).userMessage;
+        QVERIFY2(failed.size() == 4, qPrintable(pathError));
+        QTRY_COMPARE(found.size(), 3);
     }
     void locatorFaults_data()
     {

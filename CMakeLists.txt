@@ -109,6 +109,8 @@ set(DEVHUB_ASSISTANT_SOURCES
     src/application/assistant/ICodexTransport.h
     src/infrastructure/codex/CodexExecutableLocator.h
     src/infrastructure/codex/CodexExecutableLocator.cpp
+    src/infrastructure/codex/CodexVersionSupport.h
+    src/infrastructure/codex/CodexVersionSupport.cpp
     src/infrastructure/codex/CodexProtocolCodec.h
     src/infrastructure/codex/CodexProtocolCodec.cpp
     src/infrastructure/codex/CodexWriteQueue.h

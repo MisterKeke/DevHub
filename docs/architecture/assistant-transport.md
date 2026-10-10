@@ -16,8 +16,9 @@ alter a constructed snapshot. Construct a new value when configuration changes.
 The locator accepts a configured native executable path, or resolves `codex.exe`
 through PATH when the setting is empty. A bad explicit override fails without
 fallback. It rejects directories, relative paths and script wrappers. It runs
-`--version` directly through QProcess, accepts only the tested version 0.160.1,
-caps each probe channel at 4 KiB, and cancels/kills a probe after five seconds.
+`--version` directly through QProcess, accepts only the tested versions 0.160.1
+and 0.162.0-alpha.17.2, caps each probe channel at 4 KiB, and cancels/kills a
+probe after five seconds.
 Windows launch and version probes use CREATE_NO_WINDOW.
 Paths with spaces and Unicode are covered by a copied native fixture. Explicit
 override tests retain Unicode paths; the separate PATH fixture uses an ASCII

@@ -9,6 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "codex" / "0.160.1"
+ALPHA_FIXTURES = ROOT / "tests" / "fixtures" / "codex" / "0.162.0-alpha.17.2"
 spec = importlib.util.spec_from_file_location("freeze_codex_contract", ROOT / "tools" / "freeze-codex-contract.py")
 freeze = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(freeze)
@@ -33,6 +34,9 @@ class CodexContractTest(unittest.TestCase):
         cls.snapshots = {mode: json.loads((FIXTURES / (mode + ".json")).read_text(encoding="utf-8"))
                          for mode in ("stable", "experimental")}
         cls.manifest = json.loads((FIXTURES / "manifest.json").read_text(encoding="utf-8"))
+        cls.alpha_snapshots = {mode: json.loads((ALPHA_FIXTURES / (mode + ".json")).read_text(encoding="utf-8"))
+                               for mode in ("stable", "experimental")}
+        cls.alpha_manifest = json.loads((ALPHA_FIXTURES / "manifest.json").read_text(encoding="utf-8"))
 
     def test_pinned_hashes_and_reference_closure(self):
         for mode, snapshot in self.snapshots.items():
@@ -55,6 +59,29 @@ class CodexContractTest(unittest.TestCase):
         projected = freeze.strip_annotations(original)
         self.assertNotIn("description", projected)
         self.assertEqual(set(projected["properties"]), {"description", "title"})
+
+    def test_alpha_schema_projection_and_contract_compatibility(self):
+        for mode, snapshot in self.alpha_snapshots.items():
+            with self.subTest(mode=mode):
+                self.assertEqual(snapshot["codexVersion"], "0.162.0-alpha.17.2")
+                self.assertEqual(hashlib.sha256(freeze.canonical(snapshot)).hexdigest(),
+                                 self.alpha_manifest["snapshots"][mode]["contractSha256"])
+                for method in ("initialize", "thread/start", "thread/resume", "thread/read", "turn/start",
+                               "turn/interrupt", "account/read", "account/login/start", "account/login/cancel",
+                               "model/list", "config/read", "configRequirements/read"):
+                    old = self.snapshots["experimental"]["contracts"]["ClientRequest:" + method]
+                    alpha = snapshot["contracts"]["ClientRequest:" + method]
+                    self.assertEqual(old, alpha, method)
+                old_requirements = self.snapshots["experimental"]["contracts"][
+                    "Response:ConfigRequirementsReadResponse"]
+                alpha_requirements = snapshot["contracts"]["Response:ConfigRequirementsReadResponse"]
+                self.assertEqual(old_requirements["properties"]["requirements"],
+                                 alpha_requirements["properties"]["requirements"])
+                self.assertEqual(alpha_requirements["properties"]["supportsIndependentSpeedModes"]["type"],
+                                 ["boolean", "null"])
+                for name in ("TurnStartParams", "Turn"):
+                    self.assertIn("parentTurnId" if name == "TurnStartParams" else "rootTurnId",
+                                  snapshot["definitions"][name]["properties"])
 
     def test_required_client_methods_and_rpc_envelope(self):
         for snapshot in self.snapshots.values():

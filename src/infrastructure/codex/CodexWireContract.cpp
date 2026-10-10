@@ -1,4 +1,5 @@
 #include "CodexWireContract.h"
+#include "CodexVersionSupport.h"
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -22,14 +23,23 @@ bool hasType(const QString& type, const QJsonValue& value)
     return false;
 }
 }
-CodexWireContract::CodexWireContract()
+CodexWireContract::CodexWireContract(QString version)
 {
     initializeCodexContractResource();
-    QFile file(QStringLiteral(":/codex/0.160.1/experimental.json"));
-    if (!file.open(QIODevice::ReadOnly)) return;
+    const bool loaded = setVersion(version);
+    Q_UNUSED(loaded);
+}
+bool CodexWireContract::setVersion(const QString& version)
+{
+    if (!CodexVersionSupport::isSupported(version)) return false;
+    QFile file(QStringLiteral(":/codex/%1/experimental.json").arg(version));
+    if (!file.open(QIODevice::ReadOnly)) return false;
     const auto snapshot = QJsonDocument::fromJson(file.readAll()).object();
+    if (snapshot.value("codexVersion").toString() != version) return false;
     m_contracts = snapshot.value("contracts").toObject();
     m_definitions = snapshot.value("definitions").toObject();
+    m_version = version;
+    return !m_contracts.isEmpty() && !m_definitions.isEmpty();
 }
 bool CodexWireContract::contains(const QString& contract) const { return m_contracts.contains(contract); }
 bool CodexWireContract::accepts(const QString& contract, const QJsonValue& value) const

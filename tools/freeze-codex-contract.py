@@ -68,7 +68,7 @@ def references(value):
             yield from references(child)
 
 
-def snapshot(root):
+def snapshot(root, version):
     schemas = {path.relative_to(root).as_posix(): json.loads(path.read_text(encoding="utf-8"))
                for path in sorted(root.rglob("*.json"))}
     selected = {}
@@ -110,7 +110,7 @@ def snapshot(root):
         add("Response:" + name, {k: v for k, v in schema.items() if k != "definitions"},
             schema.get("definitions", {}))
 
-    return {"format": 1, "codexVersion": "0.160.1", "definitions": needed_definitions,
+    return {"format": 1, "codexVersion": version, "definitions": needed_definitions,
             "contracts": selected}, {
                 path: hashlib.sha256(canonical(schema)).hexdigest()
                 for path, schema in schemas.items()}
@@ -120,12 +120,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--schema-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--version", default="0.160.1")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    manifest = {"format": 1, "codexVersion": "0.160.1", "hashAlgorithm": "sha256-canonical-json",
+    manifest = {"format": 1, "codexVersion": args.version, "hashAlgorithm": "sha256-canonical-json",
                 "snapshots": {}}
     for mode in ("stable", "experimental"):
-        contract, hashes = snapshot(args.schema_root / ("schema-" + mode))
+        contract, hashes = snapshot(args.schema_root / ("schema-" + mode), args.version)
         text = json.dumps(contract, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
         (args.output / (mode + ".json")).write_text(text, encoding="utf-8")
         manifest["snapshots"][mode] = {"files": hashes, "contractSha256":

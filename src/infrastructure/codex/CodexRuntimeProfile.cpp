@@ -146,7 +146,11 @@ QStringList CodexRuntimeProfile::rejectionReasons(const QJsonObject& configResul
 }
 QString CodexRuntimeProfile::fingerprint(const QStringList& arguments)
 {
-    const auto profile = QJsonDocument(QJsonArray{"devhub-text-only-v1", "0.160.1", true,
+    return fingerprint(QStringLiteral("0.160.1"), arguments);
+}
+QString CodexRuntimeProfile::fingerprint(const QString& version, const QStringList& arguments)
+{
+    const auto profile = QJsonDocument(QJsonArray{"devhub-text-only-v1", version, true,
         QJsonArray::fromStringList(arguments.isEmpty() ? launchArguments().value() : arguments), "environments-empty", "deny-server-tools", "legacy-history"});
     return QString::fromLatin1(QCryptographicHash::hash(profile.toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex());
 }

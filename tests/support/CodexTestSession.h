@@ -33,8 +33,9 @@ struct Session {
     MemoryCodexTransport transport;
     CodexClient client;
     explicit Session(CodexClientLimits limits = {}) : client(transport, nullptr, limits) {}
-    CodexLaunchSpec spec(quint64 generation = 1, QStringList args = CodexRuntimeProfile::launchArguments().value()) const
-    { return {{QStringLiteral("C:/fixture/codex.exe"), QStringLiteral("0.160.1")}, args, scratch.path(), QProcessEnvironment{}, generation}; }
+    CodexLaunchSpec spec(quint64 generation = 1, QStringList args = CodexRuntimeProfile::launchArguments().value(),
+        QString version = QStringLiteral("0.160.1")) const
+    { return {{QStringLiteral("C:/fixture/codex.exe"), version}, args, scratch.path(), QProcessEnvironment{}, generation}; }
     qint64 requestId(const QString& method) const { return transport.lastRequest(method).value("id").toInteger(); }
     void reply(const QString& method, QJsonObject result) { transport.reply(requestId(method), result); }
     bool start()

@@ -1,5 +1,6 @@
 #include "CodexClient.h"
 #include "CodexRuntimeProfile.h"
+#include "CodexVersionSupport.h"
 #include <QCryptographicHash>
 #include <QDir>
 #include <QCryptographicHash>
@@ -99,13 +100,14 @@ CodexClient::CodexClient(ICodexTransport& transport, QObject* parent, CodexClien
 }
 Result<void> CodexClient::launch(const CodexLaunchSpec& spec)
 {
-    if (!m_transport || m_active || m_transportBusy || spec.processGeneration <= m_generation || spec.executable.version != "0.160.1"
+    if (!m_transport || m_active || m_transportBusy || spec.processGeneration <= m_generation
+        || !CodexVersionSupport::isSupported(spec.executable.version) || !m_wire.setVersion(spec.executable.version)
         || !QFileInfo(spec.scratchDirectory).isAbsolute() || !QFileInfo(spec.scratchDirectory).isDir()
         || !CodexRuntimeProfile::acceptsEnvironment(spec.environment) || !CodexRuntimeProfile::acceptsLaunch(spec.arguments)) return Result<void>::failure(denied());
     m_generation = spec.processGeneration; m_active = true; m_initialized = false; m_profileVerified = false;
     m_transportBusy = true; m_initializeSent = false;
     m_uncertain = false; m_interruptAccepted = false; m_scratch = QFileInfo(spec.scratchDirectory).canonicalFilePath();
-    m_profileFingerprint = CodexRuntimeProfile::fingerprint(spec.arguments);
+    m_profileFingerprint = CodexRuntimeProfile::fingerprint(spec.executable.version, spec.arguments);
     m_expectedHome.clear();
     for (const auto& key : spec.environment.keys()) if (key.compare("CODEX_HOME", Qt::CaseInsensitive) == 0)
         m_expectedHome = QFileInfo(spec.environment.value(key)).canonicalFilePath();

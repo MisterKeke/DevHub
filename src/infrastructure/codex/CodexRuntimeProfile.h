@@ -12,6 +12,7 @@ public:
     [[nodiscard]] static bool acceptsLaunch(const QStringList& arguments);
     [[nodiscard]] static QStringList rejectionReasons(const QJsonObject& configResult, const QJsonObject& requirementsResult);
     [[nodiscard]] static QString fingerprint(const QStringList& launchArguments = {});
+    [[nodiscard]] static QString fingerprint(const QString& version, const QStringList& launchArguments);
     [[nodiscard]] static bool acceptsEnvironment(const QProcessEnvironment& environment);
     [[nodiscard]] static bool acceptsLoginUrl(const QUrl& url, bool deviceCode);
     // Phase 0 has no authenticated/native model proof. No runtime boolean can

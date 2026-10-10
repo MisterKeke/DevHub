@@ -18,7 +18,7 @@ unchecked items at the end of Section 37 remain release gates.
 | Safe diagnostics and support exclusion | `AssistantController::diagnosticsSnapshot()` exposes only status, operation, tested version/profile and access generation. Support previews explicitly exclude Assistant transcripts and Codex state; exported Assistant/Codex-category log lines and sensitive module-status lines are filtered. | Implemented and support test passed. |
 | Planted marker | A unique transcript marker is planted in Assistant/Codex log categories and module status. The ZIP regression asserts that it is absent; the targeted support-bundle test passed. | Implemented and targeted-test verified. |
 | Default tests and packaged runtime without Codex | Rebuilt all required Debug targets, then full configured CTest passed all 14/14 suites. Rebuilt the portable Release package and its packaged-runtime checker passed with the child `PATH` restricted to Windows system directories; the checker verified SQLite, Authentication.qml, MainShell.qml, Assistant navigation at module index 9, and packaged runtime. | Verified on Qt 6.11.0 MinGW; checklist complete. |
-| Opt-in real handshake/stream/Stop/resume | `tests/assistant_live_integration_test.cpp` is a developer-only executable excluded from CTest. It links a separate `devhub_assistant_live_validation` archive; the application and normal tests retain `liveInferenceApproved() == false`. Client-side validation requires the build-only policy, exact explicit executable/version, opt-in, authenticated account, effective capability admission, isolated CODEX_HOME and sentinel. The live target built; its no-opt-in preflight passed setup and skipped the live scenario before child creation. No authenticated handshake, model request, stream, Stop, resume or live shutdown was run. | **Incomplete**: compatible native executable and manually authenticated disposable profile/sentinel are unavailable. The checked-in 0.160.1 bounded capability evidence is scripted and does not approve real inference. |
+| Opt-in real handshake/stream/Stop/resume | `tests/assistant_live_integration_test.cpp` remains developer-only and excluded from CTest; live admission still requires the separate validation build, exact explicit executable/version, opt-in, authenticated account, effective capability admission, isolated CODEX_HOME and sentinel. A separate bounded native probe verified version discovery, initialize, config/read and clean stop for 0.162.0-alpha.17.2 in an isolated home, without login or inference. | **Incomplete**: no authenticated handshake, model request, stream, Stop, resume or live shutdown was run. The existing live-inference authorization remains closed and only admits the previously gated 0.160.1 profile. |
 | Clean-machine/release gates | Attempted the pinned `windows-ci` configure. Sandboxed configuration was denied while vcpkg extracted tools; the elevated retry installed dependencies and then failed because the configured `Visual Studio 17 2022` generator could not find a VS 17 instance. This machine exposes VS 18/MSVC 14.50, no `QT_ROOT_DIR`, and no Qt 6.8.3/MSVC kit. Windows Sandbox is unavailable. No clean-machine package run, DPI/keyboard check, supported-installation compatibility check, or release shutdown/capability certification was performed. | **Incomplete**. |
 
 ## Test and build evidence
@@ -38,15 +38,16 @@ unchecked items at the end of Section 37 remain release gates.
   Authentication.qml, MainShell.qml, Assistant navigation at module index 9,
   and packaged-runtime checks. The installed Codex executable was not visible
   to the packaged process.
-- The only supported profile recorded by this repository is Codex 0.160.1; the
-  installed CLI is `codex-cli 0.162.0-alpha.17.2`. The client hard gate
+- The supported setup/protocol profiles recorded by this repository are Codex
+  0.160.1 and 0.162.0-alpha.17.2. The installed CLI validated for this report
+  is `codex-cli 0.162.0-alpha.17.2`. The client hard gate
   `CodexRuntimeProfile::liveInferenceApproved()` remains false. A dedicated
   validation-library target now has a compile-time-only development policy;
   environment variables and settings cannot enable it in production. The live
   target compiled with Qt 6.11.0 MinGW. Its preflight ran with all opt-in
   variables absent: two test fixtures passed and the live scenario skipped
-  before child creation. No live handshake, account operation or inference was
-  run against the unsupported installed binary.
+  before child creation. The native alpha probe used an isolated disposable
+  CODEX_HOME and confirmed initialize/config-read/stop, with no login or inference.
 - The production `devhub_assistant_client_tests` regression passed (CTest
   1/1). It set the four live-test variables to plausible values, verified that
   the normal library's validation-build predicate and native send admission
@@ -66,10 +67,11 @@ unchecked items at the end of Section 37 remain release gates.
 
 ## Release blockers
 
-1. **Live integration**: obtain the exact supported `codex-cli 0.160.1` native
+1. **Live integration**: obtain the exact live-validation-approved `codex-cli 0.160.1` native
    executable; manually create and authenticate a new disposable CODEX_HOME as
    described in [the harness procedure](assistant-live-integration.md), with
-   its sentinel. Then build and run the harness for each supported profile.
+   its sentinel. The existing live harness remains approved only for 0.160.1;
+   the alpha setup/protocol support does not authorize real inference.
    Set the explicit inference opt-in, executable path, disposable-home path and
    disposable-profile acknowledgment shown in that procedure. Do not use the
    default user profile or an existing conversation.

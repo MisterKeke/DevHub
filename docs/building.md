@@ -1,7 +1,7 @@
 # Building DevHub
 
 Codex is optional and is not a build/CTest dependency. Assistant setup accepts
-the tested native `codex-cli 0.160.1` Windows executable. Select it with Settings
+the tested native `codex-cli 0.160.1` and `0.162.0-alpha.17.2` Windows executables. Select it with Settings
 → Assistant → Browse/Recheck, or leave the override empty for native `codex.exe`
 on PATH. Installation locations are not guessed; `.cmd`, `.bat` and PowerShell
 wrappers are unsupported. An invalid override never falls back to PATH.

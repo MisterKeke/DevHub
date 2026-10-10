@@ -1,14 +1,14 @@
 #include "CodexExecutableLocator.h"
+#include "CodexVersionSupport.h"
 #include <QFileInfo>
-#include <QRegularExpression>
 #include <QStandardPaths>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
 
 namespace devhub::infrastructure::codex {
-CodexExecutableLocator::CodexExecutableLocator(QObject* parent, int timeoutMilliseconds, QStringList testedVersions)
-    : ICodexExecutableProbe(parent), m_testedVersions(std::move(testedVersions)), m_timeoutMilliseconds(timeoutMilliseconds)
+CodexExecutableLocator::CodexExecutableLocator(QObject* parent, int timeoutMilliseconds)
+    : ICodexExecutableProbe(parent), m_timeoutMilliseconds(timeoutMilliseconds)
 {
     m_timer.setSingleShot(true);
 #ifdef Q_OS_WIN
@@ -31,14 +31,13 @@ CodexExecutableLocator::CodexExecutableLocator(QObject* parent, int timeoutMilli
         [this](int code, QProcess::ExitStatus status) {
             readOutput(); m_timer.stop(); m_active = false;
             if (m_failed) { restartQueuedProbe(); return; }
-            const auto match = QRegularExpression(QStringLiteral("\\Acodex-cli ([0-9]+\\.[0-9]+\\.[0-9]+)\\r?\\n?\\z"))
-                .match(QString::fromUtf8(m_output));
-            if (code != 0 || status != QProcess::NormalExit || !match.hasMatch()) {
+            const auto parsedVersion = CodexVersionSupport::parseVersionResponse(QString::fromUtf8(m_output));
+            if (code != 0 || status != QProcess::NormalExit || !parsedVersion) {
                 fail(domain::errors::ErrorCode::StartupFailed, QStringLiteral("Codex returned an invalid version response.")); return;
             }
-            const auto version = match.captured(1);
-            if (!m_testedVersions.contains(version)) {
-                fail(domain::errors::ErrorCode::InvalidArgument, QStringLiteral("This Codex version has not been tested.")); return;
+            const auto version = *parsedVersion;
+            if (!CodexVersionSupport::isSupported(version)) {
+                fail(domain::errors::ErrorCode::InvalidArgument, CodexVersionSupport::unsupportedMessage(version)); return;
             }
             emit executableFound({m_path, version}, m_generation);
         });

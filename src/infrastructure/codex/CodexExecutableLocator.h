@@ -13,8 +13,7 @@ class CodexExecutableLocator final : public application::assistant::ICodexExecut
 {
     Q_OBJECT
 public:
-    explicit CodexExecutableLocator(QObject* parent = nullptr, int timeoutMilliseconds = 5000,
-        QStringList testedVersions = {QStringLiteral("0.160.1")});
+    explicit CodexExecutableLocator(QObject* parent = nullptr, int timeoutMilliseconds = 5000);
     ~CodexExecutableLocator() override;
     void locate(const QString& configuredPath, quint64 probeGeneration) override;
     void cancel() override;
@@ -25,7 +24,6 @@ private:
     void restartQueuedProbe();
     QProcess m_process;
     QTimer m_timer;
-    QStringList m_testedVersions;
     QString m_path;
     QByteArray m_output;
     quint64 m_generation = 0;

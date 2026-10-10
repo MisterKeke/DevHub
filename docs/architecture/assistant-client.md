@@ -8,7 +8,8 @@ no native sign-in, logout, credential copying or real inference was performed.
 
 ## Wire contract and request lifetime
 
-The client embeds the immutable Phase 0 experimental 0.160.1 projection through
+The client embeds immutable generated experimental projections for 0.160.1 and
+0.162.0-alpha.17.2 through
 `resources/codex_contracts.qrc`. Both outgoing operation shapes and incoming
 required response/notification fields are checked against that exact snapshot.
 The structural validator supports every constraint keyword in the projection,
@@ -184,4 +185,4 @@ DevHub account/workspace lifetime; this client is not the conversation controlle
 
 Wire shapes come from the pinned local schemas. Supporting guidance was checked
 against [official App Server documentation](https://learn.chatgpt.com/docs/app-server)
-on 2026-10-09; its newer examples do not replace the 0.160.1 contract.
+on 2026-10-09; generated version-specific projections remain the wire contract.

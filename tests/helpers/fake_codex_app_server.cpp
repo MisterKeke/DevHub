@@ -39,6 +39,8 @@ int main(int argc, char** argv)
         if (name.contains(QStringLiteral("oversize"))) output(QByteArray(8192, 'v'));
         else if (name.contains(QStringLiteral("unknown"))) output("codex-cli 9.9.9\n");
         else if (name.contains(QStringLiteral("badversion"))) output("not codex\n");
+        else if (name.contains(QStringLiteral("alpha"))) output("codex-cli 0.162.0-alpha.17.2\r\n");
+        else if (name.contains(QStringLiteral("unsupported"))) output("codex-cli 0.163.0\r\n");
         else output("codex-cli 0.160.1\r\n");
         return 0;
     }
