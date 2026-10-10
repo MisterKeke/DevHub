@@ -1,4 +1,5 @@
 #include "NotesRepository.h"
+#include "../../application/files/WorkspaceFilePolicy.h"
 
 #include "../database/SqlErrorMapper.h"
 
@@ -202,6 +203,31 @@ Result<QString> NotesRepository::readContent(const QString& workspaceId, const Q
     if (!file.open(QIODevice::ReadOnly)) return noteFailure<QString>(QStringLiteral("DevHub could not read this note."), file.errorString(), QStringLiteral("read note"));
     const QByteArray bytes = file.readAll();
     return Result<QString>::success(QString::fromUtf8(bytes));
+}
+
+Result<QString> NotesRepository::readContentBounded(const QString& workspaceId, const QString& id, qint64 maximumBytes)
+{
+    if (maximumBytes < 0 || !ownsNode(workspaceId, id)) return noteFailure<QString>(QStringLiteral("The note could not be found."), id, QStringLiteral("read bounded note"));
+    maximumBytes = qMin<qint64>(maximumBytes, 2 * 1024 * 1024);
+    QSqlQuery query(m_database.database());
+    query.prepare(QStringLiteral("SELECT 1 FROM note_nodes n JOIN workspaces w ON w.id=n.workspace_id "
+        "WHERE n.id=? AND n.workspace_id=? AND n.node_type='note' AND n.is_trashed=0 AND w.account_id=?"));
+    query.addBindValue(id); query.addBindValue(workspaceId); query.addBindValue(m_accountId.toString());
+    if (!query.exec() || !query.next()) return noteFailure<QString>(QStringLiteral("The note could not be found."), id, QStringLiteral("read bounded note"));
+    const QString path = contentPath(workspaceId, id);
+    QFileInfo info(path);
+    if (!info.exists()) return Result<QString>::success({});
+    if (!info.isFile() || devhub::application::files::WorkspaceFilePolicy::hasLinkComponent(path) || info.size() > maximumBytes)
+        return noteFailure<QString>(QStringLiteral("This note exceeds the allowed read size."), id, QStringLiteral("read bounded note"));
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return noteFailure<QString>(QStringLiteral("DevHub could not read this note."), QStringLiteral("Note content is unavailable."), QStringLiteral("read bounded note"));
+    QByteArray bytes = file.read(maximumBytes + 1);
+    if (bytes.size() > maximumBytes) return noteFailure<QString>(QStringLiteral("This note exceeds the allowed read size."), id, QStringLiteral("read bounded note"));
+    if (bytes.startsWith(QByteArray::fromHex("efbbbf"))) bytes.remove(0, 3);
+    if (bytes.contains('\0')) return noteFailure<QString>(QStringLiteral("This note is not readable text."), id, QStringLiteral("read bounded note"));
+    const QString text = QString::fromUtf8(bytes.constData(), bytes.size());
+    if (text.toUtf8() != bytes) return noteFailure<QString>(QStringLiteral("This note is not valid UTF-8 text."), id, QStringLiteral("read bounded note"));
+    return Result<QString>::success(text);
 }
 
 Result<QString> NotesRepository::saveContent(const QString& workspaceId, const QString& id, const QString& content, const QString& expectedHash)

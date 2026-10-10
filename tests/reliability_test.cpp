@@ -81,6 +81,13 @@ class NotesRepository final : public INotesRepository
     {
         return Result<QString>::success(contents.value(id));
     }
+    Result<QString> readContentBounded(const QString& workspace, const QString& id, qint64 maximumBytes) override
+    {
+        auto value = readContent(workspace, id);
+        if (!value) return value;
+        if (value.value().toUtf8().size() > maximumBytes) return Result<QString>::failure({});
+        return value;
+    }
     Result<QString> saveContent(const QString &, const QString &id, const QString &text,
                                 const QString &) override
     {

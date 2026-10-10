@@ -18,6 +18,8 @@ public:
     [[nodiscard]] shared::common::Result<void> setPinned(const QString& workspaceId, const QString& id, bool pinned) override;
     [[nodiscard]] shared::common::Result<void> setTags(const QString& workspaceId, const QString& id, QStringList tags) override;
     [[nodiscard]] shared::common::Result<QString> readContent(const QString& workspaceId, const QString& id) override;
+    [[nodiscard]] shared::common::Result<QString> readContentBounded(const QString& workspaceId, const QString& id,
+        qint64 maximumBytes) override;
     [[nodiscard]] shared::common::Result<QString> saveContent(const QString& workspaceId, const QString& id,
         const QString& content, const QString& expectedHash) override;
     [[nodiscard]] QString contentPath(const QString& workspaceId, const QString& id) const override;

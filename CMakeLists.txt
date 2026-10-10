@@ -90,6 +90,10 @@ set(DEVHUB_ASSISTANT_SOURCES
     src/application/assistant/AssistantController.h
     src/application/assistant/AssistantController.cpp
     src/application/assistant/AssistantTypes.h
+    src/application/assistant/AssistantToolRegistry.h
+    src/application/assistant/AssistantToolRegistry.cpp
+    src/application/assistant/AssistantToolHandlers.h
+    src/application/assistant/AssistantToolHandlers.cpp
     src/application/assistant/ICodexTransport.h
     src/infrastructure/codex/CodexExecutableLocator.h
     src/infrastructure/codex/CodexExecutableLocator.cpp
@@ -108,9 +112,19 @@ set(DEVHUB_ASSISTANT_SOURCES
     resources/codex_contracts.qrc
 )
 
+add_library(devhub_file_services STATIC
+    src/application/files/WorkspaceFilePolicy.h
+    src/application/files/WorkspaceFilePolicy.cpp
+    src/application/files/WorkspaceFileService.h
+    src/application/files/WorkspaceFileService.cpp
+    src/application/notes/NoteSearchService.h
+    src/application/notes/NoteSearchService.cpp)
+target_include_directories(devhub_file_services PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(devhub_file_services PUBLIC project_options devhub_core Qt6::Core PRIVATE project_warnings)
+
 function(configure_devhub_assistant target)
     target_include_directories(${target} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(${target} PUBLIC project_options devhub_core Qt6::Core
+    target_link_libraries(${target} PUBLIC project_options devhub_core devhub_file_services Qt6::Core
         PRIVATE project_warnings devhub_database Qt6::Sql)
 endfunction()
 

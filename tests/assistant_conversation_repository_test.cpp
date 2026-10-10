@@ -1,4 +1,5 @@
 #include "../src/infrastructure/assistant/SqlConversationRepository.h"
+#include "../src/infrastructure/notes/NotesRepository.h"
 #include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
@@ -87,6 +88,34 @@ private slots:
         QObject::connect(&worker, &QThread::started, &worker,
             [&] { succeeded = repository.list(accountId, 5).hasValue(); worker.quit(); }, Qt::DirectConnection);
         worker.start(); QVERIFY(worker.wait(5000)); QVERIFY(!succeeded);
+    }
+    void boundedNoteReadsEnforceAccountWorkspaceTrashAndByteOwnership()
+    {
+        QTemporaryDir temp; QVERIFY(temp.isValid());
+        infrastructure::database::InternalDatabaseManager db(temp.filePath(QStringLiteral("db.sqlite")), temp.filePath(QStringLiteral("backups")));
+        auto opened = db.open(); QVERIFY2(opened, qPrintable(opened.error().technicalMessage)); QVERIFY(db.migrate());
+        const QString accountId = createAccount(db);
+        const auto parsed = domain::account::AccountId::fromString(accountId); QVERIFY(parsed);
+        const QString workspaceId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QSqlQuery workspace(db.database()); workspace.prepare(QStringLiteral(
+            "INSERT INTO workspaces(id,display_name,root_path,account_id,entered_path,canonical_root_path) VALUES(?,?,?,?,?,?)"));
+        workspace.addBindValue(workspaceId); workspace.addBindValue(QStringLiteral("Notes fixture"));
+        workspace.addBindValue(QStringLiteral("C:/fixture/notes")); workspace.addBindValue(accountId);
+        workspace.addBindValue(QStringLiteral("C:/fixture/notes")); workspace.addBindValue(QStringLiteral("C:/fixture/notes"));
+        QVERIFY(workspace.exec());
+        infrastructure::notes::NotesRepository repository(db, parsed.value(), temp.filePath(QStringLiteral("notes")));
+        const auto created = repository.create(workspaceId, {}, QStringLiteral("Bounded note"), application::notes::NoteNodeKind::Note);
+        QVERIFY(created);
+        QVERIFY(repository.saveContent(workspaceId, created.value().id, QStringLiteral("bounded body"), {}));
+        const auto bounded = repository.readContentBounded(workspaceId, created.value().id, 100);
+        QVERIFY(bounded); QCOMPARE(bounded.value(), QStringLiteral("bounded body"));
+        QVERIFY(!repository.readContentBounded(QUuid::createUuid().toString(QUuid::WithoutBraces), created.value().id, 100));
+        QVERIFY(!repository.readContentBounded(workspaceId, created.value().id, 2));
+        QVERIFY(repository.setTrashed(workspaceId, created.value().id, true));
+        QVERIFY(!repository.readContentBounded(workspaceId, created.value().id, 100));
+        const auto otherAccount = domain::account::AccountId::fromString(QUuid::createUuid().toString(QUuid::WithoutBraces)); QVERIFY(otherAccount);
+        infrastructure::notes::NotesRepository wrongAccount(db, otherAccount.value(), temp.filePath(QStringLiteral("other-notes")));
+        QVERIFY(!wrongAccount.readContentBounded(workspaceId, created.value().id, 100));
     }
 };
 

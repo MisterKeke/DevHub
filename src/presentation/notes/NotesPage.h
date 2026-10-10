@@ -54,6 +54,7 @@ private:
     void showTextCompare(const QString& title, const QString& text);
     void selectNodeInTree(const QString& id);
     void applySearchResults(const QStringList& contentMatches, const QString& needle);
+    void startPendingSearch();
     [[nodiscard]] QString journalPath(const QString& noteId) const;
     [[nodiscard]] QString selectedNodeId() const;
     [[nodiscard]] std::optional<application::notes::NoteNode> selectedNode() const;
@@ -80,6 +81,9 @@ private:
     bool m_includeTrash = false;
     quint64 m_searchGeneration = 0;
     std::shared_ptr<std::atomic_bool> m_searchCancellation;
+    std::optional<QString> m_pendingSearchNeedle;
+    QString m_activeSearchNeedle;
+    quint64 m_activeSearchGeneration = 0;
 };
 
 } // namespace devhub::presentation::notes
