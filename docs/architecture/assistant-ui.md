@@ -167,3 +167,15 @@ screen-reader review remain supplemental manual release checks; the deterministi
 checks do not certify those OS interactions. The harmless authenticated turn
 still requires the Phase 2 profile/model gate and explicit development opt-in.
 No native inference or GitHub access was performed.
+
+## CI verification follow-up (2026-10-11)
+
+The newer UI suite includes `installedNativeReconnectWithVisibleChat`, a separate
+opt-in native account/profile/catalog check. Its intentional default skip caused
+the DPI verifier's zero-skips gate to fail with `Incomplete Assistant UI
+verification at 100%`, despite 20 passing tests and no failures. The verifier now
+enumerates the test functions and runs every offline UI test, excluding only that
+named native probe. It continues to require zero failures/skips, the expected Qt
+runtime, and a newly generated snapshot at each scale. Unexpected skipped UI
+tests still fail verification. Failure output includes the test log and the
+missing evidence requirement; stale snapshots are removed before execution.

@@ -7,6 +7,8 @@ param(
     [string]$SignToolPath,
     [string]$CertificateThumbprint,
     [string]$TimestampServer = "http://timestamp.digicert.com",
+    [ValidateRange(1, 64)]
+    [int]$BuildParallelism = 4,
     [switch]$StageOnly,
     [switch]$PortableOnly
 )
@@ -92,7 +94,7 @@ try {
         "-DCMAKE_CXX_COMPILER=$cxxCompiler" `
         "-DCMAKE_RC_COMPILER=$resourceCompiler"
     if ($LASTEXITCODE -ne 0) { throw "CMake package configuration failed with exit code $LASTEXITCODE." }
-    & $CMakePath --build --preset windows-package-release
+    & $CMakePath --build --preset windows-package-release --parallel $BuildParallelism
     if ($LASTEXITCODE -ne 0) { throw "Release build failed with exit code $LASTEXITCODE." }
     if (Test-Path -LiteralPath $stageDirectory) {
         $resolvedOut = (Resolve-Path -LiteralPath (Join-Path $repoRoot "out")).Path

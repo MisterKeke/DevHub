@@ -59,6 +59,34 @@ class AssistantToolsTest final : public QObject
 {
     Q_OBJECT
 private slots:
+    void utf8RangesUseByteOffsetsAndNeverSplitCharacters() {
+        QTemporaryDir root; QVERIFY(root.isValid());
+        QFile file(root.filePath("utf8.txt")); QVERIFY(file.open(QIODevice::WriteOnly));
+        const QByteArray source = QStringLiteral("Aé🙂中Z").toUtf8();
+        QCOMPARE(file.write(QByteArray::fromHex("efbbbf") + source), source.size() + 3);
+        file.close();
+        WorkspaceFileService service{WorkspaceFilePolicy(root.path())};
+        auto range = service.readRange("utf8.txt", 3, 4);
+        QVERIFY(range.readable); QCOMPARE(range.bytes, QStringLiteral("🙂").toUtf8()); QVERIFY(range.truncated);
+        range = service.readRange("utf8.txt", 2, 5);
+        QCOMPARE(range.bytes, QStringLiteral("🙂").toUtf8()); QVERIFY(range.truncated);
+        QCOMPARE(service.readRange("utf8.txt", 1, 1).bytes, QByteArray{});
+        QCOMPARE(service.readRange("utf8.txt", 3, 4, 3).bytes, QByteArray{});
+        range = service.readRange("utf8.txt", 7, 4);
+        QCOMPARE(range.bytes, QStringLiteral("中Z").toUtf8()); QVERIFY(!range.truncated);
+        range = service.readRange("utf8.txt", source.size(), 10);
+        QVERIFY(range.readable); QVERIFY(range.bytes.isEmpty()); QVERIFY(!range.truncated);
+        QVERIFY(service.readRange("utf8.txt", 0, 0).bytes.isEmpty());
+        QVERIFY(!service.readRange("utf8.txt", -1, 1).readable);
+        QVERIFY(!service.readRange("missing.txt", 0, 1).readable);
+        // Every possible bounded range is a valid UTF-8 subsequence.
+        for (int offset = 0; offset <= source.size() + 1; ++offset)
+            for (int length = 0; length <= source.size() + 1; ++length) {
+                const auto bytes = service.readRange("utf8.txt", offset, length, 5).bytes;
+                QCOMPARE(QString::fromUtf8(bytes).toUtf8(), bytes);
+                QVERIFY(bytes.size() <= qMin(length, 5));
+            }
+    }
     void approvalExpiryToleratesReentrantRevocation() {
         AssistantApprovalCoordinator coordinator; int decisions = 0;
         ToolCall first; first.callId = "first"; first.name = "approved_edit"; first.expiresAtMonotonicMs = 100000;

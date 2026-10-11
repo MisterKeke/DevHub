@@ -726,6 +726,20 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(client.replies.size(), 4, 3000);
         const auto paths = responseBody(client.replies, 3).value(QStringLiteral("data")).toObject().value(QStringLiteral("paths")).toArray();
         QCOMPARE(paths.size(), 1); QCOMPARE(paths.first().toString(), relative);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write(QStringLiteral("Aé🙂中Z").toUtf8()); file.close();
+        client.call(5, QStringLiteral("devhub_files_read"), {{QStringLiteral("path"), relative},
+            {QStringLiteral("offset"), 3}, {QStringLiteral("length"), 4}});
+        QTRY_COMPARE_WITH_TIMEOUT(client.replies.size(), 5, 3000);
+        body = responseBody(client.replies, 4);
+        QVERIFY(body.value(QStringLiteral("success")).toBool());
+        QCOMPARE(body.value(QStringLiteral("data")).toObject().value(QStringLiteral("text")).toString(), QStringLiteral("🙂"));
+        client.call(6, QStringLiteral("devhub_files_read"), {{QStringLiteral("path"), relative},
+            {QStringLiteral("offset"), 1e30}});
+        QCOMPARE(client.replies.size(), 6);
+        body = responseBody(client.replies, 5);
+        QVERIFY(!body.value(QStringLiteral("success")).toBool());
+        QCOMPARE(body.value(QStringLiteral("data")).toObject().value(QStringLiteral("error")).toString(), QStringLiteral("invalid_arguments"));
     }
 
     void gitStatusUsesExistingServiceAndRejectsParentRepositoryExpansion()

@@ -43,18 +43,20 @@ WorkspaceFileRange WorkspaceFileService::readRange(const QString& relativePath, 
     WorkspaceFileRange result;
     if (offset < 0 || length < 0 || maximumReturnedBytes < 0) return result;
     const WorkspaceFileRead preview = readPreview(relativePath);
-    if (!preview.readable || offset > preview.text.size()) return result;
-    const qint64 rangeLength = std::min(length, static_cast<qint64>(preview.text.size()) - offset);
+    if (!preview.readable) return result;
+    result.readable = true;
+    const QByteArray utf8 = preview.text.toUtf8();
+    if (offset >= utf8.size()) return result;
     const qint64 byteCap = std::min<qint64>(maximumReturnedBytes, 64 * 1024);
-    qsizetype characters = static_cast<qsizetype>(rangeLength);
-    QString selected = preview.text.mid(static_cast<qsizetype>(offset), characters);
-    result.bytes = selected.toUtf8();
-    while (result.bytes.size() > byteCap && characters > 0) {
-        --characters;
-        selected = preview.text.mid(static_cast<qsizetype>(offset), characters);
-        result.bytes = selected.toUtf8();
-    }
-    result.truncated = characters < rangeLength || rangeLength < length || byteCap < maximumReturnedBytes;
+    qsizetype begin = static_cast<qsizetype>(offset);
+    qsizetype end = begin + static_cast<qsizetype>(std::min({length, byteCap, static_cast<qint64>(utf8.size()) - offset}));
+    const auto continuation = [&utf8](qsizetype position) {
+        return position < utf8.size() && (static_cast<unsigned char>(utf8.at(position)) & 0xC0) == 0x80;
+    };
+    while (begin < end && continuation(begin)) ++begin;
+    while (end > begin && continuation(end)) --end;
+    result.bytes = utf8.mid(begin, end - begin);
+    result.truncated = begin != offset || end < utf8.size();
     return result;
 }
 

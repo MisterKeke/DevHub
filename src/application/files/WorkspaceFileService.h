@@ -18,7 +18,7 @@ struct WorkspaceFileRead final {
     bool binary = false;
     bool tooLarge = false;
 };
-struct WorkspaceFileRange final { QByteArray bytes; bool truncated = false; };
+struct WorkspaceFileRange final { QByteArray bytes; bool truncated = false; bool readable = false; };
 struct WorkspaceFileSearchLimits final {
     int maximumDepth = 12;
     int maximumEntries = 10000;
@@ -38,6 +38,8 @@ public:
     explicit WorkspaceFileService(WorkspaceFilePolicy policy) : m_policy(std::move(policy)) {}
     [[nodiscard]] const WorkspaceFilePolicy& policy() const { return m_policy; }
     [[nodiscard]] WorkspaceFileRead readPreview(const QString& relativePath) const;
+    // Offsets/lengths count UTF-8 bytes after an optional BOM is removed.
+    // Both ends move inward to character boundaries; returned text is valid UTF-8.
     [[nodiscard]] WorkspaceFileRange readRange(const QString& relativePath, qint64 offset, qint64 length,
                                                qint64 maximumReturnedBytes = 64 * 1024) const;
     [[nodiscard]] WorkspaceFileSearchResult searchNames(const QString& query,

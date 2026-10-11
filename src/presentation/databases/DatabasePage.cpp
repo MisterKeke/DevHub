@@ -11,7 +11,9 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
+#include <QMenu>
 #include <QPlainTextEdit>
+#include <QPersistentModelIndex>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSplitter>
@@ -133,6 +135,16 @@ DatabasePage::DatabasePage(IDatabaseReferenceRepository& references, ISqliteConn
     m_table->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_table->horizontalHeader()->setStretchLastSection(true);
     m_table->setSortingEnabled(false);
+    m_table->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_table, &QWidget::customContextMenuRequested, this, [this](const QPoint& position) {
+        const QPersistentModelIndex cell(m_table->indexAt(position));
+        if (!cell.isValid()) return;
+        QMenu menu(m_table);
+        auto* setNull = menu.addAction(tr("Set Cell to SQL NULL"));
+        setNull->setEnabled(!m_commitPending && (m_tableModel->flags(cell) & Qt::ItemIsEditable));
+        if (menu.exec(m_table->viewport()->mapToGlobal(position)) == setNull && !m_commitPending)
+            m_tableModel->setData(cell, QVariant(QMetaType(QMetaType::QString)), Qt::EditRole);
+    });
     dataLayout->addWidget(m_table, 1);
     connect(m_table->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this] { updateModeUi(); });
     connect(m_tableModel, &QAbstractItemModel::dataChanged, this, [this] { updateModeUi(); });

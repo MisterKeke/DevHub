@@ -69,8 +69,9 @@ ToolDefinition definition(QString wireName, QString description, QJsonObject pro
                 if (text.size() < schema.value(QStringLiteral("minLength")).toInt()
                     || text.size() > schema.value(QStringLiteral("maxLength")).toInt()) return false;
             }
-            if (type == QStringLiteral("integer") && (it.value().toInt() < schema.value(QStringLiteral("minimum")).toInt()
-                || it.value().toInt() > schema.value(QStringLiteral("maximum")).toInt())) return false;
+            if (type == QStringLiteral("integer") && (!std::isfinite(it.value().toDouble())
+                || it.value().toDouble() < schema.value(QStringLiteral("minimum")).toDouble()
+                || it.value().toDouble() > schema.value(QStringLiteral("maximum")).toDouble())) return false;
         }
         *normalized = input;
         return true;
@@ -595,23 +596,16 @@ void AssistantToolRuntime::registerHandlers()
                 domain::errors::AppError::failure(domain::errors::ErrorCode::OperationCancelled, domain::errors::ErrorCategory::Internal,
                     QStringLiteral("Read cancelled."), {}, QStringLiteral("assistant file read")));
             files::WorkspaceFileService service(files::WorkspaceFilePolicy(call.scope.workspaceRoot()));
-            const auto preview = service.readPreview(call.arguments.value(QStringLiteral("path")).toString());
-            if (!preview.readable || preview.binary || preview.tooLarge) return Result<QJsonObject>::failure(
+            const auto range = service.readRange(call.arguments.value(QStringLiteral("path")).toString(),
+                call.arguments.value(QStringLiteral("offset")).toInteger(0),
+                call.arguments.value(QStringLiteral("length")).toInteger(64 * 1024), 24 * 1024);
+            if (!range.readable) return Result<QJsonObject>::failure(
                 domain::errors::AppError::failure(domain::errors::ErrorCode::PathUnavailable,
                     domain::errors::ErrorCategory::FileSystem, QStringLiteral("The selected file cannot be read as bounded UTF-8 text."),
                     {}, QStringLiteral("assistant file read")));
-            const QByteArray utf8 = preview.text.toUtf8();
-            const qsizetype offset = call.arguments.value(QStringLiteral("offset")).toInteger(0);
-            const qsizetype length = call.arguments.value(QStringLiteral("length")).toInteger(64 * 1024);
-            if (offset > utf8.size()) return Result<QJsonObject>::success({{QStringLiteral("text"), QString{}}, {QStringLiteral("truncated"), false}});
-            qsizetype begin = offset;
-            while (begin < utf8.size() && begin > 0 && (static_cast<unsigned char>(utf8.at(begin)) & 0xC0) == 0x80) ++begin;
-            qsizetype end = qMin<qsizetype>(utf8.size(), begin + qMin<qsizetype>(length, 24 * 1024));
-            while (end > begin && end < utf8.size() && (static_cast<unsigned char>(utf8.at(end)) & 0xC0) == 0x80) --end;
-            const QByteArray bytes = utf8.mid(begin, end - begin);
-            const QString text = QString::fromUtf8(bytes.constData(), bytes.size());
+            const QString text = QString::fromUtf8(range.bytes);
             return Result<QJsonObject>::success({{QStringLiteral("text"), text},
-                {QStringLiteral("truncated"), end < utf8.size()}});
+                {QStringLiteral("truncated"), range.truncated}});
         }, std::move(done));
     });
 

@@ -1,9 +1,16 @@
 #include "DatabaseTableModel.h"
 
 #include <algorithm>
+#include <QFont>
 
 namespace devhub::presentation::databases {
 using namespace application::databases;
+namespace {
+bool sameCellValue(const QVariant& left, const QVariant& right)
+{
+    return left.isValid() == right.isValid() && left.isNull() == right.isNull() && left == right;
+}
+}
 
 int DatabaseTableModel::rowCount(const QModelIndex& parent) const { return parent.isValid() ? 0 : static_cast<int>(m_rows.size()); }
 int DatabaseTableModel::columnCount(const QModelIndex& parent) const { return parent.isValid() ? 0 : static_cast<int>(m_headers.size()); }
@@ -14,14 +21,16 @@ QVariant DatabaseTableModel::data(const QModelIndex& index, int role) const
         || index.column() < 0 || index.column() >= m_headers.size()) return {};
     const QVariant value = m_rows.at(index.row()).at(index.column());
     if (role == Qt::EditRole) return value;
+    if (role == Qt::FontRole && value.isNull()) { QFont font; font.setItalic(true); return font; }
     if (role == Qt::ToolTipRole) {
+        if (value.isNull()) return tr("SQL NULL");
         if (value.metaType().id() == QMetaType::QByteArray) return tr("BLOB (%1 bytes)").arg(value.toByteArray().size());
         if (!m_insertRows.at(index.row()) && m_rows.at(index.row()) != m_originalRows.value(index.row()))
             return tr("Edited; changes are pending until Commit Changes.");
         return value.isNull() ? tr("SQL NULL") : value.toString();
     }
     if (role != Qt::DisplayRole) return {};
-    if (!value.isValid() || value.isNull()) return QStringLiteral("NULL");
+    if (!value.isValid() || value.isNull()) return tr("(SQL NULL)");
     if (value.metaType().id() == QMetaType::QByteArray) return tr("[BLOB, %1 bytes]").arg(value.toByteArray().size());
     return value.toString();
 }
@@ -54,10 +63,10 @@ Qt::ItemFlags DatabaseTableModel::flags(const QModelIndex& index) const
 
 QVariant DatabaseTableModel::typedValue(const QVariant& value, int column) const
 {
+    if (!value.isValid() || value.isNull()) return value;
     if (column < 0 || column >= m_columns.size()) return value;
     const QString type = m_columns.at(column).declaredType.toUpper();
     const QString text = value.toString();
-    if (text.compare(QStringLiteral("NULL"), Qt::CaseInsensitive) == 0) return QVariant(QMetaType(QMetaType::QString));
     if (type.contains(QStringLiteral("INT"))) {
         bool ok = false; const qlonglong number = text.toLongLong(&ok); if (ok) return number;
     } else if (type.contains(QStringLiteral("REAL")) || type.contains(QStringLiteral("FLOA")) || type.contains(QStringLiteral("DOUB")) || type.contains(QStringLiteral("NUM"))) {
@@ -68,14 +77,14 @@ QVariant DatabaseTableModel::typedValue(const QVariant& value, int column) const
 
 bool DatabaseTableModel::setData(const QModelIndex& index, const QVariant& value, int role)
 {
-    if (role != Qt::EditRole || !m_editMode || !index.isValid() || index.row() >= m_rows.size() || !hasStableIdentity()) return false;
+    if (role != Qt::EditRole || index.model() != this || !(flags(index) & Qt::ItemIsEditable)) return false;
     if (!m_insertRows.at(index.row())) {
         const QVariant current = m_rows.at(index.row()).at(index.column());
         if (current.toString().startsWith(QStringLiteral("[BLOB,"))
             || current.toString().contains(QStringLiteral("… [truncated]"))) return false;
     }
     const QVariant converted = typedValue(value, index.column());
-    if (m_rows[index.row()][index.column()] == converted) return true;
+    if (sameCellValue(m_rows[index.row()][index.column()], converted)) return true;
     m_rows[index.row()][index.column()] = converted;
     if (!m_insertRows.at(index.row())) {
         const auto key = identityFor(index.row());
@@ -84,12 +93,12 @@ bool DatabaseTableModel::setData(const QModelIndex& index, const QVariant& value
             return edit.primaryKey == key && edit.columnName == columnName;
         });
         const QVariant original = m_originalRows.at(index.row()).at(index.column());
-        if (converted == original) {
+        if (sameCellValue(converted, original)) {
             if (it != m_edits.end()) m_edits.erase(it);
         } else if (it != m_edits.end()) it->value = converted;
         else m_edits.append({key, columnName, converted, original});
     }
-    emit dataChanged(index, index, {Qt::DisplayRole, Qt::EditRole, Qt::ToolTipRole});
+    emit dataChanged(index, index, {Qt::DisplayRole, Qt::EditRole, Qt::ToolTipRole, Qt::FontRole});
     return true;
 }
 

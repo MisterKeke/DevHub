@@ -213,7 +213,8 @@ qt_add_executable(devhub_feature_tests
 )
 target_link_libraries(devhub_feature_tests PRIVATE devhub_services devhub_database
     Qt6::Core Qt6::Widgets Qt6::Sql Qt6::Test project_options project_warnings)
-add_test(NAME devhub.feature-regressions COMMAND devhub_feature_tests)
+add_test(NAME devhub.feature-regressions COMMAND devhub_feature_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/feature-regressions-tests.txt,txt")
 set_tests_properties(devhub.feature-regressions PROPERTIES
     TIMEOUT 45
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"

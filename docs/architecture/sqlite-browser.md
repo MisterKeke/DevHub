@@ -10,6 +10,11 @@ Visual editing requires explicit activation on a table with a declared primary k
 
 Paging supports 25, 50, 100, 250, and 500 rows. Leaving a grid with pending changes, including switching workspaces, signing out, or closing DevHub, requires confirmation before discarding them. Grid input is disabled while a page or commit is in flight, and editing an existing cell updates the Commit Changes button immediately.
 
+Typing `NULL` in a grid cell stores literal text. To stage SQL NULL, right-click
+an editable cell and choose **Set Cell to SQL NULL**. SQL NULL displays as italic
+`(SQL NULL)`; empty text remains a distinct value. The action uses the same
+pending-change and commit workflow as other cell edits.
+
 ## Current limits
 
 - SQL execution, counting, and paging use a native SQLite connection on the session worker. A progress callback supports Cancel SQL and enforces a ten-second execution deadline. Closing the session cancels these operations before joining the worker. Qt SQL continues to handle metadata, backups, and visual commits.

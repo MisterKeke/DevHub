@@ -110,3 +110,24 @@ does not establish passing evidence. Output is
 sanitized and excludes transcript, account identity, thread IDs, raw
 configuration, and credentials. The development-validation policy is test
 infrastructure only; it is not release evidence or production approval.
+
+## Strict release verification runner
+
+Use `tools/verify-assistant-live.ps1` after authenticating the disposable profile.
+It checks the exact native version, refuses the default home and invalid markers,
+sets/restores the harness opt-ins, and requires zero failures and zero skips plus
+the successful handshake/stream/Stop/resume/read-tool/read-lifecycle result.
+A QtTest skip exits successfully at the process level, so checking only
+`$LASTEXITCODE` is insufficient for this release gate.
+
+```powershell
+./tools/verify-assistant-live.ps1 `
+  -TestExecutable out/build/windows-dev/tests/Debug/devhub_assistant_live_tests.exe `
+  -CodexExecutable $codexExe -CodexHome $liveHome `
+  -ExpectedVersion 0.162.0-alpha.17.2 -QtRoot D:/Qt/6.11.0/mingw_64 `
+  -OutputDirectory out/assistant-live-alpha
+```
+
+Repeat with the exact `0.160.1` executable and its separately authenticated
+disposable profile to cover the other supported version. The runner never logs
+in, copies credentials, or treats offline native checks as authenticated results.
