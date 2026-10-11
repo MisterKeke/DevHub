@@ -42,6 +42,7 @@ signals:
     void loginFinished(QString loginId, bool success);
     void modelsReceived(CodexModelPage page);
     void profileChecked(bool accepted, QStringList reasons);
+    void restrictedLaunchRequired(QStringList arguments, quint64 processGeneration);
     void threadReceived(CodexThread thread);
     void turnAccepted(QString threadId, QString turnId);
     void itemChanged(CodexItem item);

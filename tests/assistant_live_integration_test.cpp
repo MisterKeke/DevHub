@@ -306,10 +306,10 @@ private slots:
         QVERIFY(m_client->account().requiresOpenaiAuth);
         QVERIFY(!m_client->account().identityFingerprint.isEmpty());
 
-        // The dedicated library has a separate development-validation policy.
-        // The production release gate stays closed and is not modified here.
-        QVERIFY2(!CodexRuntimeProfile::liveInferenceApproved(),
-            "Developer validation must not change production release approval.");
+        // The dedicated library retains explicit development-validation opt-in
+        // even though the normal production alpha now admits verified chat.
+        QVERIFY2(!CodexRuntimeProfile::productionChatEnabled("0.162.0-alpha.17.2"),
+            "Developer validation must retain its disposable-profile opt-in.");
         QVERIFY2(m_client->canStartConversation(),
             "Live inference requires the explicit build, executable, capability, account, and disposable-home gates.");
         QTRY_VERIFY_WITH_TIMEOUT(m_controller->canSend(), 15000);

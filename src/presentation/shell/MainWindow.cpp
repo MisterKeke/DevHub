@@ -54,6 +54,7 @@
 #include <QSettings>
 #include <QSplitter>
 #include <QStackedWidget>
+#include "presentation/widgets/CurrentPageStack.h"
 #include <QStatusBar>
 #include <QMessageBox>
 #include <QDir>
@@ -425,7 +426,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         .arg(ThemePalette::color(ColorToken::TextMuted).name()));
     headerLayout->addWidget(appMeta);
     contentLayout->addWidget(header);
-    m_pageHost = new QStackedWidget(content);
+    m_pageHost = new devhub::presentation::widgets::CurrentPageStack(content);
     m_pageHost->setObjectName(QStringLiteral("mainPageHost"));
     m_overviewComposer = new application::overview::OverviewStateComposer(this);
     m_overviewPage = new devhub::presentation::overview::OverviewPage(*m_commandRegistry, m_pageHost);
@@ -987,6 +988,17 @@ void MainWindow::selectQuickModule(int index)
         tr("Overview"), tr("Git"), tr("Services"), tr("Ports"), tr("Logs"),
         tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant")}.at(index)));
     m_moduleWindow->show();
+    // Clamp the complete decorated window to the current monitor's work area.
+    if (auto* targetScreen = screen()) {
+        const QRect available = targetScreen->availableGeometry();
+        const QSize decoration = m_moduleWindow->frameGeometry().size() - m_moduleWindow->size();
+        const QSize limit = available.size() - decoration;
+        m_moduleWindow->resize(m_moduleWindow->size().boundedTo(limit));
+        const QSize frame = m_moduleWindow->frameGeometry().size();
+        const QPoint position(qBound(available.left(), m_moduleWindow->frameGeometry().left(), qMax(available.left(), available.right() - frame.width() + 1)),
+                              qBound(available.top(), m_moduleWindow->frameGeometry().top(), qMax(available.top(), available.bottom() - frame.height() + 1)));
+        m_moduleWindow->move(position);
+    }
     m_moduleWindow->raise();
     m_moduleWindow->activateWindow();
 }

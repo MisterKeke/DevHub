@@ -33,7 +33,9 @@ public:
     [[nodiscard]] bool canStartConversation() const override;
     [[nodiscard]] int pendingRequestCount() const { return static_cast<int>(m_pending.size()); }
     [[nodiscard]] quint64 ignoredMessageCount() const { return m_ignored; }
-    [[nodiscard]] application::assistant::CodexAccount account() const override { return m_account; }
+    [[nodiscard]] application::assistant::CodexAccount account() const override
+    { return m_accountRefreshPending && m_account.mode == application::assistant::CodexAccountMode::ChatGpt
+        ? application::assistant::CodexAccount{} : m_account; }
     [[nodiscard]] application::assistant::CodexThreadBinding threadBinding() const override { return m_thread; }
     [[nodiscard]] QString activeTurnId() const override { return m_turnId; }
     [[nodiscard]] quint64 processGeneration() const override { return m_generation; }
@@ -54,14 +56,18 @@ private:
         QString expectedThread = {}, QString argument = {});
     [[nodiscard]] bool hasPending(Operation operation) const;
     [[nodiscard]] bool bindingMatches(const application::assistant::CodexThreadBinding& binding) const;
+    [[nodiscard]] bool matchesScratchDirectory(const QString& path) const;
     [[nodiscard]] bool liveInferenceGateOpen() const;
     void receive(const QJsonObject& object, quint64 generation);
+    [[nodiscard]] bool scopeMessage(const QJsonObject& object) const;
     void response(const QJsonObject& object);
     void notification(const QJsonObject& object);
     void serverRequest(const QJsonObject& object);
     [[nodiscard]] bool decodeResult(qint64 id, const Pending& pending, const QJsonObject& result);
-    [[nodiscard]] bool decodeThread(const QJsonObject& value, application::assistant::CodexThread& thread) const;
-    [[nodiscard]] bool decodeTurn(const QJsonObject& value, const QString& threadId, application::assistant::CodexTurn& turn) const;
+    [[nodiscard]] bool decodeThread(const QJsonObject& value, application::assistant::CodexThread& thread,
+        bool allowUnassignedEnvironments, bool allowScratchEnvironment = false) const;
+    [[nodiscard]] bool decodeTurn(const QJsonObject& value, const QString& threadId, application::assistant::CodexTurn& turn,
+        bool live = false) const;
     [[nodiscard]] bool decodeItem(const QJsonObject& value, const QString& threadId, const QString& turnId,
         application::assistant::CodexItem& item) const;
     void turnEvent(const QJsonObject& object);
@@ -88,6 +94,11 @@ private:
     QList<QJsonObject> m_earlyTurns;
     QList<QJsonObject> m_earlyLogins;
     qsizetype m_earlyBytes = 0;
+    // Outbound tool results share the same bounded account-verification queue.
+    // Direction is internal state, never a field supplied by the native peer.
+    QList<QPair<bool, QJsonObject>> m_accountDeferred;
+    qsizetype m_accountDeferredBytes = 0;
+    bool m_accountRefreshPending = false;
     qsizetype m_earlyLoginBytes = 0;
     QElapsedTimer m_clock;
     QTimer m_deadlineTimer;
@@ -110,6 +121,7 @@ private:
     QString m_scratch;
     QString m_expectedHome;
     QString m_profileFingerprint;
+    QStringList m_launchArguments;
     application::assistant::CodexInitializeInfo m_initializeInfo;
     application::assistant::CodexAccount m_account;
     application::assistant::CodexThreadBinding m_thread;

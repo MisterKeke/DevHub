@@ -44,6 +44,35 @@ private:
 class AssistantClientTest final : public QObject {
     Q_OBJECT
 private slots:
+    void nativeAlphaOfflineInheritedProfile() {
+        const auto executable = qEnvironmentVariable("DEVHUB_OFFLINE_CODEX_EXE");
+        if (executable.isEmpty()) QSKIP("Explicit native executable required; no inference or authentication.");
+        QTemporaryDir home; QTemporaryDir scratch; QVERIFY(home.isValid() && scratch.isValid());
+        QFile config(home.filePath("config.toml")); QVERIFY(config.open(QIODevice::WriteOnly));
+        config.write("notify = [\"nonexistent-notification-command\"]\n"
+            "[mcp_servers.inherited]\ncommand = \"nonexistent-mcp-command\"\nenabled = true\n"
+            "[desktop]\nambient-suggestions-enabled = true\nsansFontSize = 13\ncodeFontSize = 12\nconversationDetailMode = \"normal\"\nfollowUpQueueMode = \"queue\"\n");
+        config.write(QStringLiteral("[mcp_servers.\"name.with.dots\"]\ncommand=\"nonexistent-mcp-command\"\n"
+            "[mcp_servers.\"quote\\\"name\"]\ncommand=\"nonexistent-mcp-command\"\n"
+            "[mcp_servers.\"native İ\"]\ncommand=\"nonexistent-mcp-command\"\n").toUtf8()); config.close();
+        auto environment = codexBaseEnvironment(QProcessEnvironment::systemEnvironment()); environment.insert("CODEX_HOME", home.path());
+        CodexProcess process; CodexClient client(process);
+        QVERIFY(client.configureDynamicTools(AssistantToolRuntime::experimentalToolSpecifications()));
+        QSignalSpy checked(&client, &ICodexClient::profileChecked), retry(&client, &ICodexClient::restrictedLaunchRequired), stopped(&client, &ICodexClient::backendStopped);
+        QVERIFY(client.launch({{executable, "0.162.0-alpha.17.2"}, CodexRuntimeProfile::launchArguments().value(), scratch.path(), environment, 1}));
+        QTRY_COMPARE_WITH_TIMEOUT(retry.size(), 1, 15000); QVERIFY(!client.profileVerified());
+        QCOMPARE(checked.first().at(1).toStringList(), QStringList{"inherited-mcp-enabled"});
+        const auto arguments = retry.first().first().toStringList(); QVERIFY(CodexRuntimeProfile::acceptsLaunch(arguments));
+        client.stop(); QTRY_COMPARE_WITH_TIMEOUT(stopped.size(), 1, 10000); checked.clear();
+        QVERIFY(client.launch({{executable, "0.162.0-alpha.17.2"}, arguments, scratch.path(), environment, 2}));
+        QTRY_VERIFY_WITH_TIMEOUT(!checked.isEmpty(), 15000);
+        QVERIFY2(client.profileVerified(), qPrintable(checked.first().at(1).toStringList().join(',')));
+        QVERIFY(!client.canStartConversation()); // Disposable profile is signed out.
+        client.stop(); QTRY_COMPARE_WITH_TIMEOUT(stopped.size(), 2, 10000);
+        QVERIFY(config.open(QIODevice::ReadOnly));
+        const auto original = config.readAll(); QVERIFY(original.contains("ambient-suggestions-enabled = true"));
+        QVERIFY(original.contains("enabled = true")); QVERIFY(original.contains("nonexistent-notification-command"));
+    }
     void nativeAlphaOfflineProfile()
     {
         const QString executable = qEnvironmentVariable("DEVHUB_OFFLINE_CODEX_EXE");
@@ -178,7 +207,7 @@ private slots:
         QVERIFY(!s.client.startThread("fixture-model")); s.reply("config/read", safeConfig()); QVERIFY(!s.client.profileVerified());
         s.reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)}}); QVERIFY(s.client.profileVerified()); QVERIFY(s.openThread());
         QVERIFY(s.client.canSend()); s.transport.native = true; QVERIFY(!s.client.canSend()); QVERIFY(!s.client.startTurn("hello"));
-        QVERIFY(!CodexRuntimeProfile::liveInferenceApproved());
+        QVERIFY(!CodexRuntimeProfile::productionChatEnabled("0.160.1"));
     }
     void productionBuildCannotEnableLiveValidationFromEnvironmentOrSettings()
     {
@@ -192,7 +221,7 @@ private slots:
         disposableAck.set("I_CREATED_THIS_DISPOSABLE_PROFILE");
 
         QVERIFY(!CodexRuntimeProfile::developmentLiveValidationBuild());
-        QVERIFY(!CodexRuntimeProfile::liveInferenceApproved());
+        QVERIFY(!CodexRuntimeProfile::productionChatEnabled("0.160.1"));
         QVERIFY(!CodexRuntimeProfile::developmentLiveInferenceAuthorized(
             QStringLiteral("C:/fixture/codex.exe"), QStringLiteral("0.160.1"), QProcessEnvironment{}));
 
@@ -209,6 +238,71 @@ private slots:
     {
         QTest::addColumn<QString>("variant");
         for (const auto& name : {"shell", "mcp", "notify", "managed", "unknown layer", "missing layers", "attached", "provider", "missing features"}) QTest::newRow(name) << QString::fromLatin1(name);
+    }
+    void nativeProductionAdmission_data() {
+        QTest::addColumn<QString>("version"); QTest::addColumn<bool>("enabled");
+        QTest::newRow("legacy-inspection-only") << QString("0.160.1") << false;
+        QTest::newRow("requested-alpha") << QString("0.162.0-alpha.17.2") << true;
+    }
+    void nativeProductionAdmission() {
+        QFETCH(QString, version); QFETCH(bool, enabled);
+        Session s; s.transport.native = true;
+        QVERIFY(s.client.launch(s.spec(1, CodexRuntimeProfile::launchArguments().value(), version)));
+        s.reply("initialize", {{"codexHome", s.scratch.path()}, {"userAgent", "fixture"}, {"platformFamily", "windows"}, {"platformOs", "windows"}});
+        s.reply("account/read", chatGptAccount()); s.reply("config/read", safeConfig());
+        QVERIFY(!s.client.canStartConversation()); // Both profile responses required.
+        s.reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)}});
+        QCOMPARE(CodexRuntimeProfile::productionChatEnabled(version), enabled);
+        QCOMPARE(s.client.canStartConversation(), enabled); QVERIFY(!s.client.canSend());
+        QCOMPARE(bool(s.client.startThread("fixture-model")), enabled);
+        if (!enabled) { QVERIFY(!s.client.startTurn("blocked")); return; }
+        s.reply("thread/start", s.threadResult()); QVERIFY(s.client.canSend());
+        QVERIFY(s.beginTurn()); QVERIFY(!s.client.canSend());
+        s.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", turn("turn-1", "completed")}});
+        QVERIFY(s.client.canSend());
+        s.transport.event("account/updated", {{"authMode", QJsonValue(QJsonValue::Null)}});
+        QVERIFY(!s.client.canSend()); QVERIFY(!s.client.canStartConversation());
+    }
+    void desktopPreferencesDoNotAttachCapabilities_data() {
+        QTest::addColumn<QJsonObject>("desktop"); QTest::addColumn<bool>("accepted");
+        QTest::newRow("known-appearance") << QJsonObject{{"ambient-suggestions-enabled", false}, {"sansFontSize", 13}, {"codeFontSize", 12}, {"conversationDetailMode", "normal"}, {"followUpQueueMode", "queue"}} << true;
+        QTest::newRow("ambient-enabled") << QJsonObject{{"ambient-suggestions-enabled", true}} << false;
+        QTest::newRow("unknown-field") << QJsonObject{{"attached", true}} << false;
+        QTest::newRow("bad-font") << QJsonObject{{"sansFontSize", "13"}} << false;
+        QTest::newRow("oversized-font") << QJsonObject{{"sansFontSize", 10000}} << false;
+    }
+    void desktopPreferencesDoNotAttachCapabilities() {
+        QFETCH(QJsonObject, desktop); QFETCH(bool, accepted);
+        auto result = safeConfig(); auto config = result.value("config").toObject(); config.insert("desktop", desktop); result.insert("config", config);
+        QCOMPARE(CodexRuntimeProfile::rejectionReasons(result, {}).isEmpty(), accepted);
+        config.insert("computer_use", QJsonObject{{"attached", true}}); result.insert("config", config);
+        QVERIFY(!CodexRuntimeProfile::rejectionReasons(result, {}).isEmpty());
+    }
+    void inheritedMcpRequestsRestrictedRelaunch_data() {
+        QTest::addColumn<QString>("variant"); QTest::addColumn<bool>("retry");
+        QTest::newRow("valid") << QString("valid") << true;
+        QTest::newRow("unsafe-policy") << QString("unsafe") << false;
+        QTest::newRow("invalid-name") << QString("invalid") << false;
+        QTest::newRow("too-many") << QString("too-many") << false;
+    }
+    void inheritedMcpRequestsRestrictedRelaunch() {
+        QFETCH(QString, variant); QFETCH(bool, retry); Session s; QVERIFY(s.start());
+        QSignalSpy adjustment(&s.client, &ICodexClient::restrictedLaunchRequired);
+        auto result = safeConfig(); auto config = result.value("config").toObject();
+        QJsonObject servers{{"name.with.dots", QJsonObject{{"enabled", true}}}};
+        if (variant == "unsafe") config.insert("notify", QJsonArray{"private-command"});
+        if (variant == "invalid") servers.insert("bad\nname", QJsonObject{{"enabled", true}});
+        if (variant == "too-many") for (int i = 0; i < 65; ++i) servers.insert(QString::number(i), QJsonObject{});
+        config.insert("mcp_servers", servers); result.insert("config", config);
+        s.reply("config/read", result); s.reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)}});
+        QVERIFY(!s.client.profileVerified()); QVERIFY(!s.client.canStartConversation());
+        QCOMPARE(adjustment.size(), retry ? 1 : 0);
+        if (retry) {
+            const auto arguments = adjustment.first().first().toStringList();
+            QVERIFY(CodexRuntimeProfile::acceptsLaunch(arguments));
+            QVERIFY(arguments.contains("mcp_servers={\"name.with.dots\"={enabled=false}}"));
+            QCOMPARE(adjustment.first().at(1).toULongLong(), quint64(1));
+        }
     }
     void localSystemLayerAndLoginConstraints_data()
     {
@@ -253,7 +347,11 @@ private slots:
     void launchOverrideValidationAndMcpQuoting()
     {
         Session s; auto args = CodexRuntimeProfile::launchArguments({"name.with.dots", "quote\"name", "native İ"}); QVERIFY(args);
-        QVERIFY(CodexRuntimeProfile::acceptsLaunch(args.value())); QVERIFY(args.value().contains("mcp_servers.\"name.with.dots\".enabled=false"));
+        QVERIFY(CodexRuntimeProfile::acceptsLaunch(args.value())); QVERIFY(args.value().last().contains("\"name.with.dots\"={enabled=false}"));
+        for (const auto& bad : {"mcp_servers={\"name\"={enabled=true}}", "mcp_servers={\"name\"={enabled=false},}", "mcp_servers={\"name\"={enabled=false,command=\"unsafe\"}}", "mcp_servers={\"name\"={enabled=false}},features.shell_tool=true"}) {
+            auto malformed = CodexRuntimeProfile::launchArguments().value(); malformed << "-c" << bad;
+            QVERIFY(!CodexRuntimeProfile::acceptsLaunch(malformed));
+        }
         QVERIFY(!CodexRuntimeProfile::launchArguments({"bad\nname"}));
         auto unsafe = args.value(); unsafe << "-c" << "features.shell_tool=true"; QVERIFY(!s.client.launch(s.spec(1, unsafe)));
         QCOMPARE(s.transport.sent.size(), 0); QVERIFY(s.client.launch(s.spec(1, args.value())));
@@ -492,6 +590,132 @@ private slots:
         if (status == "failed") { QCOMPARE(s.client.account().mode, CodexAccountMode::Expired); QVERIFY(!s.client.canSend()); QVERIFY(!value.error.userMessage.contains("secret")); }
         s.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", final}}); QCOMPARE(finished.size(), 1);
     }
+    void returnedThreadDirectoryScope_data()
+    {
+        QTest::addColumn<QString>("operation"); QTest::addColumn<bool>("outer");
+        QTest::addColumn<QString>("variant"); QTest::addColumn<bool>("accepted");
+        QStringList variants{"canonical", "other-directory", "relative", "missing"};
+#ifdef Q_OS_WIN
+        variants.append({"native-separators", "case", "extended-path"});
+#endif
+        for (const auto& operation : {QStringLiteral("thread/start"), QStringLiteral("thread/resume"), QStringLiteral("thread/read")})
+            for (const bool outer : {false, true}) {
+                if (outer && operation == "thread/read") continue;
+                for (const auto& variant : variants) {
+                    const auto name = (operation + (outer ? "/result/" : "/thread/") + variant).toUtf8();
+                    QTest::newRow(name.constData()) << operation << outer << variant
+                        << (variant == "canonical" || variant == "native-separators" || variant == "case" || variant == "extended-path");
+                }
+            }
+    }
+    void returnedThreadDirectoryScope()
+    {
+        QFETCH(QString, operation); QFETCH(bool, outer); QFETCH(QString, variant); QFETCH(bool, accepted);
+        Session s; QTemporaryDir other; QVERIFY(other.isValid()); QVERIFY(s.ready());
+        if (operation != "thread/start") QVERIFY(s.openThread());
+        const auto binding = s.client.threadBinding();
+        QSignalSpy received(&s.client, &CodexClient::threadReceived), failed(&s.client, &CodexClient::protocolFailed);
+        const auto requested = operation == "thread/start" ? s.client.startThread("fixture-model")
+            : operation == "thread/resume" ? s.client.resumeThread(binding) : s.client.readThread(binding);
+        QVERIFY(requested);
+        auto path = s.scratch.path();
+        if (variant == "other-directory") path = other.path();
+        else if (variant == "relative") path = QFileInfo(path).fileName();
+        else if (variant == "missing") path = s.scratch.filePath("missing");
+        else if (variant == "native-separators") path = QDir::toNativeSeparators(path);
+        else if (variant == "case") path = path.toUpper();
+        else if (variant == "extended-path") path = QStringLiteral("\\\\?\\") + QDir::toNativeSeparators(path);
+        auto thread = s.thread(); auto result = s.threadResult(thread);
+        if (outer) result.insert("cwd", path);
+        else { thread.insert("cwd", path); result.insert("thread", thread); }
+        if (operation == "thread/read") result = {{"thread", thread}};
+        s.reply(operation, result);
+        QCOMPARE(received.size(), accepted ? 1 : 0); QCOMPARE(failed.size(), accepted ? 0 : 1);
+        QCOMPARE(s.client.isInitialized(), accepted);
+        if (accepted) { QVERIFY(s.client.canSend()); QCOMPARE(s.client.threadBinding().scratchDirectory, QFileInfo(s.scratch.path()).canonicalFilePath()); }
+    }
+    void persistedEnvironmentAssignments_data()
+    {
+        QTest::addColumn<QString>("operation"); QTest::addColumn<QString>("variant"); QTest::addColumn<QString>("version");
+        for (const auto& version : {QStringLiteral("0.160.1"), QStringLiteral("0.162.0-alpha.17.2")})
+        for (const auto& operation : {QStringLiteral("thread/start"), QStringLiteral("thread/resume"), QStringLiteral("thread/read")})
+            for (const auto& variant : {QStringLiteral("null"), QStringLiteral("absent"), QStringLiteral("assigned")})
+                QTest::newRow((version + '/' + operation + '/' + variant).toUtf8().constData()) << operation << variant << version;
+    }
+    void persistedEnvironmentAssignments()
+    {
+        QFETCH(QString, operation); QFETCH(QString, variant); QFETCH(QString, version);
+        Session s; QVERIFY(s.ready(chatGptAccount(), version)); if (operation != "thread/start") QVERIFY(s.openThread());
+        QSignalSpy received(&s.client, &CodexClient::threadReceived), failed(&s.client, &CodexClient::protocolFailed);
+        const auto binding = s.client.threadBinding();
+        QVERIFY(operation == "thread/start" ? s.client.startThread("fixture-model")
+            : operation == "thread/resume" ? s.client.resumeThread(binding) : s.client.readThread(binding));
+        auto thread = s.thread("thread-1", QJsonArray{turn("previous", "interrupted")});
+        if (variant == "null") thread.insert("environments", QJsonValue(QJsonValue::Null));
+        else if (variant == "absent") thread.remove("environments");
+        else thread.insert("environments", QJsonArray{QJsonObject{{"environmentId", "foreign"}, {"cwd", "C:/foreign"}, {"runtimeWorkspaceRoots", QJsonArray{}}}});
+        s.reply(operation, operation == "thread/read" ? QJsonObject{{"thread", thread}} : s.threadResult(thread));
+        const bool accepted = operation != "thread/start" && variant != "assigned";
+        QCOMPARE(received.size(), accepted ? 1 : 0); QCOMPARE(failed.size(), accepted ? 0 : 1);
+        if (accepted) {
+            QVERIFY(s.client.canSend()); QVERIFY(s.client.startTurn("fixture prompt"));
+            QCOMPARE(s.transport.lastRequest("turn/start").value("params").toObject().value("environments"), QJsonValue(QJsonArray{}));
+        }
+    }
+    void alphaResumeCompletePageAndScratchEnvironment_data()
+    {
+        QTest::addColumn<QString>("variant");
+        for (const auto& value : {"complete", "legacy with full page", "unknown history mode", "no page", "next page", "too many turns", "duplicate turn", "summary items",
+            "not loaded items", "active turn", "unsafe item", "foreign environment", "environment roots", "multiple environments",
+            "wrong thread", "wrong cwd", "wrong provider", "writable sandbox", "network", "runtime roots"})
+            QTest::newRow(value) << QString::fromLatin1(value);
+    }
+    void alphaResumeCompletePageAndScratchEnvironment()
+    {
+        QFETCH(QString, variant);
+        CodexClientLimits limits; limits.historyTurns = 2;
+        Session s(limits); QVERIFY(s.ready(chatGptAccount(), "0.162.0-alpha.17.2")); QVERIFY(s.openThread());
+        QVERIFY(s.client.resumeThread(s.client.threadBinding()));
+        QCOMPARE(s.transport.lastRequest("thread/resume").value("params").toObject().value("initialTurnsPage").toObject(),
+            (QJsonObject{{"itemsView", "full"}, {"limit", 3}, {"sortDirection", "asc"}}));
+        auto thread = s.thread(); thread.insert("historyMode", "paginated");
+        if (variant == "legacy with full page") thread.insert("historyMode", "legacy");
+        if (variant == "unknown history mode") thread.insert("historyMode", "unknown");
+        QJsonObject environment{{"environmentId", "local"}, {"cwd", s.scratch.path()}, {"runtimeWorkspaceRoots", QJsonArray{}}};
+        if (variant == "foreign environment") environment.insert("cwd", "C:/foreign");
+        if (variant == "environment roots") environment.insert("runtimeWorkspaceRoots", QJsonArray{s.scratch.path()});
+        thread.insert("environments", variant == "multiple environments" ? QJsonArray{environment, environment} : QJsonArray{environment});
+        if (variant == "wrong thread") thread.insert("id", "other-thread");
+        if (variant == "wrong cwd") thread.insert("cwd", "C:/foreign");
+        if (variant == "wrong provider") thread.insert("modelProvider", "other-provider");
+        auto historical = turn("previous", "interrupted", QJsonArray{agent("stored-agent", "restored text")});
+        historical.insert("itemsView", "full");
+        if (variant == "summary items") historical.insert("itemsView", "summary");
+        if (variant == "not loaded items") historical.insert("itemsView", "notLoaded");
+        if (variant == "active turn") historical.insert("status", "inProgress");
+        if (variant == "unsafe item") historical.insert("items", QJsonArray{QJsonObject{{"type", "imageView"}, {"id", "image"}, {"path", "outside"}}});
+        QJsonArray data{historical};
+        if (variant == "duplicate turn") data.append(historical);
+        if (variant == "too many turns") { data.append(turn("second", "completed")); data.append(turn("third", "completed")); }
+        auto result = s.threadResult(thread);
+        result.insert("initialTurnsPage", QJsonObject{{"data", data}, {"nextCursor", variant == "next page" ? QJsonValue("more") : QJsonValue(QJsonValue::Null)},
+            {"backwardsCursor", "boundary"}});
+        result.insert("turnsBackwardsCursor", "boundary"); result.insert("itemsBackwardsCursor", "item-boundary");
+        if (variant == "no page") result.insert("initialTurnsPage", QJsonValue(QJsonValue::Null));
+        if (variant == "writable sandbox") result.insert("sandbox", QJsonObject{{"type", "dangerFullAccess"}});
+        if (variant == "network") result.insert("sandbox", QJsonObject{{"type", "readOnly"}, {"networkAccess", true}});
+        if (variant == "runtime roots") result.insert("runtimeWorkspaceRoots", QJsonArray{s.scratch.path()});
+        QSignalSpy received(&s.client, &CodexClient::threadReceived), failed(&s.client, &CodexClient::protocolFailed);
+        s.reply("thread/resume", result);
+        const bool accepted = variant == "complete" || variant == "legacy with full page";
+        QCOMPARE(received.size(), accepted ? 1 : 0); QCOMPARE(failed.size(), accepted ? 0 : 1);
+        if (accepted) {
+            const auto restored = qvariant_cast<CodexThread>(received.first().first());
+            QCOMPARE(restored.turns.size(), 1); QCOMPARE(restored.turns.first().items.first().text, QStringLiteral("restored text"));
+            QVERIFY(s.client.canSend()); QVERIFY(s.client.startTurn("fixture prompt"));
+            QCOMPARE(s.transport.lastRequest("turn/start").value("params").toObject().value("environments"), QJsonValue(QJsonArray{}));
+        } else QVERIFY(!s.client.canSend());
+    }
     void scopedResumeReadHistoryAndAccountChanges()
     {
         Session s; QVERIFY(s.ready()); QVERIFY(s.openThread()); const auto binding = s.client.threadBinding();
@@ -514,7 +738,8 @@ private slots:
         QFETCH(QString, variant); CodexClientLimits limits; limits.historyTurns = 1; Session s(limits); QVERIFY(s.ready()); QVERIFY(s.openThread());
         QSignalSpy failed(&s.client, &CodexClient::protocolFailed); QVERIFY(s.client.readThread(s.client.threadBinding())); auto value = s.thread();
         if (variant == "paginated") value.insert("historyMode", "paginated");
-        if (variant == "environments") value.insert("environments", QJsonValue(QJsonValue::Null));
+        if (variant == "environments") value.insert("environments", QJsonArray{QJsonObject{
+            {"environmentId", "foreign"}, {"cwd", "C:/foreign"}, {"runtimeWorkspaceRoots", QJsonArray{}}}});
         if (variant == "wrong thread") value.insert("id", "other-thread");
         if (variant == "too many turns") value.insert("turns", QJsonArray{turn("old-1", "completed"), turn("old-2", "completed")});
         if (variant == "unsafe item") value.insert("turns", QJsonArray{turn("old-1", "completed", QJsonArray{QJsonObject{{"type", "imageView"}, {"id", "image"}, {"path", "outside"}}})});
@@ -633,7 +858,11 @@ private slots:
     {
         QFETCH(bool, notification); Session s; QVERIFY(s.ready()); QVERIFY(s.openThread()); QVERIFY(s.beginTurn());
         QSignalSpy finished(&s.client, &CodexClient::turnFinished); QSignalSpy changed(&s.client, &CodexClient::itemChanged);
-        if (notification) s.transport.event("account/updated", {{"authMode", "chatgpt"}});
+        if (notification) {
+            s.transport.event("account/updated", {{"authMode", "chatgpt"}});
+            QVERIFY(s.client.isInitialized());
+            s.reply("account/read", chatGptAccount("other-account"));
+        }
         else { QVERIFY(s.client.readAccount()); s.reply("account/read", chatGptAccount("other-account")); }
         QCOMPARE(finished.size(), 1); QCOMPARE(qvariant_cast<CodexTurn>(finished.front().at(0)).status, CodexTurnStatus::Uncertain);
         QCOMPARE(s.transport.stops, 1); QVERIFY(!s.client.isInitialized()); QVERIFY(!s.client.canSend());
@@ -646,6 +875,174 @@ private slots:
         s.transport.event("future/unknown", {{"payload", "ignored"}}); QVERIFY(s.client.threadBinding().threadId.isEmpty());
         s.reply("thread/start", s.threadResult()); QCOMPARE(s.client.threadBinding().threadId, QStringLiteral("thread-1"));
         QCOMPARE(s.client.ignoredMessageCount(), quint64(2));
+    }
+    void unchangedAccountRefreshDefersTurnAcknowledgementAndStreaming_data()
+    { QTest::addColumn<bool>("active"); QTest::newRow("before acknowledgement") << false; QTest::newRow("active turn") << true; }
+    void unchangedAccountRefreshDefersTurnAcknowledgementAndStreaming()
+    {
+        QFETCH(bool, active); Session s; QVERIFY(s.ready(chatGptAccount(), "0.162.0-alpha.17.2")); QVERIFY(s.openThread());
+        QVERIFY(s.client.startTurn("fixture prompt"));
+        auto live = turn(); live.insert("itemsView", "notLoaded");
+        if (active) s.reply("turn/start", {{"turn", live}});
+        QSignalSpy accepted(&s.client, &CodexClient::turnAccepted), finished(&s.client, &CodexClient::turnFinished);
+        QSignalSpy items(&s.client, &CodexClient::itemChanged), failures(&s.client, &CodexClient::protocolFailed);
+        s.transport.event("account/updated", {{"authMode", "chatgpt"}, {"planType", "plus"}});
+        const auto obsolete = s.requestId("account/read");
+        QCOMPARE(s.client.account().mode, CodexAccountMode::Unknown); QVERIFY(!s.client.canSend());
+        QVERIFY(!s.client.readThread(s.client.threadBinding()));
+        // Repeated notifications replace account checks without confirming the
+        // old response or dropping the already acknowledged turn.
+        s.transport.event("account/updated", {{"authMode", "chatgpt"}, {"planType", "pro"}});
+        s.transport.reply(obsolete, chatGptAccount("stale-account"));
+        if (!active) s.reply("turn/start", {{"turn", live}});
+        s.delta("buffered text");
+        auto completed = turn("turn-1", "completed"); completed.insert("itemsView", "notLoaded");
+        s.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", completed}});
+        QCOMPARE(items.size(), 0); QCOMPARE(finished.size(), 0); QCOMPARE(accepted.size(), 0);
+        auto account = chatGptAccount(); auto fields = account.value("account").toObject(); fields.insert("planType", "pro"); account.insert("account", fields);
+        s.reply("account/read", account);
+        QCOMPARE(failures.size(), 0); QCOMPARE(accepted.size(), active ? 0 : 1); QCOMPARE(finished.size(), 1);
+        const auto result = qvariant_cast<CodexTurn>(finished.first().first());
+        QCOMPARE(result.status, CodexTurnStatus::Completed); QCOMPARE(result.items.first().text, QStringLiteral("buffered text"));
+        QCOMPARE(s.client.account().planType, QStringLiteral("pro")); QVERIFY(s.client.canSend());
+        QCOMPARE(s.transport.stops, 0);
+    }
+    void accountRefreshRevocationDropsBufferedTraffic_data()
+    {
+        QTest::addColumn<QString>("variant");
+        for (const auto& value : {"different identity", "signed out", "auth disabled", "read error", "deadline", "buffer cap"})
+            QTest::newRow(value) << QString::fromLatin1(value);
+    }
+    void accountRefreshRevocationDropsBufferedTraffic()
+    {
+        QFETCH(QString, variant); CodexClientLimits limits;
+        if (variant == "deadline") limits.acknowledgementMilliseconds = 25;
+        if (variant == "buffer cap") limits.earlyEvents = 0;
+        Session s(limits); QVERIFY(s.ready(chatGptAccount(), "0.162.0-alpha.17.2")); QVERIFY(s.openThread()); QVERIFY(s.beginTurn());
+        QSignalSpy items(&s.client, &CodexClient::itemChanged), finished(&s.client, &CodexClient::turnFinished);
+        s.transport.event("account/updated", {{"authMode", "chatgpt"}}); s.delta("must remain undisclosed");
+        if (variant == "different identity") s.reply("account/read", chatGptAccount("other-account"));
+        if (variant == "signed out") s.reply("account/read", {{"account", QJsonValue(QJsonValue::Null)}, {"requiresOpenaiAuth", true}});
+        if (variant == "auth disabled") { auto result = chatGptAccount(); result.insert("requiresOpenaiAuth", false); s.reply("account/read", result); }
+        if (variant == "read error") s.transport.deliver({{"id", s.requestId("account/read")}, {"error", QJsonObject{{"code", -32603}, {"message", "PRIVATE_ERROR"}}}});
+        if (variant == "deadline") QTRY_COMPARE_WITH_TIMEOUT(s.transport.stops, 1, 1000);
+        QCOMPARE(items.size(), 0); QCOMPARE(finished.size(), 1); QCOMPARE(s.transport.stops, 1);
+        QCOMPARE(qvariant_cast<CodexTurn>(finished.first().first()).status, CodexTurnStatus::Uncertain);
+        QVERIFY(!s.client.canSend()); QVERIFY(!s.client.isInitialized());
+    }
+    void accountRefreshDefersDynamicToolInvocation()
+    {
+        Session s; QVERIFY(s.client.configureDynamicTools(AssistantToolRuntime::experimentalToolSpecifications()));
+        QVERIFY(s.ready(chatGptAccount(), "0.162.0-alpha.17.2")); QVERIFY(s.openThread()); QVERIFY(s.beginTurn());
+        QSignalSpy calls(&s.client, &CodexClient::dynamicToolCallReceived);
+        s.transport.event("account/updated", {{"authMode", "chatgpt"}});
+        s.transport.deliver({{"id", 27}, {"method", "item/tool/call"}, {"params", QJsonObject{
+            {"threadId", "thread-1"}, {"turnId", "turn-1"}, {"callId", "call-27"}, {"tool", "devhub_git_status"}, {"arguments", QJsonObject{}}}}});
+        QCOMPARE(calls.size(), 0);
+        s.reply("account/read", chatGptAccount()); QCOMPARE(calls.size(), 1); QCOMPARE(s.transport.stops, 0);
+    }
+    void alphaLiveUnloadedTurnsRetainStreamedItems_data()
+    { QTest::addColumn<bool>("early"); QTest::newRow("acknowledgement first") << false; QTest::newRow("early events") << true; }
+    void accountRefreshHoldsToolResultsUntilIdentityIsVerified_data()
+    { QTest::addColumn<bool>("changed"); QTest::newRow("unchanged") << false; QTest::newRow("changed") << true; }
+    void accountRefreshHoldsToolResultsUntilIdentityIsVerified()
+    {
+        QFETCH(bool, changed); Session s; QVERIFY(s.client.configureDynamicTools(AssistantToolRuntime::experimentalToolSpecifications()));
+        QVERIFY(s.ready(chatGptAccount(), "0.162.0-alpha.17.2")); QVERIFY(s.openThread()); QVERIFY(s.beginTurn());
+        s.transport.deliver({{"id", 27}, {"method", "item/tool/call"}, {"params", QJsonObject{
+            {"threadId", "thread-1"}, {"turnId", "turn-1"}, {"callId", "call-27"}, {"tool", "devhub_git_status"}, {"arguments", QJsonObject{}}}}});
+        s.transport.event("account/updated", {{"authMode", "chatgpt"}});
+        const auto requests = s.transport.sent.size();
+        const QJsonObject result{{"success", true}, {"contentItems", QJsonArray{QJsonObject{{"type", "inputText"}, {"text", "fixture tool output"}}}}};
+        QVERIFY(s.client.resolveDynamicToolCall(QJsonValue(27), result));
+        QVERIFY(!s.client.resolveDynamicToolCall(QJsonValue(27), result)); QCOMPARE(s.transport.sent.size(), requests);
+        s.reply("account/read", chatGptAccount(changed ? "other-account" : "fixture-account"));
+        QCOMPARE(s.transport.sent.size(), requests + (changed ? 0 : 1));
+        if (!changed) QCOMPARE(s.transport.sent.last(), (QJsonObject{{"id", 27}, {"result", result}}));
+        QCOMPARE(s.client.isInitialized(), !changed);
+    }
+    void alphaLiveUnloadedTurnsRetainStreamedItems()
+    {
+        QFETCH(bool, early); Session s; QVERIFY(s.ready(chatGptAccount(), "0.162.0-alpha.17.2")); QVERIFY(s.openThread());
+        QSignalSpy finished(&s.client, &CodexClient::turnFinished); QVERIFY(s.client.startTurn("fixture prompt"));
+        auto live = turn(); live.insert("itemsView", "notLoaded");
+        if (!early) s.reply("turn/start", {{"turn", live}});
+        s.transport.event("turn/started", {{"threadId", "thread-1"}, {"turn", live}});
+        s.delta("streamed answer"); s.item("item/completed", agent("agent-1", "streamed answer"));
+        auto completed = turn("turn-1", "completed"); completed.insert("itemsView", "notLoaded");
+        s.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", completed}});
+        if (early) s.reply("turn/start", {{"turn", live}});
+        QCOMPARE(finished.size(), 1); QCOMPARE(qvariant_cast<CodexTurn>(finished.first().first()).items.first().text, QStringLiteral("streamed answer"));
+        QVERIFY(s.client.canSend()); QCOMPARE(s.transport.stops, 0);
+    }
+    void unloadedTurnsRemainStrictOutsideLiveAlpha_data()
+    {
+        QTest::addColumn<QString>("variant");
+        for (const auto& value : {"summary", "unloaded with items", "legacy live", "stored history"}) QTest::newRow(value) << QString::fromLatin1(value);
+    }
+    void alphaSuccessfulSummaryMergesFinalAnswer_data()
+    {
+        QTest::addColumn<bool>("early"); QTest::addColumn<bool>("streamedFinal");
+        QTest::newRow("early completion") << true << true;
+        QTest::newRow("completed item") << false << true;
+        QTest::newRow("summary supplies final text") << false << false;
+    }
+    void alphaSuccessfulSummaryMergesFinalAnswer()
+    {
+        QFETCH(bool, early); QFETCH(bool, streamedFinal);
+        Session s; QVERIFY(s.client.configureDynamicTools(AssistantToolRuntime::experimentalToolSpecifications()));
+        QVERIFY(s.ready(chatGptAccount(), "0.162.0-alpha.17.2")); QVERIFY(s.openThread());
+        QSignalSpy finished(&s.client, &CodexClient::turnFinished);
+        QVERIFY(s.client.startTurn("fixture prompt")); auto started = turn(); started.insert("itemsView", "notLoaded");
+        if (!early) s.reply("turn/start", {{"turn", started}});
+        s.item("item/completed", agent("commentary", "Checking files."));
+        s.item("item/completed", {{"type", "dynamicToolCall"}, {"id", "tool-item"}, {"tool", "devhub_files_search"},
+            {"namespace", QJsonValue::Null}, {"arguments", QJsonObject{}}, {"status", "completed"}});
+        if (streamedFinal) s.item("item/completed", agent("final", "Done."));
+        auto completed = turn("turn-1", "completed", QJsonArray{agent("final", "Done.")}); completed.insert("itemsView", "summary");
+        s.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", completed}});
+        if (early) s.reply("turn/start", {{"turn", started}});
+        QCOMPARE(finished.size(), 1); const auto result = qvariant_cast<CodexTurn>(finished.first().first());
+        QCOMPARE(result.status, CodexTurnStatus::Completed);
+        QCOMPARE(result.items.size(), 3); QCOMPARE(result.items.last().text, QStringLiteral("Done."));
+        QVERIFY(s.client.canSend()); QCOMPARE(s.transport.stops, 0);
+    }
+    void alphaSummaryStillRejectsInvalidTerminalPayloads_data()
+    {
+        QTest::addColumn<QString>("variant");
+        for (const auto& value : {"active", "error", "unsafe", "multiple", "conflicting text", "old runtime", "stored summary"})
+            QTest::newRow(value) << QString::fromLatin1(value);
+    }
+    void alphaSummaryStillRejectsInvalidTerminalPayloads()
+    {
+        QFETCH(QString, variant); Session s;
+        QVERIFY(s.ready(chatGptAccount(), variant == "old runtime" ? "0.160.1" : "0.162.0-alpha.17.2")); QVERIFY(s.openThread());
+        auto completed = turn("turn-1", "completed", QJsonArray{agent("final", "Done.")}); completed.insert("itemsView", "summary");
+        if (variant == "active") completed.insert("status", "inProgress");
+        if (variant == "error") completed.insert("error", QJsonObject{{"message", "failure"}, {"codexErrorInfo", "other"}});
+        if (variant == "unsafe") completed.insert("items", QJsonArray{QJsonObject{{"type", "commandExecution"}, {"id", "command"}}});
+        if (variant == "multiple") completed.insert("items", QJsonArray{agent("first", "A"), agent("second", "B")});
+        QSignalSpy failed(&s.client, &CodexClient::protocolFailed);
+        if (variant == "stored summary") {
+            QVERIFY(s.client.readThread(s.client.threadBinding())); s.reply("thread/read", {{"thread", s.thread("thread-1", QJsonArray{completed})}});
+        } else {
+            QVERIFY(s.beginTurn());
+            if (variant == "conflicting text") s.item("item/completed", agent("final", "Different."));
+            s.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", completed}});
+        }
+        QCOMPARE(failed.size(), 1); QVERIFY(!s.client.canSend());
+    }
+    void unloadedTurnsRemainStrictOutsideLiveAlpha()
+    {
+        QFETCH(QString, variant); Session s;
+        QVERIFY(s.ready(chatGptAccount(), variant == "legacy live" ? "0.160.1" : "0.162.0-alpha.17.2")); QVERIFY(s.openThread());
+        auto value = turn("turn-1", variant == "stored history" ? "completed" : "inProgress");
+        value.insert("itemsView", variant == "summary" ? "summary" : "notLoaded");
+        if (variant == "unloaded with items") value.insert("items", QJsonArray{agent("agent-1", "invalid")});
+        QSignalSpy failed(&s.client, &CodexClient::protocolFailed);
+        if (variant == "stored history") { QVERIFY(s.client.readThread(s.client.threadBinding())); s.reply("thread/read", {{"thread", s.thread("thread-1", QJsonArray{value})}}); }
+        else { QVERIFY(s.client.startTurn("fixture prompt")); s.reply("turn/start", {{"turn", value}}); }
+        QCOMPARE(failed.size(), 1); QVERIFY(!s.client.canSend());
     }
     void completionCallbackCanStartAnotherTurn()
     {

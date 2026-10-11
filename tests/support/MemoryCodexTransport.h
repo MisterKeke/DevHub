@@ -10,11 +10,13 @@ public:
     bool rejectWrites = false;
     bool native = false;
     QList<QJsonObject> sent;
+    struct RecordedLaunch { QStringList arguments; QProcessEnvironment environment; QString scratchDirectory; quint64 processGeneration; };
+    QList<RecordedLaunch> launches;
     std::function<void(QJsonObject)> onSend;
     [[nodiscard]] devhub::application::assistant::CodexTransportKind kind() const override
     { return native ? devhub::application::assistant::CodexTransportKind::NativeProcess : devhub::application::assistant::CodexTransportKind::InMemoryTest; }
     void launch(const devhub::application::assistant::CodexLaunchSpec& spec) override
-    { generation = spec.processGeneration; emit started(generation); }
+    { launches.append({spec.arguments, spec.environment, spec.scratchDirectory, spec.processGeneration}); generation = spec.processGeneration; emit started(generation); }
     [[nodiscard]] devhub::shared::common::Result<void> sendObject(const QJsonObject& object) override
     {
         if (rejectWrites) return devhub::shared::common::Result<void>::failure(devhub::domain::errors::AppError::failure(

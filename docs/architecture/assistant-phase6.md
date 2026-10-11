@@ -41,7 +41,9 @@ unchecked items at the end of Section 37 remain release gates.
 - The supported setup/protocol profiles recorded by this repository are Codex
   0.160.1 and 0.162.0-alpha.17.2. The installed CLI validated for this report
   is `codex-cli 0.162.0-alpha.17.2`. The client hard gate
-  `CodexRuntimeProfile::liveInferenceApproved()` remains false. A dedicated
+  At this phase, the production gate remained false. This historical gate was
+  superseded by the user's Phase 9 request to enable verified alpha sending;
+  see [the current Phase 9 report](assistant-phase9.md). A dedicated
   validation-library target now has a compile-time-only development policy;
   environment variables and settings cannot enable it in production. The live
   target compiled with Qt 6.11.0 MinGW. Its preflight ran with all opt-in

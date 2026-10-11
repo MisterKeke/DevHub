@@ -9,6 +9,8 @@
 #include <QFile>
 #include <QProcessEnvironment>
 #include <QSet>
+#include <cmath>
+#include <optional>
 
 namespace devhub::infrastructure::codex {
 namespace {
@@ -25,6 +27,45 @@ QString quoted(const QString& value)
     return QString::fromUtf8(encoded.mid(1, encoded.size() - 2));
 }
 bool disabled(const QJsonValue& value) { return value.isBool() && !value.toBool(); }
+std::optional<QStringList> disabledServerNames(const QString& override)
+{
+    const QString prefix = QStringLiteral("mcp_servers={"), entry = QStringLiteral("={enabled=false}");
+    if (!override.startsWith(prefix) || !override.endsWith('}')) return std::nullopt;
+    QStringList names; qsizetype position = prefix.size(), end = override.size() - 1;
+    while (position < end) {
+        const auto start = position;
+        if (override.at(position++) != '"') return std::nullopt;
+        bool escaped = false, closed = false;
+        while (position < end) {
+            const auto ch = override.at(position++);
+            if (!escaped && ch == '"') { closed = true; break; }
+            if (!escaped && ch == '\\') escaped = true; else escaped = false;
+        }
+        if (!closed) return std::nullopt;
+        const auto key = QJsonDocument::fromJson(('[' + override.mid(start, position - start) + ']').toUtf8()).array();
+        if (key.size() != 1 || !key.first().isString() || override.mid(position, entry.size()) != entry) return std::nullopt;
+        names.append(key.first().toString()); position += entry.size();
+        if (position == end) break;
+        if (position >= end || override.at(position++) != ',' || position == end) return std::nullopt;
+    }
+    return names.isEmpty() ? std::nullopt : std::optional<QStringList>{names};
+}
+bool desktopPreferencesOnly(const QJsonValue& value)
+{
+    if (value.isUndefined() || value.isNull()) return true;
+    if (!value.isObject()) return false;
+    const auto preferences = value.toObject();
+    for (auto it = preferences.begin(); it != preferences.end(); ++it) {
+        if (it.key() == "ambient-suggestions-enabled" && disabled(it.value())) continue;
+        if ((it.key() == "sansFontSize" || it.key() == "codeFontSize") && it.value().isDouble()
+            && std::isfinite(it.value().toDouble()) && std::floor(it.value().toDouble()) == it.value().toDouble()
+            && it.value().toDouble() > 0 && it.value().toDouble() <= 96) continue;
+        if ((it.key() == "conversationDetailMode" || it.key() == "followUpQueueMode")
+            && it.value().isString() && it.value().toString().size() <= 64) continue;
+        return false;
+    }
+    return true;
+}
 
 QString canonicalPath(const QString& path)
 {
@@ -64,36 +105,35 @@ shared::common::Result<QStringList> CodexRuntimeProfile::launchArguments(QString
     QStringList arguments{"app-server", "--listen", "stdio://", "--strict-config"};
     for (const auto& feature : restrictedFeatures()) arguments << "-c" << "features." + feature + "=false";
     for (const auto& option : {"web_search=\"disabled\"", "sandbox_mode=\"read-only\"",
-        "approval_policy=\"on-request\"", "forced_login_method=\"chatgpt\"", "model_provider=\"openai\""})
+        "approval_policy=\"on-request\"", "forced_login_method=\"chatgpt\"", "model_provider=\"openai\"",
+        "notify=[]", "desktop.ambient-suggestions-enabled=false"})
         arguments << "-c" << option;
     disabledMcpServers.removeDuplicates(); disabledMcpServers.sort();
+    QStringList disabledEntries;
     for (const auto& name : disabledMcpServers) {
         bool valid = !name.isEmpty() && name.size() <= 128;
         for (const auto ch : name) valid = valid && ch.unicode() >= 32 && ch.unicode() != 127;
         if (!valid) return Result<QStringList>::failure(domain::errors::AppError::failure(
             domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Configuration,
             QStringLiteral("An inherited MCP server name is invalid."), {}, QStringLiteral("codex.profile")));
-        arguments << "-c" << "mcp_servers." + quoted(name) + ".enabled=false";
+        disabledEntries.append(quoted(name) + QStringLiteral("={enabled=false}"));
     }
+    // The pinned CLI splits dotted override paths literally; quoted segments
+    // are not parsed as TOML keys. A table value preserves dots/quotes in names
+    // and merges the disabled flag into each inherited server definition.
+    if (!disabledEntries.isEmpty()) arguments << "-c" << "mcp_servers={" + disabledEntries.join(',') + '}';
     return Result<QStringList>::success(arguments);
 }
 bool CodexRuntimeProfile::acceptsLaunch(const QStringList& arguments)
 {
     const auto base = launchArguments().value();
-    if (arguments.size() < base.size() || (arguments.size() - base.size()) % 2 != 0) return false;
+    if (arguments.size() != base.size() && arguments.size() != base.size() + 2) return false;
     for (qsizetype i = 0; i < base.size(); ++i) if (arguments.at(i) != base.at(i)) return false;
-    QStringList servers;
-    for (qsizetype i = base.size(); i < arguments.size(); i += 2) {
-        const auto override = arguments.at(i + 1);
-        const auto prefix = QStringLiteral("mcp_servers.");
-        const auto suffix = QStringLiteral(".enabled=false");
-        if (arguments.at(i) != "-c" || !override.startsWith(prefix) || !override.endsWith(suffix)) return false;
-        const auto key = override.mid(prefix.size(), override.size() - prefix.size() - suffix.size());
-        const auto parsed = QJsonDocument::fromJson(('[' + key + ']').toUtf8()).array();
-        if (parsed.size() != 1 || !parsed.at(0).isString()) return false;
-        servers.append(parsed.at(0).toString());
-    }
-    const auto canonical = launchArguments(servers);
+    if (arguments.size() == base.size()) return true;
+    if (arguments.at(base.size()) != "-c") return false;
+    const auto servers = disabledServerNames(arguments.last());
+    if (!servers) return false;
+    const auto canonical = launchArguments(*servers);
     return canonical && arguments == canonical.value();
 }
 QStringList CodexRuntimeProfile::rejectionReasons(const QJsonObject& configResult, const QJsonObject& requirementsResult)
@@ -146,7 +186,10 @@ QStringList CodexRuntimeProfile::rejectionReasons(const QJsonObject& configResul
             }
         }
     }
-    for (const auto& key : {"browser_use", "computer_use", "desktop"}) {
+    // Desktop appearance/queue preferences do not attach a browser or computer
+    // runtime. Unknown desktop fields and active host capabilities stay blocked.
+    if (!desktopPreferencesOnly(config.value("desktop"))) reasons << "unverified-attached-runtime";
+    for (const auto& key : {"browser_use", "computer_use"}) {
         const auto attached = config.value(QLatin1String(key));
         if (!attached.isUndefined() && !attached.isNull() && (!attached.isObject() || !attached.toObject().isEmpty()))
             reasons << "unverified-attached-runtime";
@@ -186,6 +229,10 @@ bool CodexRuntimeProfile::developmentLiveValidationBuild()
 #else
     return false;
 #endif
+}
+bool CodexRuntimeProfile::productionChatEnabled(const QString& version)
+{
+    return !developmentLiveValidationBuild() && version == QStringLiteral("0.162.0-alpha.17.2");
 }
 
 bool CodexRuntimeProfile::developmentLiveInferenceAuthorized(

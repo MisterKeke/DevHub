@@ -57,6 +57,28 @@ reconfiguration rebuilds the dependencies for the selected kit.
 
 Build configurations are Debug, RelWithDebInfo, and Release. The CI preset turns warnings into errors and pins the MSVC v143 14.44 toolset.
 
+If Qt Creator reports missing project headers while the compiler builds normally,
+check its clangd compilation database. An empty
+`out/build/windows-dev/.qtc_clangd/compile_commands.json` loses both the source
+and Qt include paths and produces cascading diagnostics. Check that the selected
+kit has its C/C++ compilers and Qt version assigned. Absolute compiler paths in
+CMake can still permit successful builds with an incomplete Qt Creator kit.
+For this MinGW preset, select Qt's paired MinGW compilers and the corresponding
+Qt version in the kit, then reopen the project/run CMake to regenerate the code
+model. Copying CMake's database into `.qtc_clangd` is only temporary: Qt Creator
+generates that file again. Newer Qt Creator versions also offer an
+[external compilation database setting](https://doc.qt.io/qtcreator/creator-preferences-cpp-clangd.html);
+the installed Qt Creator 19 does not support that option.
+
+When diagnosing a crash after a class layout changed, ensure the caller was
+rebuilt too. For Ninja, `ninja -C out/build/windows-dev -t deps
+CMakeFiles/devhub.dir/Debug/src/app/ApplicationBootstrapper.cpp.obj` should list
+its included headers, including `AssistantController.h`. A stale object with an
+empty dependency list can be linked against a newer library despite allocating
+the old object size. Close the debugger and clean/rebuild the affected target;
+the normal CMake compiler rules regenerate the header dependencies. Do not mix
+objects or executables from different build directories.
+
 ## Formatting and analysis
 
 Run `tools/format-check.ps1` to check C++ formatting with clang-format. Configure `windows-analysis`, then run clang-tidy over the generated compilation database, for example:

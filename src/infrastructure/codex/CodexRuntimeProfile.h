@@ -15,9 +15,10 @@ public:
     [[nodiscard]] static QString fingerprint(const QString& version, const QStringList& launchArguments);
     [[nodiscard]] static bool acceptsEnvironment(const QProcessEnvironment& environment);
     [[nodiscard]] static bool acceptsLoginUrl(const QUrl& url, bool deviceCode);
-    // Phase 0 has no authenticated/native model proof. No runtime boolean can
-    // turn synthetic protocol verification into live release approval.
-    [[nodiscard]] static constexpr bool liveInferenceApproved() { return false; }
+    // Production chat is enabled for the pinned alpha requested by the user.
+    // Each launch must still verify its effective profile and ChatGPT account.
+    // Dedicated live-test builds retain their explicit disposable-home opt-in.
+    [[nodiscard]] static bool productionChatEnabled(const QString& version);
     // True only in the separate static library linked by the explicit live-test
     // executable. This is not a production approval and is not user-configurable.
     [[nodiscard]] static bool developmentLiveValidationBuild();

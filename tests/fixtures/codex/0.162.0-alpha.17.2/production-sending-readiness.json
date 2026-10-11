@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "codexVersion": "0.162.0-alpha.17.2",
+  "scope": "native account, effective profile, model catalog and controller admission; no turn",
+  "sharedProfile": true,
+  "launchCount": 2,
+  "profileChecks": ["inherited-mcp-enabled", "verified"],
+  "profileVerified": true,
+  "chatGptAccount": true,
+  "accountRoutingVerified": true,
+  "textModelAvailable": true,
+  "canSend": true,
+  "inference": false,
+  "loginRequested": false,
+  "configurationWriteRequested": false,
+  "authenticatedInferenceVerified": false
+}

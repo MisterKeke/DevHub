@@ -21,6 +21,14 @@ AppError error(ErrorCode code, const QString& message)
 }
 AppError denied() { return error(ErrorCode::AssistantPermissionDenied, QStringLiteral("The Assistant operation is not admitted in this scope.")); }
 AppError invalidResponse() { return error(ErrorCode::CodexProtocolFailure, QStringLiteral("Codex returned an incompatible response.")); }
+QJsonObject dynamicToolFailure(const QString& code)
+{
+    const QJsonObject body{{QStringLiteral("success"), false},
+        {QStringLiteral("data"), QJsonObject{{QStringLiteral("error"), code}}}};
+    return {{QStringLiteral("success"), false},
+        {QStringLiteral("contentItems"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("inputText")},
+            {QStringLiteral("text"), QString::fromUtf8(QJsonDocument(body).toJson(QJsonDocument::Compact))}}}}};
+}
 QByteArray idKey(const QJsonValue& id) { return QJsonDocument(QJsonArray{id}).toJson(QJsonDocument::Compact); }
 bool stringId(const QString& id) { return !id.isEmpty() && id.size() <= 512; }
 bool terminal(CodexTurnStatus status) { return status != CodexTurnStatus::InProgress; }
@@ -141,6 +149,7 @@ Result<void> CodexClient::launch(const CodexLaunchSpec& spec)
     m_dynamicToolsEnabled = !m_dynamicToolSpecifications.isEmpty()
         && !m_dynamicToolFingerprint.isEmpty();
     m_profileFingerprint = CodexRuntimeProfile::fingerprint(spec.executable.version, spec.arguments);
+    m_launchArguments = spec.arguments;
     if (m_dynamicToolsEnabled) {
         const auto profileBytes = (m_profileFingerprint + QLatin1Char('|') + m_dynamicToolFingerprint).toUtf8();
         m_profileFingerprint = QString::fromLatin1(QCryptographicHash::hash(profileBytes, QCryptographicHash::Sha256).toHex());
@@ -153,6 +162,7 @@ Result<void> CodexClient::launch(const CodexLaunchSpec& spec)
     m_initializeInfo = {}; m_account = {}; m_thread = {}; m_turnId.clear(); m_lastTurnId.clear();
     m_items.clear(); m_itemOrder.clear(); m_earlyTurns.clear(); m_earlyLogins.clear(); m_earlyBytes = 0; m_earlyLoginBytes = 0; m_serverRequests.clear(); m_resolvedServerRequests.clear();
     m_config.reset(); m_requirements.reset(); ++m_accountEpoch;
+    m_accountDeferred.clear(); m_accountDeferredBytes = 0; m_accountRefreshPending = false;
     m_deadlineTimer.start(); m_transport->launch(spec);
     return Result<void>::success();
 }
@@ -228,7 +238,7 @@ Result<void> CodexClient::verifyRuntime()
 bool CodexClient::bindingMatches(const CodexThreadBinding& binding) const
 {
     const QString homeKey = QString::fromLatin1(QCryptographicHash::hash(m_initializeInfo.codexHome.toUtf8(), QCryptographicHash::Sha256).toHex());
-    return m_initialized && m_profileVerified && stringId(binding.threadId) && m_account.mode == CodexAccountMode::ChatGpt
+    return m_initialized && m_profileVerified && !m_accountRefreshPending && stringId(binding.threadId) && m_account.mode == CodexAccountMode::ChatGpt
         && m_account.requiresOpenaiAuth && !m_account.identityFingerprint.isEmpty()
         && binding.accountFingerprint == m_account.identityFingerprint
         && (binding.codexHome == m_initializeInfo.codexHome || (!binding.codexHomeKey.isEmpty() && binding.codexHomeKey == homeKey))
@@ -236,7 +246,7 @@ bool CodexClient::bindingMatches(const CodexThreadBinding& binding) const
 }
 Result<qint64> CodexClient::startThread(const QString& model)
 {
-    if (!m_initialized || !m_profileVerified || m_account.mode != CodexAccountMode::ChatGpt || !m_account.requiresOpenaiAuth
+    if (!canStartConversation() || !m_initialized || !m_profileVerified || m_account.mode != CodexAccountMode::ChatGpt || !m_account.requiresOpenaiAuth
         || m_account.identityFingerprint.isEmpty() || hasPending(Operation::Account) || !stringId(model) || !m_turnId.isEmpty() || m_uncertain
         || hasPending(Operation::TurnStart) || hasPending(Operation::ThreadResume) || hasPending(Operation::ThreadRead)
         || m_login || hasPending(Operation::LoginStart)) return Result<qint64>::failure(denied());
@@ -248,13 +258,18 @@ Result<qint64> CodexClient::startThread(const QString& model)
 }
 Result<qint64> CodexClient::resumeThread(const CodexThreadBinding& binding)
 {
-    if (!bindingMatches(binding) || m_uncertain || !m_turnId.isEmpty() || hasPending(Operation::TurnStart)
+    if (!bindingMatches(binding) || (m_transport->kind() != CodexTransportKind::InMemoryTest && !liveInferenceGateOpen())
+        || m_uncertain || !m_turnId.isEmpty() || hasPending(Operation::TurnStart)
         || hasPending(Operation::ThreadStart) || hasPending(Operation::ThreadRead) || hasPending(Operation::Account)
         || m_login || hasPending(Operation::LoginStart)) return Result<qint64>::failure(denied());
-    // Resume has no environments/dynamicTools parameters in the pinned schema.
-    // Validate returned environments and send [] again on every admitted turn.
-    return request(Operation::ThreadResume, QJsonObject{{"threadId", binding.threadId}, {"cwd", m_scratch},
-        {"sandbox", "read-only"}, {"approvalPolicy", "on-request"}, {"runtimeWorkspaceRoots", QJsonArray{}}}, binding.threadId);
+    // Resume has no environments/dynamicTools parameters. The alpha runtime
+    // defaults to paginated history; request full items from the oldest turn
+    // through one beyond our cap so truncated history cannot appear complete.
+    QJsonObject params{{"threadId", binding.threadId}, {"cwd", m_scratch},
+        {"sandbox", "read-only"}, {"approvalPolicy", "on-request"}, {"runtimeWorkspaceRoots", QJsonArray{}}};
+    if (m_wire.version() == QStringLiteral("0.162.0-alpha.17.2"))
+        params.insert("initialTurnsPage", QJsonObject{{"itemsView", "full"}, {"limit", m_limits.historyTurns + 1}, {"sortDirection", "asc"}});
+    return request(Operation::ThreadResume, params, binding.threadId);
 }
 Result<qint64> CodexClient::readThread(const CodexThreadBinding& binding)
 {
@@ -264,14 +279,14 @@ Result<qint64> CodexClient::readThread(const CodexThreadBinding& binding)
 }
 bool CodexClient::canSend() const
 {
-    return m_active && bindingMatches(m_thread) && !m_uncertain && m_turnId.isEmpty() && !hasPending(Operation::TurnStart)
+    return m_active && !m_accountRefreshPending && bindingMatches(m_thread) && !m_uncertain && m_turnId.isEmpty() && !hasPending(Operation::TurnStart)
         && !hasPending(Operation::ThreadStart) && !hasPending(Operation::ThreadResume) && !hasPending(Operation::ThreadRead) && !m_login
         && !hasPending(Operation::LoginStart) && !hasPending(Operation::Account) && m_transport
         && (m_transport->kind() == CodexTransportKind::InMemoryTest || liveInferenceGateOpen());
 }
 bool CodexClient::canStartConversation() const
 {
-    return m_active && m_initialized && m_profileVerified && !m_uncertain && m_turnId.isEmpty()
+    return m_active && m_initialized && m_profileVerified && !m_accountRefreshPending && !m_uncertain && m_turnId.isEmpty()
         && m_account.mode == CodexAccountMode::ChatGpt && m_account.requiresOpenaiAuth
         && !m_account.identityFingerprint.isEmpty() && !hasPending(Operation::Account)
         && !hasPending(Operation::ThreadStart) && !hasPending(Operation::ThreadResume)
@@ -281,7 +296,7 @@ bool CodexClient::canStartConversation() const
 }
 bool CodexClient::liveInferenceGateOpen() const
 {
-    return CodexRuntimeProfile::liveInferenceApproved() || m_developmentLiveValidationAuthorized;
+    return CodexRuntimeProfile::productionChatEnabled(m_wire.version()) || m_developmentLiveValidationAuthorized;
 }
 Result<qint64> CodexClient::startTurn(const QString& text)
 {
@@ -300,10 +315,28 @@ Result<qint64> CodexClient::interruptTurn()
 void CodexClient::receive(const QJsonObject& object, quint64 generation)
 {
     if (!m_active || generation != m_generation) { ++m_ignored; return; }
+    if (m_accountRefreshPending && scopeMessage(object)) {
+        const auto bytes = QJsonDocument(object).toJson(QJsonDocument::Compact).size();
+        if (m_accountDeferred.size() >= m_limits.earlyEvents || bytes > m_limits.earlyEventBytes - m_accountDeferredBytes) {
+            fatal(QStringLiteral("The account verification event limit was exceeded.")); return;
+        }
+        m_accountDeferred.append({false, object}); m_accountDeferredBytes += bytes; return;
+    }
     if (object.contains("method")) {
         if (object.contains("id")) serverRequest(object);
         else notification(object);
     } else response(object);
+}
+bool CodexClient::scopeMessage(const QJsonObject& object) const
+{
+    if (object.contains("method")) {
+        const auto name = object.value("method").toString();
+        return name.startsWith("turn/") || name.startsWith("item/") || name.startsWith("thread/");
+    }
+    const auto pending = m_pending.constFind(object.value("id").toInteger());
+    return pending != m_pending.cend() && (pending->operation == Operation::ThreadStart
+        || pending->operation == Operation::ThreadResume || pending->operation == Operation::ThreadRead
+        || pending->operation == Operation::TurnStart);
 }
 void CodexClient::response(const QJsonObject& object)
 {
@@ -328,14 +361,18 @@ void CodexClient::response(const QJsonObject& object)
         auto safeError = error(ErrorCode::IoFailure, QStringLiteral("Codex rejected the operation."));
         safeError.nativeCode = code; // Never forward raw remote messages/data.
         if (code == 401) { expireAccount(); safeError.code = ErrorCode::AuthenticationFailed; }
-        failPending(id, pending, safeError, false); return;
+        failPending(id, pending, safeError, false);
+        if (pending.operation == Operation::Initialize)
+            fatal(QStringLiteral("Codex initialization was rejected. Reconnect to try again."), pending.generation);
+        return;
     }
     const auto result = object.value("result");
     if (!m_wire.accepts(responseContract(pending.operation), result) || !result.isObject()) {
         failPending(id, pending, invalidResponse(), true); fatal(QStringLiteral("A required response shape was invalid."), pending.generation); return;
     }
     if (!decodeResult(id, pending, result.toObject())) {
-        failPending(id, pending, invalidResponse(), true); fatal(QStringLiteral("A response violated the active scope."), pending.generation); return;
+        failPending(id, pending, invalidResponse(), true);
+        fatal(QStringLiteral("The %1 response did not match the active Codex scope.").arg(method(pending.operation)), pending.generation); return;
     }
     emit requestSucceeded(id, method(pending.operation));
 }
@@ -372,14 +409,23 @@ bool CodexClient::decodeResult(qint64, const Pending& pending, const QJsonObject
                 account.identityFingerprint = QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(QJsonArray{
                     "devhub-codex-account-v1", "chatgpt", origin, accountId}).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex());
         }
-        if (m_account.mode != account.mode || m_account.identityFingerprint != account.identityFingerprint) {
+        if (m_account.mode != account.mode || m_account.identityFingerprint != account.identityFingerprint
+            || m_account.requiresOpenaiAuth != account.requiresOpenaiAuth) {
             ++m_accountEpoch;
-            if (!m_turnId.isEmpty()) {
+            if (!m_turnId.isEmpty() || hasPending(Operation::TurnStart)) {
                 fatal(QStringLiteral("The account scope changed during an active turn."), pending.generation);
                 return false;
             }
         }
-        m_account = account; emit accountChanged(m_account); return true;
+        m_accountRefreshPending = false;
+        const auto deferred = std::exchange(m_accountDeferred, {}); m_accountDeferredBytes = 0;
+        m_account = account; emit accountChanged(m_account);
+        for (const auto& envelope : deferred) {
+            if (!m_active || m_generation != pending.generation) break;
+            if (envelope.first) (void)resolveDynamicToolCall(envelope.second.value("id"), envelope.second.value("result").toObject());
+            else receive(envelope.second, pending.generation);
+        }
+        return true;
     }
     case Operation::LoginStart: {
         if (result.value("type").toString() != pending.argument || !stringId(result.value("loginId").toString())) return false;
@@ -416,15 +462,31 @@ bool CodexClient::decodeResult(qint64, const Pending& pending, const QJsonObject
     case Operation::ThreadRead: {
         if (pending.accountEpoch != m_accountEpoch) return false;
         CodexThread thread;
-        if (!decodeThread(result.value("thread").toObject(), thread)) return false;
+        auto threadValue = result.value("thread").toObject();
+        const bool paginatedResume = pending.operation == Operation::ThreadResume
+            && m_wire.version() == QStringLiteral("0.162.0-alpha.17.2")
+            && (threadValue.value("historyMode") == "paginated" || result.value("initialTurnsPage").isObject());
+        if (paginatedResume) {
+            if (threadValue.value("historyMode") != "legacy" && threadValue.value("historyMode") != "paginated") return false;
+            const auto page = result.value("initialTurnsPage");
+            if (!page.isObject() || !page.toObject().value("nextCursor").toString().isEmpty()
+                || QJsonDocument(result).toJson(QJsonDocument::Compact).size() > m_limits.historyBytes) return false;
+            // Only the explicitly requested complete page supplies transcript
+            // history. Backwards cursors mark boundaries, not missing pages.
+            threadValue.insert("turns", page.toObject().value("data"));
+            threadValue.insert("historyMode", "legacy");
+        }
+        if (!decodeThread(threadValue, thread, pending.operation != Operation::ThreadStart, paginatedResume)) return false;
         if (!pending.expectedThread.isEmpty() && thread.binding.threadId != pending.expectedThread) return false;
         if (pending.operation != Operation::ThreadRead) {
-            if (QDir::cleanPath(result.value("cwd").toString()) != m_scratch || result.value("modelProvider") != "openai"
+            if (!matchesScratchDirectory(result.value("cwd").toString()) || result.value("modelProvider") != "openai"
                 || result.value("approvalPolicy") != "on-request" || result.value("sandbox").toObject().value("type") != "readOnly"
                 || result.value("sandbox").toObject().value("networkAccess").toBool()
                 || !result.value("runtimeWorkspaceRoots").toArray().isEmpty()) return false;
-            if (pending.operation == Operation::ThreadResume && (!result.value("initialTurnsPage").isNull() && !result.value("initialTurnsPage").isUndefined())) return false;
-            if (!result.value("turnsBackwardsCursor").toString().isEmpty() || !result.value("itemsBackwardsCursor").toString().isEmpty()) return false;
+            if (!paginatedResume) {
+                if (pending.operation == Operation::ThreadResume && (!result.value("initialTurnsPage").isNull() && !result.value("initialTurnsPage").isUndefined())) return false;
+                if (!result.value("turnsBackwardsCursor").toString().isEmpty() || !result.value("itemsBackwardsCursor").toString().isEmpty()) return false;
+            }
             m_thread = thread.binding; m_lastTurnId.clear();
         }
         emit threadReceived(thread); return true;
@@ -432,7 +494,7 @@ bool CodexClient::decodeResult(qint64, const Pending& pending, const QJsonObject
     case Operation::TurnStart: {
         if (pending.accountEpoch != m_accountEpoch || pending.expectedThread != m_thread.threadId) return false;
         CodexTurn turn;
-        if (!decodeTurn(result.value("turn").toObject(), pending.expectedThread, turn) || turn.id == m_lastTurnId) return false;
+        if (!decodeTurn(result.value("turn").toObject(), pending.expectedThread, turn, true) || turn.id == m_lastTurnId) return false;
         m_turnId = turn.id; emit turnAccepted(turn.threadId, turn.id);
         const auto early = std::exchange(m_earlyTurns, {}); m_earlyBytes = 0;
         for (const auto& event : early) {
@@ -455,8 +517,17 @@ void CodexClient::finishProfileCheck()
 {
     if (!m_config || !m_requirements) return;
     const auto reasons = CodexRuntimeProfile::rejectionReasons(*m_config, *m_requirements);
+    QStringList restrictedArguments;
+    // Discover names through the supported RPC, never by reading config/auth
+    // files. Do not create a thread until the relaunched effective config passes.
+    if (reasons == QStringList{QStringLiteral("inherited-mcp-enabled")}) {
+        const auto servers = m_config->value("config").toObject().value("mcp_servers").toObject();
+        const auto arguments = CodexRuntimeProfile::launchArguments(servers.keys());
+        if (arguments && arguments.value() != m_launchArguments) restrictedArguments = arguments.value();
+    }
     m_config.reset(); m_requirements.reset(); m_profileVerified = reasons.isEmpty();
     emit profileChecked(m_profileVerified, reasons);
+    if (!restrictedArguments.isEmpty()) emit restrictedLaunchRequired(restrictedArguments, m_generation);
 }
 bool CodexClient::decodeItem(const QJsonObject& value, const QString& threadId, const QString& turnId, CodexItem& item) const
 {
@@ -481,10 +552,20 @@ bool CodexClient::decodeItem(const QJsonObject& value, const QString& threadId, 
     }
     return item.text.toUtf8().size() <= m_limits.itemTextBytes;
 }
-bool CodexClient::decodeTurn(const QJsonObject& value, const QString& threadId, CodexTurn& turn) const
+bool CodexClient::decodeTurn(const QJsonObject& value, const QString& threadId, CodexTurn& turn, bool live) const
 {
     turn.threadId = threadId; turn.id = value.value("id").toString();
-    if (!stringId(turn.id) || value.value("itemsView").toString("full") != "full") return false;
+    const auto view = value.value("itemsView").toString("full");
+    // Alpha starts omit items; successful completion includes only the final
+    // agent message. Merge that summary into the retained item stream. Stored
+    // history still requires full items.
+    const bool unloadedLive = live && m_wire.version() == QStringLiteral("0.162.0-alpha.17.2")
+        && view == "notLoaded" && value.value("items").isArray() && value.value("items").toArray().isEmpty();
+    const auto items = value.value("items").toArray();
+    const bool summaryLive = live && m_wire.version() == QStringLiteral("0.162.0-alpha.17.2")
+        && view == "summary" && value.value("status") == "completed"
+        && items.size() == 1 && items.first().toObject().value("type") == "agentMessage";
+    if (!stringId(turn.id) || (view != "full" && !unloadedLive && !summaryLive)) return false;
     const auto status = value.value("status").toString();
     if (status == "completed") turn.status = CodexTurnStatus::Completed;
     else if (status == "failed") turn.status = CodexTurnStatus::Failed;
@@ -499,7 +580,6 @@ bool CodexClient::decodeTurn(const QJsonObject& value, const QString& threadId, 
             info == "unauthorized" ? QStringLiteral("Codex authentication needs to be refreshed.") : QStringLiteral("The Codex turn failed."));
     }
     if (turn.status == CodexTurnStatus::Completed && turn.hasError) return false;
-    const auto items = value.value("items").toArray();
     if (items.size() > m_limits.itemsPerTurn) return false;
     QSet<QString> ids;
     for (const auto& record : items) {
@@ -509,13 +589,36 @@ bool CodexClient::decodeTurn(const QJsonObject& value, const QString& threadId, 
     }
     return true;
 }
-bool CodexClient::decodeThread(const QJsonObject& value, CodexThread& thread) const
+bool CodexClient::matchesScratchDirectory(const QString& path) const
+{
+    const QFileInfo directory(path);
+    if (!directory.isAbsolute() || !directory.isDir()) return false;
+    const auto canonical = directory.canonicalFilePath();
+    if (canonical.isEmpty()) return false;
+#ifdef Q_OS_WIN
+    return canonical.compare(m_scratch, Qt::CaseInsensitive) == 0;
+#else
+    return canonical == m_scratch;
+#endif
+}
+bool CodexClient::decodeThread(const QJsonObject& value, CodexThread& thread, bool allowUnassignedEnvironments,
+    bool allowScratchEnvironment) const
 {
     const auto id = value.value("id").toString();
     const auto environments = value.value("environments");
-    if (!stringId(id) || QDir::cleanPath(value.value("cwd").toString()) != m_scratch
+    // Persisted legacy history omits environment assignments or returns null.
+    // New threads must acknowledge our explicit [] and every turn sends [] again.
+    const bool unassigned = allowUnassignedEnvironments && (environments.isNull() || environments.isUndefined());
+    // Alpha resume reconstructs one local environment even when start requested
+    // []. It grants no additional root: verify its cwd and require empty roots.
+    const auto assignments = environments.toArray();
+    const auto local = assignments.size() == 1 ? assignments.first().toObject() : QJsonObject{};
+    const bool scratchOnly = allowScratchEnvironment && assignments.size() == 1
+        && stringId(local.value("environmentId").toString()) && matchesScratchDirectory(local.value("cwd").toString())
+        && local.value("runtimeWorkspaceRoots").isArray() && local.value("runtimeWorkspaceRoots").toArray().isEmpty();
+    if (!stringId(id) || !matchesScratchDirectory(value.value("cwd").toString())
         || value.value("modelProvider") != "openai" || value.value("historyMode").toString("legacy") != "legacy"
-        || !environments.isArray() || !environments.toArray().isEmpty()
+        || (!unassigned && !scratchOnly && (!environments.isArray() || !assignments.isEmpty()))
         || QJsonDocument(value).toJson(QJsonDocument::Compact).size() > m_limits.historyBytes) return false;
     const auto turns = value.value("turns").toArray();
     if (turns.size() > m_limits.historyTurns) return false;
@@ -536,22 +639,30 @@ void CodexClient::notification(const QJsonObject& object)
     if (!m_wire.accepts("ServerNotification:" + name, object)) { fatal(QStringLiteral("A required notification shape was invalid.")); return; }
     const auto params = object.value("params").toObject();
     if (name == "account/updated") {
-        if (!m_turnId.isEmpty()) {
+        const auto mode = params.value("authMode");
+        const bool chatGpt = mode == "chatgpt";
+        if (!chatGpt && (!m_turnId.isEmpty() || hasPending(Operation::TurnStart))) {
             fatal(QStringLiteral("The account scope changed during an active turn."));
             return;
         }
-        ++m_accountEpoch;
-        const auto mode = params.value("authMode");
-        m_account = {}; m_account.mode = mode.isNull() || mode.isUndefined() ? CodexAccountMode::SignedOut : CodexAccountMode::Unknown;
-        emit accountChanged(m_account);
+        // This notification has no account identity. Token/plan refreshes must
+        // reverify the fingerprint before invalidating a verified scope. Buffer
+        // scoped traffic and block admission while that check is outstanding.
+        m_accountRefreshPending = true;
+        if (!chatGpt) {
+            ++m_accountEpoch;
+            m_account = {}; m_account.mode = mode.isNull() || mode.isUndefined() ? CodexAccountMode::SignedOut : CodexAccountMode::Unknown;
+            emit accountChanged(m_account);
+        }
         // An earlier account/read cannot restore stale readiness after this event.
         QList<qint64> obsolete;
         for (auto it = m_pending.begin(); it != m_pending.end(); ++it) if (it->operation == Operation::Account) obsolete.append(it.key());
         for (const auto id : obsolete) {
-            const auto pending = m_pending.take(id);
-            failPending(id, pending, error(ErrorCode::OperationCancelled, QStringLiteral("The account state changed.")), false);
+            m_pending.remove(id);
+            emit requestFailed(id, method(Operation::Account), error(ErrorCode::OperationCancelled, QStringLiteral("The account check was superseded.")));
         }
         const auto refreshed = readAccount(); Q_UNUSED(refreshed);
+        if (chatGpt && m_active) emit accountChanged(account());
     } else if (name == "account/login/completed") {
         if (hasPending(Operation::LoginStart)) {
             const auto bytes = QJsonDocument(params).toJson(QJsonDocument::Compact).size();
@@ -581,7 +692,7 @@ void CodexClient::turnEvent(const QJsonObject& object)
     if (m_turnId.isEmpty() || turnId != m_turnId) { ++m_ignored; return; }
     if (name == "turn/started" || name == "turn/completed") {
         CodexTurn turn;
-        if (!decodeTurn(params.value("turn").toObject(), m_thread.threadId, turn)
+        if (!decodeTurn(params.value("turn").toObject(), m_thread.threadId, turn, true)
             || (name == "turn/completed" && !terminal(turn.status))) { fatal(QStringLiteral("A turn event was incompatible.")); return; }
         for (const auto& item : turn.items) if (!mergeItem(item)) { fatal(QStringLiteral("An item association was incompatible.")); return; }
         if (name == "turn/completed") finishTurn(turn);
@@ -647,12 +758,7 @@ void CodexClient::serverRequest(const QJsonObject& object)
     else if (name == "item/permissions/requestApproval") reply.insert("result", QJsonObject{{"permissions", QJsonObject{}}, {"scope", "turn"}});
     else if (name == "item/tool/call") {
         const auto failureResponse = [this, &id](const QString& code) {
-            const QJsonObject body{{QStringLiteral("success"), false},
-                {QStringLiteral("data"), QJsonObject{{QStringLiteral("error"), code}}}};
-            const QJsonObject result{{QStringLiteral("success"), false},
-                {QStringLiteral("contentItems"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("inputText")},
-                    {QStringLiteral("text"), QString::fromUtf8(QJsonDocument(body).toJson(QJsonDocument::Compact))}}}}};
-            return resolveDynamicToolCall(id, result);
+            return resolveDynamicToolCall(id, dynamicToolFailure(code));
         };
         const auto params = object.value(QStringLiteral("params")).toObject();
         if (!m_wire.accepts(QStringLiteral("ServerRequest:item/tool/call"), object)) {
@@ -683,8 +789,19 @@ bool CodexClient::resolveDynamicToolCall(const QJsonValue& requestId, const QJso
     if (!m_active || !m_transport || ( !requestId.isString() && !requestId.isDouble())) return false;
     const QByteArray key = idKey(requestId);
     if (!m_serverRequests.contains(key) || m_resolvedServerRequests.contains(key)) return false;
-    const QJsonObject envelope{{QStringLiteral("id"), requestId}, {QStringLiteral("result"), response}};
     if (!m_wire.accepts(QStringLiteral("Response:DynamicToolCallResponse"), response)) return false;
+    const auto scopedResponse = !m_accountRefreshPending && !bindingMatches(m_thread)
+        ? dynamicToolFailure(QStringLiteral("scope_denied")) : response;
+    const QJsonObject envelope{{QStringLiteral("id"), requestId}, {QStringLiteral("result"), scopedResponse}};
+    if (m_accountRefreshPending) {
+        for (const auto& deferred : m_accountDeferred)
+            if (deferred.first && idKey(deferred.second.value("id")) == key) return false;
+        const auto bytes = QJsonDocument(envelope).toJson(QJsonDocument::Compact).size();
+        if (m_accountDeferred.size() >= m_limits.earlyEvents || bytes > m_limits.earlyEventBytes - m_accountDeferredBytes) {
+            fatal(QStringLiteral("The account verification event limit was exceeded.")); return false;
+        }
+        m_accountDeferred.append({true, envelope}); m_accountDeferredBytes += bytes; return true;
+    }
     m_resolvedServerRequests.insert(key);
     if (!m_transport->sendObject(envelope)) {
         fatal(QStringLiteral("A dynamic-tool response could not be queued."));
@@ -713,6 +830,7 @@ void CodexClient::failPending(qint64 id, const Pending& pending, AppError failur
     const bool profileFailure = pending.operation == Operation::Config || pending.operation == Operation::Requirements;
     const bool loginFailure = pending.operation == Operation::LoginStart;
     const bool accountFailure = pending.operation == Operation::Account && pending.accountEpoch == m_accountEpoch && m_account.mode != CodexAccountMode::Expired;
+    const bool refreshFailure = accountFailure && m_accountRefreshPending;
     if (profileFailure) {
         m_profileVerified = false; m_config.reset(); m_requirements.reset();
     }
@@ -727,6 +845,7 @@ void CodexClient::failPending(qint64 id, const Pending& pending, AppError failur
     if (loginFailure) emit loginCleared();
     if (accountFailure) emit accountChanged(account);
     emit requestFailed(id, method(pending.operation), failure);
+    if (refreshFailure) fatal(QStringLiteral("The Codex account could not be verified after an update."), pending.generation);
 }
 void CodexClient::disconnectClient(AppError failure)
 {
@@ -735,6 +854,7 @@ void CodexClient::disconnectClient(AppError failure)
     m_developmentLiveValidationAuthorized = false; m_deadlineTimer.stop();
     const auto pending = std::exchange(m_pending, {});
     m_config.reset(); m_requirements.reset(); m_earlyTurns.clear(); m_earlyBytes = 0;
+    m_accountDeferred.clear(); m_accountDeferredBytes = 0; m_accountRefreshPending = false;
     m_loginTimer.stop(); m_login.reset(); m_earlyLogins.clear(); m_earlyLoginBytes = 0;
     m_account = {}; ++m_accountEpoch;
     std::optional<CodexTurn> interrupted;

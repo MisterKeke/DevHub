@@ -1,0 +1,22 @@
+{
+  "codexVersion": "0.162.0-alpha.17.2",
+  "verifiedOn": "2026-10-11",
+  "source": "Native stdio protocol with an empty disposable CODEX_HOME; account/read confirmed null account and requiresOpenaiAuth=true before the turn",
+  "signedOutVerified": true,
+  "isolatedHome": true,
+  "authenticatedInference": false,
+  "turnStart": {
+    "status": "inProgress",
+    "itemsView": "notLoaded",
+    "itemCount": 0
+  },
+  "turnStarted": {
+    "status": "inProgress",
+    "itemsView": "notLoaded"
+  },
+  "turnCompleted": {
+    "status": "failed",
+    "itemsView": "notLoaded",
+    "itemCount": 0
+  }
+}

@@ -4,9 +4,10 @@ The manual live harness is an explicit developer-only target. It is not added to
 CTest and is omitted from normal builds. It launches the production
 `CodexExecutableLocator`, `CodexProcess`, `CodexClient`, and
 `AssistantController` stack, linked against a separate validation-only build of
-the Assistant library. The application and normal test library retain the
-production release gate, `CodexRuntimeProfile::liveInferenceApproved() ==
-false`. The harness does not create credentials, log in or out, change Codex
+the Assistant library. Production chat is enabled for the user's pinned
+0.162.0-alpha.17.2. The separate validation library still returns false from
+`productionChatEnabled(version)` and requires the explicit live-test opt-ins.
+The harness does not create credentials, log in or out, change Codex
 configuration, enumerate existing conversations, or save transcript text. Its
 repository is an in-memory metadata-only fixture.
 
@@ -37,8 +38,8 @@ repository is an in-memory metadata-only fixture.
   freshly initialized disposable Git repository. The request routes through
   the production `AssistantToolRuntime`, `TaskScheduler`, and `GitService`; no
   note/file disclosure or existing conversation is used.
-- `CodexRuntimeProfile::liveInferenceApproved()` remains false and is never
-  changed by the harness. A compile definition exists only in the separate
+- `CodexRuntimeProfile::productionChatEnabled(version)` remains false in the
+  harness library. A compile definition exists only in the separate
   library linked by `devhub_assistant_live_tests`; it cannot be activated by
   environment variables or application settings in production. Capability,
   account, scope, environment and protocol rejection all fail closed.

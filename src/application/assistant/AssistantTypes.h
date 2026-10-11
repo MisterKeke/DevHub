@@ -52,6 +52,7 @@ struct AssistantLimits final {
     int messages = 200;
     int renderMilliseconds = 50;
     int cancellationMilliseconds = 5000;
+    int startupMilliseconds = 20000;
 };
 
 enum class CodexTransportKind { NativeProcess, InMemoryTest };

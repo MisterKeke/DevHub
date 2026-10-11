@@ -55,11 +55,17 @@ AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) :
         uncertainAction->setText(tr("The outcome of %1 is uncertain. Check the affected service or note before requesting it again. The action will not be retried automatically.").arg(name));
         uncertainAction->show();
     });
-    m_approvalCards = new QVBoxLayout; root->addLayout(m_approvalCards);
+    m_approvalScroll = new QScrollArea(this); m_approvalScroll->setObjectName(QStringLiteral("assistantApprovals"));
+    m_approvalScroll->setWidgetResizable(true); m_approvalScroll->setFrameShape(QFrame::NoFrame);
+    m_approvalScroll->setMaximumHeight(220); m_approvalScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    auto* approvalContent = new QWidget; m_approvalCards = new QVBoxLayout(approvalContent);
+    m_approvalCards->setSizeConstraint(QLayout::SetMinAndMaxSize);
+    m_approvalCards->setContentsMargins(0, 0, 0, 0); m_approvalScroll->setWidget(approvalContent);
+    m_approvalScroll->hide(); root->addWidget(m_approvalScroll, 1);
     connect(&controller, &AssistantController::approvalCoordinatorChanged, this, &AssistantPage::refreshApprovals);
     m_scroll = new QScrollArea(this); m_scroll->setObjectName(QStringLiteral("assistantTranscript")); m_scroll->setWidgetResizable(true); m_scroll->setFrameShape(QFrame::NoFrame);
     auto* content = new QWidget(m_scroll); m_messages = new QVBoxLayout(content); m_messages->setContentsMargins(0, 0, 0, 0); m_messages->setSpacing(12); m_messages->addStretch();
-    m_scroll->setWidget(content); root->addWidget(m_scroll, 1);
+    m_scroll->setWidget(content); root->addWidget(m_scroll, 3);
     connect(m_scroll->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int value) {
         if (!m_rendering && !m_adjustingScroll) { ++m_scrollRevision; m_followLatest = m_scroll->verticalScrollBar()->maximum() - value <= 24; }
     });
@@ -127,7 +133,9 @@ void AssistantPage::refreshApprovals() {
         if (item->widget()) { item->widget()->setEnabled(false); item->widget()->hide(); item->widget()->deleteLater(); }
         delete item;
     }
-    auto* approvals = m_controller.approvals(); if (!approvals) { refreshState(); return; }
+    auto* approvals = m_controller.approvals();
+    m_approvalScroll->setVisible(approvals && !approvals->pending().isEmpty());
+    if (!approvals) { refreshState(); return; }
     for (const auto& request : approvals->pending()) {
         auto* card = new QWidget(this); card->setObjectName(QStringLiteral("assistantApprovalCard"));
         auto* layout = new QVBoxLayout(card);

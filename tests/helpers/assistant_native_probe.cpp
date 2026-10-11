@@ -1,7 +1,12 @@
-// Opt-in developer probe. Never reads/copies the user's Codex home or runs a turn.
+// Opt-in native probes. Containment modes use an isolated home; shared-readiness
+// checks account/config/catalog through the runtime only. No mode sends a turn.
 #include "infrastructure/codex/CodexExecutableLocator.h"
 #include "infrastructure/codex/CodexProcess.h"
 #include "application/assistant/AssistantToolRuntime.h"
+#include "application/assistant/AssistantController.h"
+#include "infrastructure/codex/CodexClient.h"
+#include "infrastructure/codex/CodexRuntimeProfile.h"
+#include "../support/AssistantHarness.h"
 #include <QFile>
 #include <QCoreApplication>
 #include <QDir>
@@ -19,9 +24,150 @@
 
 using namespace devhub::application::assistant;
 using namespace devhub::infrastructure::codex;
+// Explicit read-only readiness check. The runtime owns credential handling;
+// this helper never sends a prompt, starts login, or reads credential files.
+static int checkSharedReadiness(QCoreApplication& app, const QString& executablePath, int reconnects = 0,
+    const QString& metadataPath = {}, const QString& existingScratch = {}, bool newChatReconnect = false)
+{
+    QTemporaryDir scratch; if (!scratch.isValid()) return 3;
+    devhub::tests::assistant::MemoryConversationRepository repository;
+    if (!metadataPath.isEmpty()) {
+        QFile metadataFile(metadataPath); if (!metadataFile.open(QIODevice::ReadOnly)) return 3;
+        const auto value = QJsonDocument::fromJson(metadataFile.readAll()).object();
+        AssistantConversationMetadata metadata;
+        metadata.devhubAccountId = value.value("accountId").toString();
+        metadata.conversation.id = QUuid(value.value("id").toString());
+        metadata.conversation.context = {value.value("workspaceId").toString(), "Native restore check", value.value("workspaceRoot").toString()};
+        metadata.binding = {value.value("threadId").toString(), value.value("accountKey").toString(), {},
+            value.value("homeKey").toString(), existingScratch, value.value("profile").toString()};
+        metadata.createdAtUtc = QDateTime::fromString(value.value("createdAt").toString(), Qt::ISODate);
+        metadata.lastTurnId = value.value("lastTurnId").toString();
+        metadata.lastTurnStatus = value.value("lastTurnStatus").toString();
+        if (metadata.conversation.id.isNull() || metadata.devhubAccountId.isEmpty() || metadata.binding.threadId.isEmpty()
+            || !QFileInfo(existingScratch).isDir()) return 3;
+        repository.rows.append(metadata);
+    }
+    CodexProcess process; CodexClient client(process); CodexExecutableLocator locator;
+    devhub::shared::time::SystemApplicationClock clock;
+    devhub::shared::identifiers::UuidIdGenerator ids;
+    if (!client.configureDynamicTools(AssistantToolRuntime::experimentalToolSpecifications())) return 3;
+    AssistantController controller(client, clock, ids, existingScratch.isEmpty() ? scratch.path() : existingScratch,
+        CodexRuntimeProfile::launchArguments().value(), codexBaseEnvironment(QProcessEnvironment::systemEnvironment()),
+        metadataPath.isEmpty() ? nullptr : &repository);
+    if (!metadataPath.isEmpty()) {
+        controller.setContext(repository.rows.first().conversation.context);
+        controller.setPersistenceContext(repository.rows.first().devhubAccountId, true);
+    }
+    controller.applyConfiguration({executablePath, {}});
+    QString version; bool finishing = false; int launches = 0; int completedReconnects = 0;
+    bool reconnectQueued = false;
+    QString transportFailure, protocolFailure; QStringList requestFailures, profileChecks;
+    bool restored = false; int restorations = 0;
+    qsizetype initialMessageCount = -1;
+    QJsonObject resumeScope;
+    QObject::connect(&process, &ICodexTransport::objectReceived, &controller, [&](const QJsonObject& object, quint64) {
+        const auto result = object.value("result").toObject();
+        if (!result.contains("thread")) return;
+        const auto thread = result.value("thread").toObject();
+        QJsonArray environments;
+        for (const auto& entry : thread.value("environments").toArray()) {
+            const auto environment = entry.toObject();
+            environments.append(QJsonObject{{"scratchMatches", QFileInfo(environment.value("cwd").toString()).canonicalFilePath()
+                .compare(QFileInfo(existingScratch).canonicalFilePath(), Qt::CaseInsensitive) == 0},
+                {"runtimeRootCount", environment.value("runtimeWorkspaceRoots").toArray().size()}});
+        }
+        QJsonArray turns;
+        for (const auto& entry : thread.value("turns").toArray()) {
+            const auto turn = entry.toObject(); QJsonArray items;
+            for (const auto& item : turn.value("items").toArray()) items.append(item.toObject().value("type"));
+            turns.append(QJsonObject{{"status", turn.value("status")}, {"itemsView", turn.value("itemsView")}, {"itemTypes", items}});
+        }
+        resumeScope = {{"historyMode", thread.value("historyMode")}, {"environmentsNull", thread.value("environments").isNull()},
+            {"environmentCount", thread.value("environments").toArray().size()}, {"environments", environments}, {"turns", turns},
+            {"approvalPolicy", result.value("approvalPolicy")}, {"sandbox", result.value("sandbox")},
+            {"runtimeRootCount", result.value("runtimeWorkspaceRoots").toArray().size()},
+            {"initialTurnsPageNull", result.value("initialTurnsPage").isNull()},
+            {"initialPageTurnCount", result.value("initialTurnsPage").toObject().value("data").toArray().size()},
+            {"initialPageNextCursor", !result.value("initialTurnsPage").toObject().value("nextCursor").toString().isEmpty()},
+            {"initialPageBackwardsCursor", !result.value("initialTurnsPage").toObject().value("backwardsCursor").toString().isEmpty()},
+            {"turnCursorPresent", !result.value("turnsBackwardsCursor").toString().isEmpty()},
+            {"itemCursorPresent", !result.value("itemsBackwardsCursor").toString().isEmpty()}};
+    });
+    QObject::connect(&process, &ICodexTransport::failed, &controller, [&](const auto& error, quint64) { transportFailure = error.userMessage; });
+    QObject::connect(&client, &ICodexClient::protocolFailed, &controller, [&](const auto& error) { protocolFailure = error.userMessage; });
+    QObject::connect(&client, &ICodexClient::requestFailed, &controller, [&](qint64, const QString& method, const auto& error) { requestFailures.append(method + ": " + error.userMessage); });
+    QObject::connect(&client, &ICodexClient::profileChecked, &controller, [&](bool accepted, const QStringList& reasons) { profileChecks.append(accepted ? "verified" : reasons.join(',')); });
+    QObject::connect(&controller, &AssistantController::executableProbeRequested, &locator,
+        [&](const QString& path, quint64 generation) { ++launches; locator.locate(path, generation); });
+    QObject::connect(&controller, &AssistantController::cancelProbeRequested, &locator, &CodexExecutableLocator::cancel);
+    QObject::connect(&locator, &CodexExecutableLocator::executableFound, &controller,
+        [&](const CodexExecutable& executable, quint64 generation) { version = executable.version; controller.executableFound(executable, generation); });
+    QObject::connect(&locator, &CodexExecutableLocator::probeFailed, &controller, &AssistantController::probeFailed);
+    auto finish = [&](bool ready) {
+        if (finishing) return;
+        finishing = true;
+        const auto account = client.account();
+        bool textModel = false;
+        for (const auto& model : controller.models()) textModel |= !model.hidden && model.supportsText && model.availabilityMessage.isEmpty();
+        const QJsonObject evidence{{"codexVersion", version}, {"sharedProfile", true}, {"launchCount", launches},
+            {"completedReconnects", completedReconnects}, {"restored", restored}, {"restorationCount", restorations}, {"resumeScope", resumeScope},
+            {"newChatSelected", newChatReconnect && controller.messages().isEmpty()
+                && controller.conversation().id != repository.rows.first().conversation.id},
+            {"profileVerified", client.profileVerified()}, {"chatGptAccount", account.mode == CodexAccountMode::ChatGpt},
+            {"accountRoutingVerified", !account.identityFingerprint.isEmpty()}, {"textModelAvailable", textModel},
+            {"canSend", controller.canSend()}, {"status", controller.statusText()},
+            {"transportFailure", transportFailure}, {"protocolFailure", protocolFailure},
+            {"requestFailures", QJsonArray::fromStringList(requestFailures)}, {"profileChecks", QJsonArray::fromStringList(profileChecks)},
+            {"inference", false}, {"loginRequested", false}, {"configurationWriteRequested", false}};
+        const auto bytes = QJsonDocument(evidence).toJson(QJsonDocument::Indented);
+        std::fwrite(bytes.constData(), 1, static_cast<size_t>(bytes.size()), stdout);
+        controller.beginShutdown([&, ready] { app.exit(ready ? 0 : 1); });
+    };
+    auto advance = [&] {
+        if (controller.canSend() && (metadataPath.isEmpty() || restored) && !reconnectQueued && !finishing) {
+            reconnectQueued = true;
+            QTimer::singleShot(0, &controller, [&] {
+                reconnectQueued = false;
+                if (!controller.canSend() || (!metadataPath.isEmpty() && !restored)) return;
+                if (completedReconnects < reconnects) {
+                    initialMessageCount = controller.messages().size();
+                    ++completedReconnects;
+                    if (newChatReconnect) controller.newChat();
+                    controller.reconnect();
+                } else finish(newChatReconnect ? (restorations == 1 && controller.messages().isEmpty()
+                    && controller.conversation().id != repository.rows.first().conversation.id)
+                    : metadataPath.isEmpty() || !reconnects || (restorations == reconnects + 1
+                        && controller.messages().size() == initialMessageCount
+                        && controller.conversation().id == repository.rows.first().conversation.id));
+            });
+        }
+    };
+    QObject::connect(&controller, &AssistantController::stateChanged, &controller, advance);
+    QObject::connect(&client, &ICodexClient::threadReceived, &controller, [&](const CodexThread&) {
+        restored = true; ++restorations; advance();
+    });
+    QTimer::singleShot(0, &controller, &AssistantController::open);
+    QTimer::singleShot(reconnects ? 55000 : 20000, &controller, [&] { finish(false); });
+    QTimer::singleShot(reconnects ? 60000 : 30000, &app, [&] { app.exit(5); });
+    return app.exec();
+}
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
+    if (app.arguments().value(1) == QStringLiteral("--check-shared-restoration")
+        || app.arguments().value(1) == QStringLiteral("--check-shared-conversation-reconnect")
+        || app.arguments().value(1) == QStringLiteral("--check-shared-new-chat")) {
+        if (app.arguments().size() != 5) return 2;
+        const bool newChat = app.arguments().at(1) == QStringLiteral("--check-shared-new-chat");
+        return checkSharedReadiness(app, app.arguments().at(2), newChat || app.arguments().at(1) == QStringLiteral("--check-shared-conversation-reconnect") ? 1 : 0,
+            app.arguments().at(3), app.arguments().at(4), newChat);
+    }
+    if (app.arguments().value(1) == QStringLiteral("--check-shared-readiness")
+        || app.arguments().value(1) == QStringLiteral("--check-shared-reconnect")) {
+        if (app.arguments().size() != 3) return 2;
+        return checkSharedReadiness(app, app.arguments().at(2),
+            app.arguments().at(1) == QStringLiteral("--check-shared-reconnect") ? 3 : 0);
+    }
     if (app.arguments().value(1) == QStringLiteral("--tool-specs")) {
         if (app.arguments().size() != 3) return 2;
         QFile file(app.arguments().at(2)); if (!file.open(QIODevice::WriteOnly)) return 3;

@@ -86,6 +86,7 @@ signals:
 private:
     void refreshConnection();
     void beginProbe();
+    void restartConnection();
     void submit();
     void admitPendingMessage();
     void receivedThread(const CodexThread&);
@@ -114,6 +115,7 @@ private:
     QString m_scratch;
     QString m_accountId;
     QStringList m_arguments;
+    QStringList m_baseArguments;
     QProcessEnvironment m_environment;
     AssistantLimits m_limits;
     AssistantConnectionState m_connection = AssistantConnectionState::Disconnected;
@@ -128,12 +130,14 @@ private:
     QSet<QUuid> m_reconciled;
     QTimer m_renderTimer;
     QTimer m_cancelTimer;
+    QTimer m_startupTimer;
     domain::errors::AppError m_error;
     QUuid m_pendingUser;
     QUuid m_retryMessage;
     QString m_model;
     QDateTime m_conversationCreatedAtUtc;
     QString m_runtimeVersion;
+    QStringList m_profileProblems;
     QString m_loginStatus;
     AssistantConfiguration m_configuration;
     std::optional<AssistantConfiguration> m_pendingConfiguration;
@@ -148,6 +152,7 @@ private:
     bool m_opened = false;
     bool m_backendOwned = false;
     bool m_reconnectWanted = false;
+    bool m_profileRetryAttempted = false;
     bool m_newChatWanted = false;
     bool m_contextBlocked = false;
     bool m_limitReached = false;
@@ -155,6 +160,7 @@ private:
     bool m_threadOwned = false;
     bool m_restoreEnabled = true;
     bool m_restoreAttempted = false;
+    bool m_autoRestoreSuppressed = false;
     bool m_restoreUnavailable = false;
     bool m_shuttingDown = false;
     bool m_shutdownStopRequested = false;

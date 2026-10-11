@@ -13,10 +13,13 @@ are absent from the inventory.
 
 The implementation targets the user's installed `0.162.0-alpha.17.2`; the same
 contracts have offline regression coverage for the pinned 0.160.1 profile.
-Authenticated inference and native lifecycle release evidence remain pending,
-following the user's earlier instruction to finish offline checks. Production
-`liveInferenceApproved()` remains false. Configuration checks and release
-approval are separate gates.
+Authenticated inference and native lifecycle evidence remain pending, following
+the user's earlier instruction to finish offline checks. The user subsequently
+requested usable production sending. Production chat is now enabled for exactly
+`0.162.0-alpha.17.2`, after per-launch account, model, profile and scope checks.
+This product admission decision does not claim that authenticated model or
+clean-machine release validation has been completed. Native chat for 0.160.1
+remains gated; its in-memory regression coverage and opt-in live harness remain.
 
 ## Approval and execution ownership
 
@@ -143,4 +146,234 @@ acknowledgement, exact executable, separately authenticated disposable CODEX_HOM
 and sentinel documented in assistant-live-integration.md. No default credentials
 are copied and no authenticated inference or login/logout occurs in offline
 checks. Authenticated capability/lifecycle and clean-machine package acceptance
-remain open. Offline coverage does not change production Send admission.
+remain open. Offline coverage is not authenticated-inference evidence.
+
+## Profile warning and module window sizing
+
+The profile rejection warning is separate from version admission. The production
+launch overrides restricted features and policies, suppresses inherited notify,
+and disables desktop ambient suggestions for its child only. Known desktop
+appearance/queue preferences are permitted; unknown fields and attached browser
+or computer runtimes still fail the checks. If inherited MCP is the only remaining
+conflict, supported `config/read` results supply server names for explicit quoted
+disable overrides. The controller performs at most one automatic restart per
+manual connection attempt and verifies the full effective profile again before
+allowing any thread or turn. Reconnect refreshes the discovered inventory. Global
+configuration and credentials are neither copied nor edited.
+
+The controller now preserves safe explanations from `profileChecked` for the
+status banner and support diagnostics. It never displays command contents,
+server names, configuration values, or unknown raw reason strings. Reconnecting
+clears explanations from the previous attempt. Global Codex configuration is
+not modified.
+
+The module host now computes size hints from its current page. Previously,
+`QStackedWidget` included hidden pages' minimum sizes and could force the
+Assistant window beyond the monitor. Opening a module also clamps the decorated
+window to the current screen's available area. Approval previews have their own
+bounded scrolling area so they cannot displace the composer.
+
+Regression coverage checks a hidden module with an 1800-pixel minimum height,
+the blocked-profile banner at 720/850/1120 widths in a 520-pixel-high window,
+two pending note previews, visible composer/action controls, and sanitized
+profile diagnostics. These are offline UI/controller checks; authenticated
+runtime validation remains pending.
+
+## Production sending follow-up
+
+The installed 0.162.0-alpha.17.2 was checked through the production locator,
+transport, client and controller using its existing runtime-managed account.
+The first effective profile requested inherited MCP isolation. The automatic
+restart passed the complete profile check, ChatGPT account/routing and text-model
+catalog checks; `AssistantController::canSend()` returned true. No thread, turn,
+login/logout or configuration-write request was issued. Sanitized evidence is
+`tests/fixtures/codex/0.162.0-alpha.17.2/production-sending-readiness.json`.
+
+The native control also exposed a CLI compatibility defect: a quoted segment
+in a dotted override path does not work in this alpha. A single `mcp_servers`
+TOML table override with quoted entry names correctly preserves inherited
+definitions while disabling their enabled flags. Native disposable-profile
+regressions cover dots, quotes and Unicode names, notify suppression and desktop
+preferences. Unknown fields, managed conflicts and additional capabilities
+remain rejected. This readiness result does not verify an authenticated model
+response, cancellation during real inference, or clean-machine packaging.
+
+## Startup and reconnect diagnostics follow-up
+
+An initialize JSON-RPC rejection previously removed its pending request without
+closing the connection, leaving the page in Starting indefinitely. That path
+now closes the backend. The controller also enforces a 20-second startup deadline
+and keeps failures visible until an explicit retry. Reconnect invalidates the
+old probe before cancellation and resets the startup deadline.
+
+Debug process, client, controller, UI and tool-runtime suites pass; controller
+coverage includes initialize rejection, startup timeout/recovery and reconnect
+with a late response from the previous process. The installed alpha was also
+checked with the actual AssistantPage under GDB: three reconnects during Starting
+and three after readiness passed, with the unsent draft retained and normal exit.
+Only account, profile and model-catalog requests were made. No prompt, login or
+shared configuration write was performed. These standalone checks do not cover
+the full application's bootstrap object.
+
+Qt Creator's local `.qtc_clangd/compile_commands.json` was empty while CMake's
+compiler database contained the correct source/Qt include paths. Restoring the
+generated database alone was temporary: Qt Creator replaced it with an empty
+file on reopening. Its selected preset kit had empty C/C++ compiler assignments
+and no Qt version. The local kit now references the installed Qt 6.11.0 and its
+MinGW 13.1 compilers, with a corrected PATH environment entry. The project's
+initial vcpkg triplet also matches the preset's `x64-mingw-static`. Qt Creator's
+bundled clangd checks `CodexProcess.cpp` with CMake's database with zero errors;
+reopening Qt Creator regenerates its own database using the repaired kit. No
+unsupported external-database preference is left in the Qt Creator 19 project.
+
+The supplied SIGSEGV stack shows the startup timeout calling `CodexClient::stop`,
+which unexpectedly enters `CodexProcess::launch` with invalid arguments. The
+application's `ApplicationBootstrapper.cpp` object predated the controller header
+change and had zero recorded header dependencies. It constructs these Assistant
+objects on the stack, so linking it against updated class layouts can corrupt
+adjacent objects. This is consistent with the unexpected virtual dispatch; the
+executable's static virtual table and the rebuilt standalone tests were correct.
+A clean Debug rebuild now records 682 bootstrap dependencies, including the
+controller, client and transport headers. Verification of the same startup in
+the user's full authenticated application remains necessary to confirm that this
+was the sole cause of the reported crash.
+
+## Legacy history scope follow-up
+
+The reconnect failure was traced through a read-only native `thread/read` of the
+conversation already associated with DevHub's metadata. Its directory matched
+the isolated cache, its provider was OpenAI, and its interrupted turn used legacy
+history. The runtime returned `environments: null`, which the pinned schemas
+permit for unassigned persisted metadata. The decoder required an array even for
+restore/read, causing the active-scope rejection. Sanitized evidence is
+`tests/fixtures/codex/0.162.0-alpha.17.2/legacy-thread-history-scope.json`.
+
+Legacy resume/read now accept absent or null environment assignments, while new
+threads still require an explicit empty array acknowledgement. Foreign directories,
+providers and thread/account associations remain rejected. Every new turn still
+sends `environments: []`. Directory
+checks require an existing absolute canonical directory and account for Windows
+case differences. Protocol failures identify the RPC method and stay visible in
+the chat until reconnect, without exposing remote messages or paths.
+
+Regressions cover both pinned versions, legacy history restoration, assigned
+environment denial, directory aliases/mismatches, and visible failure followed
+by reconnect recovery. Native diagnostics sent no prompt and did not request
+login. That initial diagnostic did not run authenticated native resume or model
+inference; the subsequent resume check below exposed additional incompatibilities.
+
+## Native resume and New Chat follow-up
+
+The installed alpha's actual `thread/resume` returns paginated history and
+reconstructs one environment in DevHub's canonical scratch directory with no
+runtime roots. `thread/read` had returned legacy history with null assignments,
+so the read-only diagnostic alone did not exercise the failing restore path.
+
+Alpha resume now explicitly requests an ascending `initialTurnsPage` with full
+items and a limit one above the 100-turn cap. Hydration uses that page only when
+it is complete, bounded, terminal and text-compatible. Pagination continuation,
+partial item views, duplicate turns, unsafe items, foreign environments, added
+roots, providers or writable/network-enabled sandbox responses remain rejected.
+The single scratch-only reconstructed environment is compatible with this resume
+response; every admitted turn still sends empty environments and read-only policy.
+
+New Chat after a failed/disconnected restore now reconnects. Its explicit selection
+suppresses automatic restoration for the current account/session, including profile
+isolation relaunches and later manual reconnects, so the same saved association
+cannot trap the user in another restore failure. Existing metadata is retained.
+
+Prompt-free native verification used the production locator, transport, client
+and controller against the existing DevHub-associated conversation. The probe
+loaded only its local association metadata into a memory repository, leaving the
+real DevHub database untouched. Restore passed with `canSend=true`; selecting New
+Chat and reconnecting also passed with the empty new conversation still selected,
+exactly one restoration and `canSend=true`. Each launch verified the effective
+profile after disabling inherited MCP servers in the child. Sanitized evidence is
+`tests/fixtures/codex/0.162.0-alpha.17.2/native-resume-sending-readiness.json`.
+
+All five Debug process/client/controller/UI/tool-runtime suites pass. Added
+regressions cover native-shaped full-page restoration, scope/partial-history
+denial and New Chat recovery following a rejected resume. No prompt, inference,
+login/logout or shared configuration write was performed; real-inference live
+validation remains pending under its separate opt-in.
+
+## Live turn envelopes and account refresh follow-up
+
+The next send attempt exposed two further native compatibility assumptions.
+The alpha returns `itemsView: "notLoaded"` and an empty items array in
+`turn/start`, `turn/started` and failed `turn/completed`; text arrives through item events.
+A separate empty disposable home was verified signed out through `account/read`
+before a synthetic protocol turn. Its acknowledgement and notifications confirmed
+these shapes, ending in a failed turn without authenticated model inference.
+Sanitized evidence is
+`tests/fixtures/codex/0.162.0-alpha.17.2/signed-out-live-turn-shapes.json`.
+
+Live alpha envelopes now accept that empty unloaded view and reconcile retained
+streamed items at completion. Persisted history still requires full items;
+stored summary views or unloaded envelopes containing items remain rejected.
+
+The client previously revoked its account epoch on every `account/updated`
+notification, including token/plan refreshes that contain no account identifier.
+It now temporarily withholds account readiness and queues scoped traffic and
+outgoing application-tool results until a fresh account read verifies the
+fingerprint and authentication requirements. The same account preserves the
+pending/active turn. Stale account replies and superseded background checks cannot
+restore readiness or become chat errors. Confirmed sign-out/account changes,
+failed verification, deadlines and queue overflow still revoke scope, discard
+unverified traffic and retain uncertain delivery without replay. Out-of-scope
+application-tool responses contain only a standardized denial.
+
+All five Debug process/client/controller/UI/tool-runtime suites passed after the
+fixes. Client coverage includes unchanged refreshes before/after acknowledgement,
+buffered streaming, stale/repeated account events, genuine identity/auth changes,
+failed/expired verification, bounded queues, deferred tool invocation/results,
+native unloaded live turns and strict stored-history rejection. The integrated
+controller regression completes the synthetic send without uncertain delivery.
+Three prompt-free native reconnects also passed account/profile/model checks with
+Send enabled and no protocol failure; evidence is
+`tests/fixtures/codex/0.162.0-alpha.17.2/account-refresh-reconnect-readiness.json`.
+Authenticated model completion and the opt-in real-inference suite remain pending.
+
+## Successful completion and current-chat reconnect recovery
+
+The signed-out probe covered failed completion only. Successful completion uses
+`itemsView: "summary"` with the final agent message, as shown by the
+[upstream app-server implementation](https://github.com/openai/codex/blob/main/codex-rs/app-server/src/bespoke_event_handling.rs)
+and its [turn-start regression](https://github.com/openai/codex/blob/main/codex-rs/app-server/tests/suite/v2/turn_start.rs).
+This explains the user's full replies followed by an incompatible-turn error.
+For exactly the tested alpha, live completed summaries now accept one validated
+agent message and merge it with streamed items. Completed-error contradictions,
+conflicting completed text, unsafe items, multiple-item summaries, active summaries
+and stored partial history remain rejected. The protocol regression covers early
+completion and final text supplied through the summary without duplicate items.
+
+Reconnect previously skipped restoration whenever a transcript already existed.
+It now resumes the current native binding before considering automatic SQL-based
+restoration. This also works with persistence disabled and after an explicit New
+Chat has suppressed selection of older saved chats. Native history must contain
+the uncertain accepted turn before that warning can clear. Missing/active history,
+identity changes and resume failures retain the transcript and do not replay the
+prompt or tools. Successful hydration replaces the message cards, clears stale
+errors and persists the authoritative terminal status.
+
+A prompt-free native resume of the latest DevHub association also returned
+`historyMode: "legacy"` together with the requested complete full-items page.
+Alpha resume now accepts that combination as well as paginated history, retaining
+the same page bounds, scratch environment, account/home/profile and read-only
+scope checks. Regression coverage includes both formats and rejects unknown modes.
+
+The production native probe restored the latest associated completed conversation,
+then reconnected that same in-memory conversation and restored it a second time.
+The conversation identity and message count were retained, native history showed
+the completed user/agent messages, and Send was enabled with no protocol failure.
+Sanitized evidence is
+`tests/fixtures/codex/0.162.0-alpha.17.2/current-conversation-reconnect-readiness.json`.
+The real DevHub database was unchanged; no new prompt or model inference was sent.
+
+Final validation: the Debug application build/link and all five Assistant
+process/client/controller/UI/tool-runtime CTest suites passed. The client report
+contains 198 passing cases, the controller 41, and the UI 20; optional native test
+skips remain. The updated controller regression includes same-account refresh
+followed by a successful summary completion. Recovery tests cover persistence on
+and off, New Chat suppression, missing/active history, foreign accounts, failures,
+and UI replacement without duplicate cards. Authenticated inference remains pending.

@@ -20,23 +20,50 @@ bool sameContextBinding(const AssistantContext& left, const AssistantContext& ri
     return left.workspaceId == right.workspaceId
         && QString::compare(QDir::cleanPath(left.canonicalRoot), QDir::cleanPath(right.canonicalRoot), Qt::CaseInsensitive) == 0;
 }
+QStringList profileProblems(const QStringList& reasons)
+{
+    QStringList problems;
+    // Explain only known checks; never display raw runtime/configuration values.
+    for (const auto& reason : reasons) {
+        QString problem;
+        if (reason == "inherited-mcp-enabled") problem = QObject::tr("inherited MCP servers are enabled");
+        else if (reason == "legacy-notify-enabled") problem = QObject::tr("an inherited notification command is enabled");
+        else if (reason == "unverified-attached-runtime") problem = QObject::tr("attached desktop/browser settings are present");
+        else if (reason == "unverified-provider-overrides" || reason == "unsupported-auth-or-provider") problem = QObject::tr("the authentication or model provider settings are unsupported");
+        else if (reason == "unverified-config-source") problem = QObject::tr("a configuration source is unverified");
+        else if (reason == "unverified-managed-requirements" || reason == "invalid-managed-requirements") problem = QObject::tr("managed requirements are unsupported");
+        else if (reason.startsWith("feature-not-disabled:") || reason == "web-search-not-disabled" || reason == "unsafe-default-policy") problem = QObject::tr("native capabilities or policies do not meet the restrictions");
+        else if (reason == "unverified-capability-roots") problem = QObject::tr("additional workspace access is configured");
+        else problem = QObject::tr("a profile restriction could not be verified");
+        if (!problems.contains(problem)) problems.append(problem);
+    }
+    return problems;
+}
 }
 AssistantController::AssistantController(ICodexClient& client, shared::time::IApplicationClock& clock,
     shared::identifiers::IIdGenerator& ids, QString scratchDirectory, QStringList launchArguments,
     QProcessEnvironment environment, IConversationRepository* repository, QObject* parent, AssistantLimits limits)
     : QObject(parent), m_client(client), m_clock(clock), m_ids(ids), m_repository(repository),
-      m_scratch(std::move(scratchDirectory)), m_arguments(std::move(launchArguments)),
+      m_scratch(std::move(scratchDirectory)), m_arguments(std::move(launchArguments)), m_baseArguments(m_arguments),
       m_environment(std::move(environment)), m_limits(limits)
 {
     resetConversation();
     m_renderTimer.setSingleShot(true); m_renderTimer.setInterval(m_limits.renderMilliseconds);
     m_cancelTimer.setSingleShot(true); m_cancelTimer.setInterval(m_limits.cancellationMilliseconds);
+    m_startupTimer.setSingleShot(true); m_startupTimer.setInterval(m_limits.startupMilliseconds);
+    connect(&m_startupTimer, &QTimer::timeout, this, [this] {
+        if (m_connection != AssistantConnectionState::Starting) return;
+        m_connection = AssistantConnectionState::Failed;
+        m_client.stop();
+        setError(ErrorCode::StartupFailed, tr("Codex startup timed out. Reconnect to try again."));
+    });
     connect(&m_renderTimer, &QTimer::timeout, this, &AssistantController::flushMessages);
     connect(&m_cancelTimer, &QTimer::timeout, this, [this] {
         m_client.stop();
         if (!m_backendOwned && m_shuttingDown) completeShutdown();
     });
     connect(&client, &ICodexClient::initialized, this, [this] {
+        m_startupTimer.stop();
         m_modelsRequested = true;
         const auto result = m_client.listModels();
         if (!result) setError(result.error().code, result.error().userMessage);
@@ -67,11 +94,19 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
         maybeRestoreConversation();
         refreshConnection();
     });
-    connect(&client, &ICodexClient::profileChecked, this, [this](bool accepted) {
-        if (!accepted) setError(ErrorCode::AssistantPermissionDenied, tr("The Codex profile does not meet this Assistant's restrictions."));
+    connect(&client, &ICodexClient::profileChecked, this, [this](bool accepted, const QStringList& reasons) {
+        m_profileProblems = accepted ? QStringList{} : profileProblems(reasons);
+        if (!accepted) setError(ErrorCode::AssistantPermissionDenied, tr("Review the inherited Codex configuration and reconnect after resolving the listed restrictions."));
         else maybeRestoreConversation();
         refreshConnection();
     });
+    connect(&client, &ICodexClient::restrictedLaunchRequired, this,
+        [this](const QStringList& arguments, quint64 generation) {
+            if (generation != m_processGeneration || m_profileRetryAttempted || m_client.profileVerified()
+                || !canReconnect() || arguments == m_arguments) return;
+            m_profileRetryAttempted = true; m_arguments = arguments;
+            restartConnection();
+        }, Qt::QueuedConnection);
     connect(&client, &ICodexClient::threadReceived, this, &AssistantController::receivedThread);
     connect(&client, &ICodexClient::turnAccepted, this, [this](const QString& threadId, const QString& turnId) {
         if (m_operation != AssistantOperation::Submitting && m_operation != AssistantOperation::Cancelling) return;
@@ -87,11 +122,19 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
     connect(&client, &ICodexClient::itemChanged, this, &AssistantController::receivedItem);
     connect(&client, &ICodexClient::turnFinished, this, &AssistantController::finishedTurn);
     connect(&client, &ICodexClient::requestFailed, this, [this](qint64, const QString& method, const domain::errors::AppError& error) { failedRequest(method, error); });
-    connect(&client, &ICodexClient::protocolFailed, this, [this](const domain::errors::AppError& error) { setError(error.code, error.userMessage); });
+    connect(&client, &ICodexClient::protocolFailed, this, [this](const domain::errors::AppError& error) {
+        if (!m_shuttingDown && !m_reconnectWanted) m_connection = AssistantConnectionState::Failed;
+        setError(error.code, error.userMessage);
+    });
     connect(&client, &ICodexClient::connectionClosed, this, [this](quint64 generation) {
         if (generation != m_processGeneration) return;
+        m_startupTimer.stop();
         m_loginPending = false; m_challenge.reset();
-        m_connection = m_reconnectWanted ? AssistantConnectionState::Stopping : AssistantConnectionState::Disconnected;
+        if (m_connection == AssistantConnectionState::Starting) {
+            m_connection = AssistantConnectionState::Failed;
+            if (m_error.userMessage.isEmpty()) setError(ErrorCode::StartupFailed, tr("Codex stopped before startup completed. Reconnect to try again."));
+        } else if (m_connection != AssistantConnectionState::Failed)
+            m_connection = m_reconnectWanted ? AssistantConnectionState::Stopping : AssistantConnectionState::Disconnected;
         if (m_operation == AssistantOperation::Restoring) {
             m_operation = AssistantOperation::Idle; m_threadOwned = false; m_restoreMetadata.reset();
             m_restoreUnavailable = true;
@@ -109,7 +152,7 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
         if (m_shuttingDown) { completeShutdown(); return; }
         if (m_newChatWanted) { m_newChatWanted = false; resetConversation(); }
         if (std::exchange(m_reconnectWanted, false) && m_allowed) beginProbe();
-        else { m_connection = AssistantConnectionState::Disconnected; emit stateChanged(); }
+        else { if (m_connection != AssistantConnectionState::Failed) m_connection = AssistantConnectionState::Disconnected; emit stateChanged(); }
         QTimer::singleShot(0, this, &AssistantController::applyPendingConfiguration);
     });
 }
@@ -122,14 +165,21 @@ void AssistantController::beginProbe()
 {
     m_restoreAttempted = false;
     m_connection = AssistantConnectionState::Probing; m_modelsRequested = false; m_model.clear(); m_models.clear(); m_runtimeVersion.clear(); m_error = {};
+    m_profileProblems.clear();
     m_loginStatus.clear(); m_refreshModelsAfterLogin = false;
     emit stateChanged(); emit executableProbeRequested(m_configuration.executablePath, ++m_probeGeneration);
 }
 void AssistantController::reconnect()
 {
     if (!canReconnect()) return;
+    m_profileRetryAttempted = false; m_arguments = m_baseArguments;
+    restartConnection();
+}
+void AssistantController::restartConnection()
+{
     m_opened = true;
-    emit cancelProbeRequested(); ++m_probeGeneration;
+    m_startupTimer.stop();
+    ++m_probeGeneration; emit cancelProbeRequested();
     if (m_backendOwned) {
         m_reconnectWanted = true; m_connection = AssistantConnectionState::Stopping; emit stateChanged(); m_client.stop();
     } else beginProbe();
@@ -138,9 +188,10 @@ void AssistantController::executableFound(CodexExecutable executable, quint64 ge
 {
     if (!m_allowed || generation != m_probeGeneration || m_connection != AssistantConnectionState::Probing) return;
     m_runtimeVersion = executable.version;
+    m_startupTimer.start();
     m_backendOwned = true; m_connection = AssistantConnectionState::Starting; emit stateChanged();
     const auto result = m_client.launch({std::move(executable), m_arguments, m_scratch, m_environment, ++m_processGeneration});
-    if (!result) { m_backendOwned = false; m_connection = AssistantConnectionState::Failed; setError(result.error().code, result.error().userMessage); }
+    if (!result) { m_startupTimer.stop(); m_backendOwned = false; m_connection = AssistantConnectionState::Failed; setError(result.error().code, result.error().userMessage); }
 }
 void AssistantController::probeFailed(domain::errors::AppError error, quint64 generation)
 {
@@ -149,7 +200,8 @@ void AssistantController::probeFailed(domain::errors::AppError error, quint64 ge
 }
 void AssistantController::refreshConnection()
 {
-    if (!m_allowed || m_connection == AssistantConnectionState::Stopping || m_connection == AssistantConnectionState::Probing) { emit stateChanged(); return; }
+    if (!m_allowed || m_connection == AssistantConnectionState::Stopping || m_connection == AssistantConnectionState::Probing
+        || m_connection == AssistantConnectionState::Failed) { emit stateChanged(); return; }
     if (m_client.isInitialized()) m_connection = AssistantConnectionState::Ready;
     emit stateChanged();
 }
@@ -193,15 +245,20 @@ QString AssistantController::statusText() const
     if (m_connection == AssistantConnectionState::Probing) return tr("Checking the installed native Codex executable…");
     if (m_connection == AssistantConnectionState::Starting) return tr("Starting Codex and verifying its account and profile…");
     if (m_connection == AssistantConnectionState::Stopping) return tr("Closing the previous Codex process…");
+    if (m_connection == AssistantConnectionState::Failed) return m_error.userMessage.isEmpty()
+        ? tr("Codex startup failed. Reconnect to try again.") : m_error.userMessage;
     if (!m_client.isInitialized()) return tr("Codex is disconnected. Reconnect to check installation and status.");
     if (m_threadOwned && m_client.threadBinding().threadId.isEmpty()) return tr("The previous conversation is unavailable after reconnect. Start a new chat; the transcript is retained.");
     const auto account = m_client.account();
     if (account.mode == CodexAccountMode::Expired) return tr("Codex sign-in has expired. Reconnect after signing in through Codex.");
     if (account.mode != CodexAccountMode::ChatGpt) return tr("This Assistant requires a Codex-managed ChatGPT sign-in.");
-    if (!m_client.profileVerified()) return tr("Codex restrictions have not passed verification. Send is disabled.");
+    if (!m_client.profileVerified()) return m_profileProblems.isEmpty()
+        ? tr("Codex restrictions have not passed verification. Send is disabled.")
+        : tr("Codex profile blocked: %1. Send is disabled.").arg(m_profileProblems.join(QStringLiteral("; ")));
+    if (!account.requiresOpenaiAuth || account.identityFingerprint.isEmpty()) return tr("The Codex account routing has not passed verification. Reconnect after checking your ChatGPT sign-in.");
     if (m_model.isEmpty() && !m_configuration.preferredModel.isEmpty()) return tr("The selected model is unavailable. Choose another model in Assistant settings.");
     if (m_model.isEmpty()) return m_modelsRequested ? tr("No text model is available in the Codex catalog.") : tr("Checking models…");
-    if (!m_client.canStartConversation() && !m_client.canSend()) return tr("Native chat awaits authenticated model and runtime verification. Send is disabled.");
+    if (!m_client.canStartConversation() && !m_client.canSend()) return tr("Native chat is not enabled for this runtime. Select Codex 0.162.0-alpha.17.2 in Assistant settings.");
     return tr("Codex is ready. Text chat stays inside DevHub.");
 }
 const AssistantMessage* AssistantController::message(const QUuid& id) const
@@ -261,13 +318,22 @@ void AssistantController::receivedThread(const CodexThread& thread)
             setError(ErrorCode::AssistantHistoryUnavailable, tr("The saved conversation is unavailable. Start a new chat."));
             emit stateChanged(); return;
         }
-        const auto& metadata = *m_restoreMetadata;
+        const auto metadata = *m_restoreMetadata;
         if (thread.binding.threadId != metadata.binding.threadId
             || thread.binding.accountFingerprint != metadata.binding.accountFingerprint) {
             m_operation = AssistantOperation::Idle;
             m_restoreUnavailable = true;
             setError(ErrorCode::AssistantHistoryUnavailable, tr("The saved conversation did not match its DevHub association. Start a new chat."));
             emit stateChanged(); return;
+        }
+        if (metadata.lastTurnStatus == QStringLiteral("uncertain")) {
+            bool found = false;
+            for (const auto& turn : thread.turns) found |= !metadata.lastTurnId.isEmpty() && turn.id == metadata.lastTurnId;
+            if (!found) {
+                m_operation = AssistantOperation::Uncertain; m_restoreMetadata.reset();
+                setError(ErrorCode::AssistantHistoryUnavailable, tr("The uncertain turn is absent from accepted history. The transcript is retained; start a new chat."));
+                return;
+            }
         }
         hydrateConversation(metadata, thread);
         m_restoreMetadata.reset();
@@ -365,12 +431,20 @@ void AssistantController::stopTurn()
 void AssistantController::newChat()
 {
     if (!canNewChat()) return;
+    // Explicitly choosing New Chat must survive reconnect/profile relaunch;
+    // otherwise the same failing saved association is selected again.
+    m_autoRestoreSuppressed = true;
     if (busy()) { m_newChatWanted = true; stopTurn(); return; }
     if (m_backendOwned && m_operation == AssistantOperation::Uncertain) {
         // A new native thread must be selected lazily, without accidentally
         // continuing the old one. Reconnect retains Codex's durable history.
         m_newChatWanted = true; reconnect();
-    } else resetConversation();
+    } else {
+        const bool reconnectNeeded = m_connection == AssistantConnectionState::Failed
+            || m_connection == AssistantConnectionState::Disconnected;
+        resetConversation();
+        if (reconnectNeeded) reconnect();
+    }
 }
 void AssistantController::resetConversation(bool retainAssociation)
 {
@@ -389,6 +463,7 @@ void AssistantController::resetConversation(bool retainAssociation)
     m_pendingUser = QUuid{}; m_retryMessage = QUuid{}; m_operation = AssistantOperation::Idle; m_contextBlocked = false; m_limitReached = false; m_error = {};
     m_threadOwned = false;
     m_restoreUnavailable = false;
+    m_restoreMetadata.reset();
     m_binding = {};
     m_conversation = {}; m_conversation.id = m_ids.create(); m_conversation.context = m_selectedContext;
     m_conversationCreatedAtUtc = {};
@@ -430,7 +505,7 @@ void AssistantController::setContext(AssistantContext context)
 }
 void AssistantController::setPersistenceContext(QString accountId, bool restoreEnabled)
 {
-    if (m_accountId != accountId) m_restoreAttempted = false;
+    if (m_accountId != accountId) { m_restoreAttempted = false; m_autoRestoreSuppressed = false; }
     m_accountId = std::move(accountId); m_restoreEnabled = restoreEnabled;
     maybeRestoreConversation();
 }
@@ -440,6 +515,7 @@ void AssistantController::setSessionAllowed(bool allowed, bool clearTranscript)
     const bool wasAllowed = m_allowed;
     m_allowed = allowed;
     if (!allowed) {
+        m_startupTimer.stop();
         if (wasAllowed) revokeAccess();
         m_loginPending = false; m_challenge.reset(); m_loginStatus.clear();
         if (wasAllowed) {
@@ -501,6 +577,7 @@ void AssistantController::beginShutdown(std::function<void()> completion)
     if (completion) m_shutdownCompletion = std::move(completion);
     if (m_shuttingDown) return;
     m_shuttingDown = true;
+    m_startupTimer.stop();
     m_allowed = false;
     revokeAccess();
     m_loginPending = false; m_challenge.reset(); m_loginStatus.clear();
@@ -552,11 +629,13 @@ QStringList AssistantController::diagnosticsSnapshot() const
     return {tr("Assistant connection: %1").arg(connection),
             tr("Assistant operation: %1").arg(operation),
             tr("Codex runtime: %1; profile: %2").arg(version, profile),
+            tr("Codex profile restrictions: %1").arg(m_profileProblems.isEmpty() ? tr("none reported") : m_profileProblems.join(QStringLiteral("; "))),
             tr("Assistant access generation: %1").arg(m_accessGeneration)};
 }
 void AssistantController::failedRequest(const QString& method, const domain::errors::AppError& error)
 {
     if (m_shuttingDown) return;
+    if (method == "account/read" && error.code == ErrorCode::OperationCancelled) return;
     if (method == "thread/resume" && m_operation == AssistantOperation::Restoring) {
         m_operation = AssistantOperation::Idle; m_threadOwned = false; m_restoreMetadata.reset();
         m_restoreUnavailable = true;
@@ -666,15 +745,26 @@ void AssistantController::persistCurrent(const QString& turnStatus)
 
 void AssistantController::maybeRestoreConversation()
 {
-    if (m_restoreAttempted || !m_restoreEnabled || !m_repository || m_accountId.isEmpty() || !m_allowed
+    if (m_restoreAttempted || !m_allowed
         || !m_client.isInitialized() || !m_client.profileVerified() || m_client.account().mode != CodexAccountMode::ChatGpt
         || !m_client.account().requiresOpenaiAuth || m_client.account().identityFingerprint.isEmpty()
-        || m_model.isEmpty() || !m_messages.isEmpty() || m_operation != AssistantOperation::Idle) return;
+        || m_model.isEmpty() || busy()) return;
+    const bool current = !m_binding.threadId.isEmpty() && m_client.threadBinding().threadId.isEmpty();
+    if (!current && (m_autoRestoreSuppressed || !m_restoreEnabled || !m_repository || m_accountId.isEmpty()
+        || !m_messages.isEmpty() || m_operation != AssistantOperation::Idle)) return;
     m_restoreAttempted = true;
-    const auto saved = m_repository->list(m_accountId, 100);
-    if (!saved) { setError(saved.error().code, tr("The live chat is available, but saved conversation metadata could not be read.")); return; }
-    if (saved.value().isEmpty()) return;
-    const auto metadata = saved.value().first();
+    AssistantConversationMetadata metadata;
+    if (current) {
+        metadata.conversation = m_conversation; metadata.devhubAccountId = m_accountId; metadata.binding = m_binding;
+        metadata.createdAtUtc = m_conversationCreatedAtUtc;
+        metadata.lastTurnId = m_messages.isEmpty() ? QString{} : m_messages.last().turnId;
+        if (m_operation == AssistantOperation::Uncertain) metadata.lastTurnStatus = QStringLiteral("uncertain");
+    } else {
+        const auto saved = m_repository->list(m_accountId, 100);
+        if (!saved) { setError(saved.error().code, tr("The live chat is available, but saved conversation metadata could not be read.")); return; }
+        if (saved.value().isEmpty()) return;
+        metadata = saved.value().first();
+    }
     if (metadata.devhubAccountId != m_accountId || metadata.binding.accountFingerprint != m_client.account().identityFingerprint
         || metadata.binding.threadId.isEmpty()) {
         m_restoreUnavailable = true;
@@ -682,7 +772,8 @@ void AssistantController::maybeRestoreConversation()
     }
     m_restoreMetadata = metadata;
     m_conversation = metadata.conversation; m_conversationCreatedAtUtc = metadata.createdAtUtc;
-    m_binding = metadata.binding; m_binding.scratchDirectory = m_scratch; m_binding.codexHome.clear();
+    m_binding = metadata.binding; m_binding.scratchDirectory = m_scratch;
+    if (!current) m_binding.codexHome.clear();
     m_threadOwned = true; m_operation = AssistantOperation::Restoring;
     const auto result = m_client.resumeThread(m_binding);
     if (!result) {
@@ -695,8 +786,11 @@ void AssistantController::maybeRestoreConversation()
 
 void AssistantController::hydrateConversation(const AssistantConversationMetadata& metadata, const CodexThread& thread)
 {
+    m_renderTimer.stop(); m_changed.clear(); m_reconciled.clear(); m_pendingUser = QUuid{}; m_retryMessage = QUuid{};
     m_messages.clear(); m_itemMessages.clear(); m_binding = thread.binding; m_threadOwned = true;
+    m_error = {}; m_limitReached = false;
     m_conversation = metadata.conversation; m_conversationCreatedAtUtc = metadata.createdAtUtc;
+    emit transcriptReset();
     QList<AssistantMessage> hydrated;
     for (const auto& turn : thread.turns) for (const auto& item : turn.items) {
         if (item.type != QStringLiteral("userMessage") && item.type != QStringLiteral("agentMessage")) continue;
@@ -730,6 +824,9 @@ void AssistantController::hydrateConversation(const AssistantConversationMetadat
     m_restoreUnavailable = false;
     m_contextBlocked = !sameContextBinding(m_selectedContext, m_conversation.context);
     if (!m_contextBlocked) m_conversation.context.name = m_selectedContext.name;
-    persistCurrent(metadata.lastTurnStatus); emit stateChanged();
+    const auto lastStatus = thread.turns.isEmpty() ? QString{} : thread.turns.last().status == CodexTurnStatus::Completed
+        ? QStringLiteral("completed") : thread.turns.last().status == CodexTurnStatus::Interrupted
+        ? QStringLiteral("interrupted") : QStringLiteral("failed");
+    persistCurrent(lastStatus); emit stateChanged();
 }
 }

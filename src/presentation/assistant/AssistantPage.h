@@ -46,6 +46,7 @@ private:
     QScrollArea* m_scroll;
     QVBoxLayout* m_messages;
     QVBoxLayout* m_approvalCards;
+    QScrollArea* m_approvalScroll;
     bool m_preedit = false;
     bool m_followLatest = true;
     bool m_rendering = false;

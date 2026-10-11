@@ -1,12 +1,18 @@
 #include "support/AssistantHarness.h"
 #include "presentation/assistant/AssistantPage.h"
 #include "application/assistant/AssistantApprovalCoordinator.h"
+#include "application/assistant/AssistantToolRuntime.h"
+#include "infrastructure/codex/CodexProcess.h"
+#include "infrastructure/codex/CodexExecutableLocator.h"
 #include "presentation/assistant/AssistantNavigation.h"
 #include "presentation/widgets/SafeMarkdownBrowser.h"
+#include "presentation/widgets/CurrentPageStack.h"
 #include "presentation/theme/ThemeManager.h"
 #include <QApplication>
 #include <QClipboard>
 #include <QCheckBox>
+#include <QDialog>
+#include <QVBoxLayout>
 #include <QFontDatabase>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
@@ -29,6 +35,118 @@ class AssistantUiTest final : public QObject {
     QTemporaryDir m_settingsRoot;
     std::unique_ptr<devhub::presentation::theme::ThemeManager> m_theme;
 private slots:
+    void reconnectReplacesUncertainMessageCardsWithoutDuplicates() {
+        Harness h({}, {}, nullptr, "0.162.0-alpha.17.2"); QVERIFY(h.readyController());
+        AssistantPage page(h.controller); page.resize(850, 520); page.show();
+        QVERIFY(h.sendAndAccept("question")); h.delta("answer");
+        auto invalid = turn("turn-1", "completed"); invalid.insert("itemsView", "unknown");
+        h.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", invalid}});
+        QCOMPARE(page.findChildren<SafeMarkdownBrowser*>().size(), 2);
+        page.findChild<QPushButton*>("assistantReconnect")->click(); QVERIFY(h.readyController());
+        const QJsonObject user{{"type", "userMessage"}, {"id", "user-1"}, {"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "question"}}}}};
+        h.reply("thread/resume", h.threadResult(h.thread("thread-1", QJsonArray{turn("turn-1", "completed", QJsonArray{user, agent("agent-1", "answer")})})));
+        QCOMPARE(page.findChildren<SafeMarkdownBrowser*>().size(), 2);
+        page.findChild<QPlainTextEdit*>("assistantComposer")->setPlainText("next question");
+        QVERIFY(page.findChild<QPushButton*>("assistantSend")->isEnabled());
+        QVERIFY(!page.findChild<QLabel*>("assistantStatus")->text().contains("uncertain"));
+        for (const auto& message : h.controller.messages()) QCOMPARE(message.delivery, AssistantDelivery::Completed);
+    }
+    void installedNativeReconnectWithVisibleChat() {
+        const auto executable = qEnvironmentVariable("DEVHUB_READONLY_CODEX_EXE");
+        if (executable.isEmpty()) QSKIP("Opt-in read-only native account/profile/catalog check; no prompt or login.");
+        QTemporaryDir scratch; QVERIFY(scratch.isValid());
+        devhub::infrastructure::codex::CodexProcess process;
+        devhub::infrastructure::codex::CodexClient client(process);
+        devhub::infrastructure::codex::CodexExecutableLocator locator;
+        FixedClock clock; SequenceIds ids;
+        QVERIFY(client.configureDynamicTools(devhub::application::assistant::AssistantToolRuntime::experimentalToolSpecifications()));
+        AssistantController controller(client, clock, ids, scratch.path(),
+            devhub::infrastructure::codex::CodexRuntimeProfile::launchArguments().value(),
+            codexBaseEnvironment(QProcessEnvironment::systemEnvironment()));
+        controller.applyConfiguration({executable, {}});
+        QObject::connect(&controller, &AssistantController::executableProbeRequested, &locator, &devhub::infrastructure::codex::CodexExecutableLocator::locate);
+        QObject::connect(&controller, &AssistantController::cancelProbeRequested, &locator, &devhub::infrastructure::codex::CodexExecutableLocator::cancel);
+        QObject::connect(&locator, &devhub::infrastructure::codex::CodexExecutableLocator::executableFound, &controller, &AssistantController::executableFound);
+        QObject::connect(&locator, &devhub::infrastructure::codex::CodexExecutableLocator::probeFailed, &controller, &AssistantController::probeFailed);
+        AssistantApprovalCoordinator approvals; controller.setApprovalCoordinator(&approvals);
+        AssistantPage page(controller); page.resize(850, 520); page.show();
+        auto* reconnect = page.findChild<QPushButton*>("assistantReconnect");
+        int startingReconnects = 0;
+        bool startingReconnectQueued = false;
+        QObject::connect(&controller, &AssistantController::stateChanged, &page, [&] {
+            if (controller.connection() != AssistantConnectionState::Starting || startingReconnects >= 3 || startingReconnectQueued) return;
+            startingReconnectQueued = true;
+            QTimer::singleShot(0, &page, [&] {
+                startingReconnectQueued = false;
+                if (controller.connection() != AssistantConnectionState::Starting) return;
+                ++startingReconnects; reconnect->click();
+            });
+        });
+        page.activate();
+        auto* composer = page.findChild<QPlainTextEdit*>("assistantComposer"); composer->setPlainText("Unsent draft");
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            QTRY_VERIFY_WITH_TIMEOUT(controller.canSend(), 15000);
+            QCOMPARE(composer->toPlainText(), QStringLiteral("Unsent draft"));
+            QVERIFY(page.findChild<QPushButton*>("assistantSend")->isEnabled());
+            if (attempt != 3) reconnect->click();
+        }
+        QCOMPARE(startingReconnects, 3);
+        bool stopped = false; controller.beginShutdown([&] { stopped = true; });
+        QTRY_VERIFY_WITH_TIMEOUT(stopped, 10000);
+    }
+    void nativeAlphaReadyEnablesSend() {
+        Harness h({}, {}, nullptr, "0.162.0-alpha.17.2"); h.transport.native = true; QVERIFY(h.readyController());
+        AssistantPage page(h.controller); page.resize(850, 520); page.show();
+        auto* composer = page.findChild<QPlainTextEdit*>("assistantComposer");
+        auto* send = page.findChild<QPushButton*>("assistantSend"); QVERIFY(!send->isEnabled());
+        composer->setPlainText("User chose to send this text"); QVERIFY(send->isEnabled());
+        send->click(); QVERIFY(!h.transport.lastRequest("thread/start").isEmpty());
+        h.reply("thread/start", h.threadResult()); QVERIFY(!h.transport.lastRequest("turn/start").isEmpty());
+        QVERIFY(composer->toPlainText().isEmpty()); QVERIFY(!send->isEnabled());
+        QVERIFY(!h.controller.notesDisclosureGranted()); QVERIFY(!h.controller.filesDisclosureGranted());
+    }
+    void hiddenModulesDoNotPushComposerOffscreen() {
+        Harness h; h.controller.open();
+        h.reply("initialize", {{"codexHome", h.scratch.path()}, {"userAgent", "fixture"}, {"platformFamily", "windows"}, {"platformOs", "windows"}});
+        h.reply("account/read", chatGptAccount());
+        auto result = safeConfig(); auto config = result.value("config").toObject();
+        config.insert("notify", QJsonArray{"private-command"});
+        config.insert("mcp_servers", QJsonObject{{"private-server", QJsonObject{{"enabled", true}}}});
+        config.insert("desktop", QJsonObject{{"private", true}}); result.insert("config", config);
+        h.reply("config/read", result); h.reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)}});
+        QDialog window; auto* layout = new QVBoxLayout(&window); layout->setContentsMargins(0, 0, 0, 0);
+        auto* stack = new devhub::presentation::widgets::CurrentPageStack(&window); layout->addWidget(stack);
+        auto* tallModule = new QWidget; tallModule->setMinimumSize(1000, 1800); stack->addWidget(tallModule);
+        auto* page = new AssistantPage(h.controller); stack->addWidget(page); stack->setCurrentWidget(page);
+        for (const int width : {720, 850, 1120}) {
+            window.resize(width, 520); window.show(); QTest::qWait(20);
+            QCOMPARE(window.height(), 520);
+            for (const auto& name : {"assistantComposer", "assistantSend", "assistantStop", "assistantReconnect"}) {
+                auto* control = page->findChild<QWidget*>(name); QVERIFY(control);
+                QVERIFY(window.rect().contains(QRect(control->mapTo(&window, QPoint{}), control->size())));
+            }
+            const auto snapshot = qEnvironmentVariable("DEVHUB_ASSISTANT_LAYOUT_SNAPSHOT");
+            if (width == 850 && !snapshot.isEmpty()) QVERIFY(window.grab().save(snapshot));
+        }
+        stack->setCurrentWidget(tallModule); QVERIFY(stack->minimumSizeHint().height() >= 1800);
+        stack->setCurrentWidget(page); QVERIFY(stack->minimumSizeHint().height() < 520);
+    }
+    void pendingPreviewsScrollWithoutDisplacingComposer() {
+        Harness h; AssistantApprovalCoordinator approvals; h.controller.setApprovalCoordinator(&approvals);
+        AssistantPage page(h.controller); page.resize(850, 520); page.show();
+        for (int i = 0; i < 2; ++i) {
+            ToolCall call; call.callId = QString::number(i); call.name = "devhub_notes_edit"; call.expiresAtMonotonicMs = 100000;
+            (void)approvals.request(call, {}, "Workspace", "Replace note", QString(8000, 'x'), [](bool) {});
+        }
+        QTest::qWait(20); QCOMPARE(page.height(), 520);
+        auto* scroll = page.findChild<QScrollArea*>("assistantApprovals"); QVERIFY(scroll->isVisible());
+        QVERIFY(scroll->verticalScrollBar()->maximum() > 0);
+        for (const auto& name : {"assistantComposer", "assistantSend", "assistantStop"}) {
+            auto* control = page.findChild<QWidget*>(name); QVERIFY(control);
+            QVERIFY(page.rect().contains(QRect(control->mapTo(&page, QPoint{}), control->size())));
+        }
+        page.hide(); QVERIFY(approvals.pending().isEmpty()); h.controller.setApprovalCoordinator(nullptr);
+    }
     void approvalsAreExplicitAndHidingDenies() {
         Harness h; AssistantApprovalCoordinator approvals; h.controller.setApprovalCoordinator(&approvals);
         AssistantPage page(h.controller); page.resize(850, 650); page.show();

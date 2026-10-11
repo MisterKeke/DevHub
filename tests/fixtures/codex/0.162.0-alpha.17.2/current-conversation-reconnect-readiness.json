@@ -1,0 +1,68 @@
+{
+  "accountRoutingVerified": true,
+  "canSend": true,
+  "chatGptAccount": true,
+  "codexVersion": "0.162.0-alpha.17.2",
+  "completedReconnects": 1,
+  "configurationWriteRequested": false,
+  "inference": false,
+  "launchCount": 4,
+  "loginRequested": false,
+  "newChatSelected": false,
+  "profileChecks": [
+    "inherited-mcp-enabled",
+    "verified",
+    "inherited-mcp-enabled",
+    "verified"
+  ],
+  "profileVerified": true,
+  "protocolFailure": "",
+  "requestFailures": [
+    "account/read: The Codex connection is stopping.",
+    "account/read: The account check was superseded.",
+    "account/read: The Codex connection is stopping.",
+    "account/read: The account check was superseded."
+  ],
+  "restorationCount": 2,
+  "restored": true,
+  "resumeScope": {
+    "approvalPolicy": "on-request",
+    "environmentCount": 1,
+    "environments": [
+      {
+        "runtimeRootCount": 0,
+        "scratchMatches": true
+      }
+    ],
+    "environmentsNull": false,
+    "historyMode": "legacy",
+    "initialPageBackwardsCursor": true,
+    "initialPageNextCursor": false,
+    "initialPageTurnCount": 1,
+    "initialTurnsPageNull": false,
+    "itemCursorPresent": false,
+    "runtimeRootCount": 0,
+    "sandbox": {
+      "networkAccess": false,
+      "type": "readOnly"
+    },
+    "turnCursorPresent": false,
+    "turns": [
+      {
+        "itemTypes": [
+          "userMessage",
+          "agentMessage",
+          "agentMessage"
+        ],
+        "itemsView": "full",
+        "status": "completed"
+      }
+    ]
+  },
+  "sharedProfile": true,
+  "status": "Codex is ready. Text chat stays inside DevHub.",
+  "textModelAvailable": true,
+  "transportFailure": "",
+  "source": "Production native probe: existing completed DevHub chat restored, then the current conversation reconnected; no prompt, inference or real DevHub database write",
+  "verifiedOn": "2026-10-11"
+}

@@ -18,6 +18,203 @@ using devhub::domain::errors::ErrorCategory;
 class AssistantControllerTest final : public QObject {
     Q_OBJECT
 private slots:
+    void reconnectReconcilesExistingTranscript_data() {
+        QTest::addColumn<bool>("persist"); QTest::addColumn<bool>("uncertain");
+        QTest::newRow("session-only uncertain") << false << true;
+        QTest::newRow("persisted uncertain after New Chat") << true << true;
+        QTest::newRow("completed current conversation") << true << false;
+    }
+    void reconnectReconcilesExistingTranscript() {
+        QFETCH(bool, persist); QFETCH(bool, uncertain);
+        MemoryConversationRepository repository; Harness h({}, {}, persist ? &repository : nullptr, "0.162.0-alpha.17.2");
+        h.controller.setPersistenceContext("local-account", persist); QVERIFY(h.readyController()); h.controller.newChat();
+        QVERIFY(h.sendAndAccept("question")); h.delta("answer");
+        if (uncertain) { auto invalid = turn("turn-1", "completed"); invalid.insert("itemsView", "unknown");
+            h.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", invalid}});
+            QCOMPARE(h.controller.operation(), AssistantOperation::Uncertain);
+        } else h.finish("completed", QJsonArray{agent("agent-1", "answer")});
+        const auto conversationId = h.controller.conversation().id;
+        const auto turnRequest = h.requestId("turn/start"); QSignalSpy reset(&h.controller, &AssistantController::transcriptReset);
+        h.controller.reconnect(); QVERIFY(h.readyController());
+        QCOMPARE(h.controller.operation(), AssistantOperation::Restoring); QVERIFY(!h.controller.canSend());
+        const QJsonObject user{{"type", "userMessage"}, {"id", "user-1"}, {"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "question"}}}}};
+        h.reply("thread/resume", h.threadResult(h.thread("thread-1", QJsonArray{turn("turn-1", "completed", QJsonArray{user, agent("agent-1", "answer")})})));
+        QCOMPARE(h.controller.operation(), AssistantOperation::Idle); QVERIFY(h.controller.canSend());
+        QCOMPARE(h.controller.messages().size(), 2); QCOMPARE(reset.size(), 1);
+        QCOMPARE(h.controller.conversation().id, conversationId); QVERIFY(h.controller.errorText().isEmpty());
+        QCOMPARE(h.controller.messages().first().delivery, AssistantDelivery::Completed);
+        QCOMPARE(h.controller.messages().last().delivery, AssistantDelivery::Completed);
+        QCOMPARE(h.requestId("turn/start"), turnRequest);
+        if (persist) QCOMPARE(repository.rows.last().lastTurnStatus, QStringLiteral("completed"));
+    }
+    void reconnectRetainsTranscriptWhenHistoryCannotReconcile_data() {
+        QTest::addColumn<QString>("variant");
+        for (const auto& value : {"missing turn", "active turn", "foreign account", "read failure"}) QTest::newRow(value) << QString::fromLatin1(value);
+    }
+    void reconnectRetainsTranscriptWhenHistoryCannotReconcile() {
+        QFETCH(QString, variant); Harness h({}, {}, nullptr, "0.162.0-alpha.17.2"); QVERIFY(h.readyController());
+        QVERIFY(h.sendAndAccept("question")); h.delta("partial answer");
+        auto invalid = turn("turn-1", "completed"); invalid.insert("itemsView", "unknown");
+        h.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", invalid}});
+        const auto turnRequest = h.requestId("turn/start"); const auto resumeRequest = h.requestId("thread/resume");
+        QSignalSpy reset(&h.controller, &AssistantController::transcriptReset);
+        h.controller.reconnect(); QVERIFY(h.readyController());
+        if (variant == "foreign account") {
+            QVERIFY(h.client.readAccount()); h.reply("account/read", chatGptAccount("foreign-account"));
+        } else if (variant == "read failure") h.transport.deliver({{"id", h.requestId("thread/resume")}, {"error", QJsonObject{{"code", -32603}, {"message", "missing"}}}});
+        else h.reply("thread/resume", h.threadResult(h.thread("thread-1", variant == "missing turn" ? QJsonArray{} : QJsonArray{turn()})));
+        QVERIFY(!h.controller.canSend()); QCOMPARE(h.controller.messages().size(), 2); QCOMPARE(reset.size(), 0);
+        QCOMPARE(h.controller.messages().last().source, QStringLiteral("partial answer"));
+        QCOMPARE(h.requestId("turn/start"), turnRequest);
+        Q_UNUSED(resumeRequest);
+    }
+    void scopeFailureStaysVisibleAndReconnectRecovers() {
+        Harness h; QVERIFY(h.readyController()); QVERIFY(h.controller.send("fixture"));
+        auto result = h.threadResult(); result.insert("cwd", "C:/outside-the-scratch-directory");
+        h.reply("thread/start", result);
+        QCOMPARE(h.controller.connection(), AssistantConnectionState::Failed);
+        QVERIFY(h.controller.statusText().contains("thread/start")); QVERIFY(!h.controller.canSend());
+        h.controller.reconnect(); QVERIFY(h.readyController()); QVERIFY(h.controller.canSend());
+        QVERIFY(h.controller.errorText().isEmpty());
+    }
+    void initializationRejectionLeavesStartingAndCanReconnect() {
+        Harness h; h.controller.open();
+        QCOMPARE(h.controller.connection(), AssistantConnectionState::Starting);
+        h.transport.deliver({{"id", h.requestId("initialize")}, {"error", QJsonObject{
+            {"code", -32603}, {"message", "PRIVATE_RUNTIME_DETAILS"}}}});
+        QCOMPARE(h.transport.stops, 1);
+        QCOMPARE(h.client.pendingRequestCount(), 0);
+        QCOMPARE(h.controller.connection(), AssistantConnectionState::Failed);
+        QVERIFY(h.controller.statusText().contains("initialization was rejected"));
+        QVERIFY(!h.controller.statusText().contains("PRIVATE"));
+        QVERIFY(h.controller.canReconnect()); QVERIFY(!h.controller.canSend());
+        h.controller.reconnect(); QVERIFY(h.readyController()); QVERIFY(h.controller.canSend());
+    }
+    void accountRefreshAndNativeUnloadedTurnDoNotMakeDeliveryUncertain() {
+        Harness h({}, {}, nullptr, "0.162.0-alpha.17.2"); QVERIFY(h.readyController());
+        QVERIFY(h.controller.send("fixture prompt")); h.reply("thread/start", h.threadResult());
+        QCOMPARE(h.controller.operation(), AssistantOperation::Submitting);
+        QVERIFY(h.client.readAccount());
+        h.transport.event("account/updated", {{"authMode", "chatgpt"}, {"planType", "plus"}});
+        QVERIFY(h.controller.errorText().isEmpty());
+        auto live = turn(); live.insert("itemsView", "notLoaded"); h.reply("turn/start", {{"turn", live}});
+        QCOMPARE(h.controller.operation(), AssistantOperation::Submitting);
+        h.transport.event("turn/started", {{"threadId", "thread-1"}, {"turn", live}});
+        h.delta("streamed answer");
+        auto completed = turn("turn-1", "completed", QJsonArray{agent("agent-1", "streamed answer")}); completed.insert("itemsView", "summary");
+        h.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", completed}});
+        QCOMPARE(h.controller.messages().size(), 1);
+        h.reply("account/read", chatGptAccount());
+        QCOMPARE(h.controller.operation(), AssistantOperation::Idle);
+        QCOMPARE(h.controller.messages().size(), 2);
+        QCOMPARE(h.controller.messages().first().delivery, AssistantDelivery::Completed);
+        QCOMPARE(h.controller.messages().last().source, QStringLiteral("streamed answer"));
+        QVERIFY(h.controller.errorText().isEmpty()); QVERIFY(h.controller.canSend());
+        QCOMPARE(h.transport.stops, 0);
+    }
+    void newChatRecoversFailedResumeWithoutRestoringAgain() {
+        MemoryConversationRepository repository;
+        {
+            Harness original({}, {}, &repository, "0.162.0-alpha.17.2");
+            original.controller.setPersistenceContext("local-account", true); QVERIFY(original.readyController());
+            QVERIFY(original.sendAndAccept("saved question")); original.finish();
+        }
+        Harness h({}, {}, &repository, "0.162.0-alpha.17.2");
+        repository.rows.first().binding.codexHomeKey = QString::fromLatin1(
+            QCryptographicHash::hash(h.scratch.path().toUtf8(), QCryptographicHash::Sha256).toHex());
+        h.controller.setPersistenceContext("local-account", true); QVERIFY(h.readyController());
+        QCOMPARE(h.controller.operation(), AssistantOperation::Restoring);
+        auto result = h.threadResult(); result.insert("cwd", "C:/foreign"); h.reply("thread/resume", result);
+        QCOMPARE(h.controller.connection(), AssistantConnectionState::Failed); QVERIFY(!h.controller.canSend());
+        const auto failedConversation = h.controller.conversation().id;
+        const auto resumeId = h.requestId("thread/resume");
+        h.controller.newChat();
+        QCOMPARE(h.controller.connection(), AssistantConnectionState::Starting);
+        QVERIFY(h.controller.conversation().id != failedConversation); QVERIFY(h.controller.messages().isEmpty());
+        QVERIFY(h.readyController()); QCOMPARE(h.controller.operation(), AssistantOperation::Idle);
+        QVERIFY(h.controller.canSend()); QVERIFY(h.controller.errorText().isEmpty());
+        QCOMPARE(h.requestId("thread/resume"), resumeId); QCOMPARE(repository.rows.size(), 1);
+        // A later manual reconnect must also retain the user's empty New Chat.
+        h.controller.reconnect(); QVERIFY(h.readyController()); QVERIFY(h.controller.canSend());
+        QCOMPARE(h.requestId("thread/resume"), resumeId);
+        QVERIFY(h.sendAndAccept("new question")); QCOMPARE(repository.rows.size(), 2);
+    }
+    void startupDeadlineStopsUnresponsiveBackendAndRecovers() {
+        AssistantLimits limits; limits.startupMilliseconds = 25;
+        Harness h(limits); h.controller.open();
+        QTRY_COMPARE_WITH_TIMEOUT(h.controller.connection(), AssistantConnectionState::Failed, 1000);
+        QCOMPARE(h.transport.stops, 1); QVERIFY(!h.client.isInitialized());
+        QVERIFY(h.controller.statusText().contains("startup timed out"));
+        QVERIFY(h.controller.canReconnect()); QVERIFY(!h.controller.canSend());
+        h.controller.reconnect(); QVERIFY(h.readyController()); QVERIFY(h.controller.canSend());
+        QTest::qWait(40); QCOMPARE(h.transport.stops, 1); QVERIFY(h.controller.canSend());
+    }
+    void reconnectWhileStartingInvalidatesOldDeadlineAndResponse() {
+        AssistantLimits limits; limits.startupMilliseconds = 50;
+        Harness h(limits); h.controller.open();
+        const auto oldGeneration = h.client.processGeneration();
+        const auto oldInitialize = h.requestId("initialize");
+        h.controller.reconnect(); QCOMPARE(h.transport.stops, 1);
+        emit h.transport.objectReceived({{"id", oldInitialize}, {"result", QJsonObject{}}}, oldGeneration);
+        QVERIFY(h.readyController()); QVERIFY(h.controller.canSend());
+        QTest::qWait(60); QCOMPARE(h.transport.stops, 1); QVERIFY(h.controller.canSend());
+    }
+    void inheritedMcpIsDisabledInBoundedChildRelaunch() {
+        Harness h({}, {}, nullptr, "0.162.0-alpha.17.2"); h.transport.native = true;
+        h.controller.open();
+        h.reply("initialize", {{"codexHome", h.scratch.path()}, {"userAgent", "fixture"}, {"platformFamily", "windows"}, {"platformOs", "windows"}});
+        h.reply("account/read", chatGptAccount());
+        auto result = safeConfig(); auto config = result.value("config").toObject();
+        config.insert("mcp_servers", QJsonObject{{"inherited.name", QJsonObject{{"enabled", true}}}}); result.insert("config", config);
+        h.reply("config/read", result); h.reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)}});
+        QVERIFY(!h.controller.canSend());
+        QTRY_COMPARE(h.transport.launches.size(), 2);
+        QCOMPARE(h.transport.stops, 1);
+        const auto restricted = h.transport.launches.last();
+        QVERIFY(restricted.arguments.contains("mcp_servers={\"inherited.name\"={enabled=false}}"));
+        QCOMPARE(restricted.environment, h.transport.launches.first().environment);
+        QCOMPARE(restricted.scratchDirectory, h.scratch.path());
+        QVERIFY(h.readyController()); QVERIFY(h.controller.canSend());
+        QVERIFY(h.controller.statusText().contains("ready"));
+        QVERIFY(h.client.verifyRuntime());
+        config.insert("mcp_servers", QJsonObject{{"new-server", QJsonObject{{"enabled", true}}}}); result.insert("config", config);
+        h.reply("config/read", result); h.reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)}});
+        QTest::qWait(10); QCOMPARE(h.transport.launches.size(), 2); QVERIFY(!h.controller.canSend());
+        h.controller.reconnect(); QCOMPARE(h.transport.launches.size(), 3);
+        QCOMPARE(h.transport.launches.last().arguments, devhub::infrastructure::codex::CodexRuntimeProfile::launchArguments().value());
+        QVERIFY(h.readyController()); QVERIFY(h.controller.canSend());
+    }
+    void profileRetryCannotReopenLockedSession() {
+        Harness h; h.controller.open();
+        h.reply("initialize", {{"codexHome", h.scratch.path()}, {"userAgent", "fixture"}, {"platformFamily", "windows"}, {"platformOs", "windows"}});
+        auto result = safeConfig(); auto config = result.value("config").toObject();
+        config.insert("mcp_servers", QJsonObject{{"inherited", QJsonObject{}}}); result.insert("config", config);
+        h.reply("config/read", result); h.reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)}});
+        h.controller.setSessionAllowed(false); QTest::qWait(10);
+        QCOMPARE(h.transport.launches.size(), 1); QVERIFY(!h.controller.canSend()); QVERIFY(!h.controller.canReconnect());
+    }
+    void profileRejectionExplainsChecksWithoutConfigurationValues() {
+        Harness h; h.controller.open();
+        h.reply("initialize", {{"codexHome", h.scratch.path()}, {"userAgent", "fixture"}, {"platformFamily", "windows"}, {"platformOs", "windows"}});
+        h.reply("account/read", chatGptAccount());
+        auto result = safeConfig(); auto config = result.value("config").toObject();
+        config.insert("notify", QJsonArray{"PRIVATE_COMMAND_TOKEN"});
+        config.insert("mcp_servers", QJsonObject{{"PRIVATE_SERVER", QJsonObject{{"enabled", true}}}});
+        config.insert("desktop", QJsonObject{{"PRIVATE_KEY", "PRIVATE_VALUE"}});
+        result.insert("config", config);
+        h.reply("config/read", result); h.reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)}});
+        QVERIFY(!h.controller.canSend());
+        QVERIFY(h.controller.statusText().contains("notification command"));
+        QVERIFY(h.controller.statusText().contains("MCP servers"));
+        QVERIFY(h.controller.statusText().contains("desktop/browser"));
+        QVERIFY(!h.controller.statusText().contains("PRIVATE"));
+        const auto diagnostics = h.controller.diagnosticsSnapshot().join('\n');
+        QVERIFY(diagnostics.contains("MCP servers")); QVERIFY(!diagnostics.contains("PRIVATE"));
+        emit h.client.profileChecked(false, {"PRIVATE_UNKNOWN_REASON"});
+        QVERIFY(!h.controller.statusText().contains("PRIVATE"));
+        h.controller.reconnect();
+        QVERIFY(!h.controller.diagnosticsSnapshot().join('\n').contains("MCP servers"));
+    }
     void shutdownCoordinatorWaitsForParticipantAndBoundsTimeout()
     {
         {
@@ -105,8 +302,10 @@ private slots:
         QCOMPARE(restored.controller.operation(), AssistantOperation::Restoring);
         QVERIFY(!restored.controller.canSend());
         const QJsonObject user{{"type", "userMessage"}, {"id", "user-1"}, {"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "first restored question"}}}}};
-        restored.reply("thread/resume", restored.threadResult(restored.thread("thread-1", QJsonArray{
-            turn("turn-1", "completed", QJsonArray{user, agent("agent-1", "restored answer")})})));
+        auto persistedThread = restored.thread("thread-1", QJsonArray{
+            turn("turn-1", "completed", QJsonArray{user, agent("agent-1", "restored answer")})});
+        persistedThread.insert("environments", QJsonValue(QJsonValue::Null));
+        restored.reply("thread/resume", restored.threadResult(persistedThread));
         QCOMPARE(restored.controller.operation(), AssistantOperation::Idle);
         QCOMPARE(restored.controller.messages().size(), 2);
         QCOMPARE(restored.controller.messages().front().source, QStringLiteral("first restored question"));
@@ -162,7 +361,7 @@ private slots:
     {
         Harness h; h.transport.native = true; QVERIFY(h.readyController()); QVERIFY(!h.controller.canSend());
         QVERIFY(!h.controller.send("forbidden")); QVERIFY(h.transport.lastRequest("thread/start").isEmpty());
-        QVERIFY(h.controller.statusText().contains("verification"));
+        QVERIFY(h.controller.statusText().contains("not enabled for this runtime"));
     }
     void synchronousTransportCompletion()
     {

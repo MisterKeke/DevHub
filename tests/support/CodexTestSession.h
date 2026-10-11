@@ -38,15 +38,15 @@ struct Session {
     { return {{QStringLiteral("C:/fixture/codex.exe"), version}, args, scratch.path(), QProcessEnvironment{}, generation}; }
     qint64 requestId(const QString& method) const { return transport.lastRequest(method).value("id").toInteger(); }
     void reply(const QString& method, QJsonObject result) { transport.reply(requestId(method), result); }
-    bool start()
+    bool start(QString version = QStringLiteral("0.160.1"))
     {
-        if (!client.launch(spec())) return false;
+        if (!client.launch(spec(1, CodexRuntimeProfile::launchArguments().value(), std::move(version)))) return false;
         reply("initialize", {{"codexHome", scratch.path()}, {"userAgent", "fixture"}, {"platformFamily", "windows"}, {"platformOs", "windows"}});
         return client.isInitialized();
     }
-    bool ready(QJsonObject account = chatGptAccount())
+    bool ready(QJsonObject account = chatGptAccount(), QString version = QStringLiteral("0.160.1"))
     {
-        if (!start()) return false;
+        if (!start(std::move(version))) return false;
         reply("account/read", account); reply("config/read", safeConfig()); reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)}});
         return client.profileVerified();
     }
