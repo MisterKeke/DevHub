@@ -17,6 +17,10 @@ public:
     [[nodiscard]] virtual shared::common::Result<void> setPinned(const QString& workspaceId, const QString& id, bool pinned) = 0;
     [[nodiscard]] virtual shared::common::Result<void> setTags(const QString& workspaceId, const QString& id, QStringList tags) = 0;
     [[nodiscard]] virtual shared::common::Result<QString> readContent(const QString& workspaceId, const QString& id) = 0;
+    // Owner-thread bounded read. Implementations must check account/workspace,
+    // note kind and non-trash status before opening any content path.
+    [[nodiscard]] virtual shared::common::Result<QString> readContentBounded(const QString& workspaceId, const QString& id,
+        qint64 maximumBytes) = 0;
     [[nodiscard]] virtual shared::common::Result<QString> saveContent(const QString& workspaceId, const QString& id,
                                                                        const QString& content, const QString& expectedHash) = 0;
     [[nodiscard]] virtual QString contentPath(const QString& workspaceId, const QString& id) const = 0;

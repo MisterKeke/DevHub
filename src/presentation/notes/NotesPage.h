@@ -32,6 +32,9 @@ public:
     [[nodiscard]] QStringList previewTitles(int limit = 3) const;
     [[nodiscard]] bool flushPendingSave();
     [[nodiscard]] bool prepareForTransition();
+    [[nodiscard]] bool assistantEditAllowed(const QString& workspaceId, const QString& noteId) const;
+    [[nodiscard]] shared::common::Result<QString> applyAssistantEdit(const QString& workspaceId,
+        const QString& noteId, const QString& content, const QString& expectedHash);
 
 private:
     void reloadTree();
@@ -54,6 +57,7 @@ private:
     void showTextCompare(const QString& title, const QString& text);
     void selectNodeInTree(const QString& id);
     void applySearchResults(const QStringList& contentMatches, const QString& needle);
+    void startPendingSearch();
     [[nodiscard]] QString journalPath(const QString& noteId) const;
     [[nodiscard]] QString selectedNodeId() const;
     [[nodiscard]] std::optional<application::notes::NoteNode> selectedNode() const;
@@ -80,6 +84,9 @@ private:
     bool m_includeTrash = false;
     quint64 m_searchGeneration = 0;
     std::shared_ptr<std::atomic_bool> m_searchCancellation;
+    std::optional<QString> m_pendingSearchNeedle;
+    QString m_activeSearchNeedle;
+    quint64 m_activeSearchGeneration = 0;
 };
 
 } // namespace devhub::presentation::notes

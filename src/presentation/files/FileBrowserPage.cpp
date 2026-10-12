@@ -1,4 +1,5 @@
 #include "FileBrowserPage.h"
+#include "../../application/files/WorkspaceFileService.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -26,6 +27,9 @@
 #include <QTreeView>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QFutureWatcher>
+#include <QPointer>
+#include <QtConcurrent/QtConcurrentRun>
 
 namespace devhub::presentation::files {
 namespace {
@@ -45,7 +49,6 @@ protected:
         return showHidden || (!name.startsWith(QLatin1Char('.')) && !info.isHidden());
     }
 };
-constexpr qint64 PreviewLimit = 1024 * 1024;
 }
 
 FileBrowserPage::FileBrowserPage(application::files::ITrashService& trash,
@@ -69,6 +72,27 @@ FileBrowserPage::FileBrowserPage(application::files::ITrashService& trash,
     m_preview->setReadOnly(true); m_preview->setPlaceholderText(tr("Select a small UTF-8 or ASCII text file to preview."));
     split->addWidget(m_tree); split->addWidget(m_preview); split->setStretchFactor(1, 1); root->addWidget(split, 1);
     m_status = new QLabel(tr("Choose a workspace to browse its files."), this); m_status->setWordWrap(true); root->addWidget(m_status);
+    m_previewWatcher = new QFutureWatcher<application::files::WorkspaceFileRead>(this);
+    connect(m_previewWatcher, &QFutureWatcher<application::files::WorkspaceFileRead>::finished, this, [this] {
+        const auto preview = m_previewWatcher->result();
+        if (m_loadingPreviewGeneration == m_previewGeneration) {
+            if (!preview.readable) {
+                m_preview->setPlainText(preview.message);
+                if (preview.tooLarge) m_status->setText(tr("%1 bytes").arg(preview.byteCount));
+                else if (preview.binary) m_status->setText(tr("Binary file (%1 bytes)").arg(preview.byteCount));
+                else if (preview.message.contains(QStringLiteral("encoding"))) m_status->setText(tr("Unsupported text encoding"));
+                else m_status->setText(preview.message);
+            } else {
+                m_preview->setPlainText(preview.text);
+                m_status->setText(tr("%1  ·  %2 bytes").arg(m_loadingPreviewPath).arg(preview.byteCount));
+            }
+        }
+        if (m_pendingPreview) {
+            auto pending = std::move(*m_pendingPreview);
+            m_pendingPreview.reset();
+            startPreviewJob(std::move(pending.first), std::move(pending.second), m_previewGeneration);
+        }
+    });
     connect(m_tree, &QTreeView::clicked, this, [this](const QModelIndex& index) { updatePreview(index); });
     connect(m_tree, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
         m_tree->setCurrentIndex(index);
@@ -86,6 +110,7 @@ FileBrowserPage::FileBrowserPage(application::files::ITrashService& trash,
 
 void FileBrowserPage::setWorkspace(QString workspaceId, QString rootPath)
 {
+    ++m_previewGeneration; m_pendingPreview.reset();
     saveExpansionState(); m_workspaceId = std::move(workspaceId); m_controller.setWorkspaceRoot(rootPath);
     if (rootPath.isEmpty() || !QFileInfo(rootPath).isDir()) { m_status->setText(tr("The active workspace folder is unavailable.")); m_tree->setRootIndex({}); return; }
     const QModelIndex sourceRoot = m_model->setRootPath(QFileInfo(rootPath).canonicalFilePath());
@@ -107,6 +132,8 @@ QString FileBrowserPage::targetDirectory() const
 
 void FileBrowserPage::updatePreview(const QModelIndex& proxyIndex)
 {
+    const quint64 generation = ++m_previewGeneration;
+    m_pendingPreview.reset();
     m_preview->clear();
     const QString path = m_model->filePath(m_proxy->mapToSource(proxyIndex));
     const QFileInfo info(path);
@@ -121,14 +148,20 @@ void FileBrowserPage::updatePreview(const QModelIndex& proxyIndex)
         m_preview->setPlainText(tr("The resolved target is outside the workspace. Preview is blocked."));
         m_status->setText(tr("Linked target leaves the workspace")); return;
     }
-    if (info.size() > PreviewLimit) { m_preview->setPlainText(tr("Preview unavailable: file is larger than 1 MiB.")); m_status->setText(tr("%1 bytes").arg(info.size())); return; }
-    QFile file(path); if (!file.open(QIODevice::ReadOnly)) { m_status->setText(tr("Could not read this file: %1").arg(file.errorString())); return; }
-    QByteArray bytes = file.readAll();
-    if (bytes.startsWith(QByteArray::fromHex("efbbbf"))) bytes.remove(0, 3);
-    if (bytes.contains('\0')) { m_preview->setPlainText(tr("Preview unavailable: this looks like a binary file.")); m_status->setText(tr("Binary file (%1 bytes)").arg(info.size())); return; }
-    QString text = QString::fromUtf8(bytes.constData(), bytes.size());
-    if (text.toUtf8() != bytes) { m_preview->setPlainText(tr("Preview unavailable: this file is not UTF-8 or ASCII.")); m_status->setText(tr("Unsupported text encoding")); return; }
-    m_preview->setPlainText(text); m_status->setText(tr("%1  ·  %2 bytes").arg(m_controller.relativePath(path)).arg(info.size()));
+    application::files::WorkspaceFileService files(application::files::WorkspaceFilePolicy(m_controller.workspaceRoot()));
+    const QString relative = m_controller.relativePath(path);
+    m_status->setText(tr("Loading preview…"));
+    if (m_previewWatcher->isRunning()) m_pendingPreview.emplace(std::move(files), relative);
+    else startPreviewJob(std::move(files), relative, generation);
+}
+
+void FileBrowserPage::startPreviewJob(application::files::WorkspaceFileService service, QString relative, quint64 generation)
+{
+    m_loadingPreviewPath = std::move(relative);
+    m_loadingPreviewGeneration = generation;
+    m_previewWatcher->setFuture(QtConcurrent::run([service = std::move(service), path = m_loadingPreviewPath] {
+        return service.readPreview(path);
+    }));
 }
 
 void FileBrowserPage::showContextMenu(const QPoint& position)

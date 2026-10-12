@@ -1,5 +1,8 @@
 #include "NotesPage.h"
 #include "../../application/notes/NoteFolderExporter.h"
+#include "../../application/files/WorkspaceFileService.h"
+#include "../../application/notes/NoteSearchService.h"
+#include "../widgets/SafeMarkdownBrowser.h"
 
 #include <QCryptographicHash>
 #include <QCheckBox>
@@ -67,17 +70,6 @@ protected:
     }
 };
 
-class SafeMarkdownPreview final : public QTextBrowser
-{
-public:
-    using QTextBrowser::QTextBrowser;
-protected:
-    QVariant loadResource(int type, const QUrl& name) override
-    {
-        if (name.scheme() == QStringLiteral("qrc")) return QTextBrowser::loadResource(type, name);
-        return {};
-    }
-};
 }
 
 NotesPage::NotesPage(INotesRepository& repository, QString accountId, QString recoveryRoot, QWidget* parent)
@@ -105,7 +97,7 @@ NotesPage::NotesPage(INotesRepository& repository, QString accountId, QString re
     auto* editorPane = new QSplitter(Qt::Horizontal, split);
     m_editor = new QPlainTextEdit(editorPane); m_editor->setObjectName(QStringLiteral("markdownEditor"));
     m_editor->setPlaceholderText(tr("Select a note or create one to start writing Markdown."));
-    m_preview = new SafeMarkdownPreview(editorPane); m_preview->setObjectName(QStringLiteral("markdownPreview"));
+    m_preview = new widgets::SafeMarkdownBrowser(editorPane, widgets::SafeMarkdownBrowser::ResourcePolicy::NotesQrc); m_preview->setObjectName(QStringLiteral("markdownPreview"));
     m_preview->setOpenLinks(false); m_preview->setOpenExternalLinks(false);
     new MarkdownHighlighter(m_editor->document());
     m_preview->setPlaceholderText(tr("Markdown preview — remote links are not opened."));
@@ -118,32 +110,21 @@ NotesPage::NotesPage(INotesRepository& repository, QString accountId, QString re
     connect(&m_journalTimer, &QTimer::timeout, this, &NotesPage::writeRecoveryJournal);
     connect(m_editor, &QPlainTextEdit::textChanged, this, &NotesPage::scheduleSave);
     connect(m_tree, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* item) { openItem(item); });
+    m_searchWatcher = new QFutureWatcher<QStringList>(this);
+    connect(m_searchWatcher, &QFutureWatcher<QStringList>::finished, this, [this] {
+        const QStringList matches = m_searchWatcher->result();
+        if (m_activeSearchGeneration == m_searchGeneration)
+            applySearchResults(matches, m_activeSearchNeedle);
+        m_searchCancellation.reset();
+        if (m_pendingSearchNeedle) startPendingSearch();
+    });
     connect(m_search, &QLineEdit::textChanged, this, [this] {
-        const quint64 generation = ++m_searchGeneration;
+        ++m_searchGeneration;
         if (m_searchCancellation) m_searchCancellation->store(true);
         const QString needle = m_search->text().trimmed();
-        if (needle.isEmpty()) { applySearchResults({}, needle); return; }
-        QVector<QPair<QString, QString>> sources;
-        for (const auto& node : std::as_const(m_nodes)) if (node.kind == NoteNodeKind::Note)
-            sources.append({node.id, m_repository.contentPath(m_workspaceId, node.id)});
-        auto* watcher = new QFutureWatcher<QStringList>(this);
-        auto cancellation = std::make_shared<std::atomic_bool>(false);
-        m_searchCancellation = cancellation;
-        connect(watcher, &QFutureWatcher<QStringList>::finished, this, [this, watcher, generation, needle] {
-            const QStringList matches = watcher->result(); watcher->deleteLater();
-            if (generation == m_searchGeneration) applySearchResults(matches, needle);
-        });
-        watcher->setFuture(QtConcurrent::run([sources = std::move(sources), needle, cancellation] {
-            QStringList matches;
-            for (const auto& source : sources) {
-                if (cancellation->load()) break;
-                QFileInfo info(source.second); if (!info.exists() || info.size() > 2 * 1024 * 1024) continue;
-                QFile file(source.second); if (!file.open(QIODevice::ReadOnly)) continue;
-                if (QString::fromUtf8(file.readAll()).contains(needle, Qt::CaseInsensitive)) matches.append(source.first);
-            }
-            return matches;
-        }));
+        m_pendingSearchNeedle = needle;
         applySearchResults({}, needle);
+        if (!m_searchWatcher->isRunning()) startPendingSearch();
     });
     connect(newNote, &QPushButton::clicked, this, [this] { createNote(NoteNodeKind::Note); });
     connect(newFolder, &QPushButton::clicked, this, [this] { createNote(NoteNodeKind::Folder); });
@@ -167,10 +148,29 @@ bool NotesPage::setWorkspace(QString workspaceId)
     ++m_searchGeneration;
     m_saveTimer.stop(); m_journalTimer.stop();
     if (m_searchCancellation) m_searchCancellation->store(true);
+    m_pendingSearchNeedle.reset();
     m_workspaceId = std::move(workspaceId); m_currentNoteId.clear(); m_currentContentHash.clear();
     m_dirty = false;
     m_editor->clear(); m_preview->clear(); reloadTree();
     return true;
+}
+
+void NotesPage::startPendingSearch()
+{
+    if (!m_pendingSearchNeedle || m_searchWatcher->isRunning()) return;
+    const QString needle = std::move(*m_pendingSearchNeedle);
+    m_pendingSearchNeedle.reset();
+    if (needle.isEmpty()) return;
+    QList<application::notes::AuthorizedNoteSource> sources;
+    for (const auto& node : std::as_const(m_nodes)) if (node.kind == NoteNodeKind::Note)
+        sources.append({node.id, m_repository.contentPath(m_workspaceId, node.id)});
+    auto cancellation = std::make_shared<std::atomic_bool>(false);
+    m_searchCancellation = cancellation;
+    m_activeSearchNeedle = needle;
+    m_activeSearchGeneration = m_searchGeneration;
+    m_searchWatcher->setFuture(QtConcurrent::run([sources = std::move(sources), needle, cancellation] {
+        return application::notes::NoteSearchService().search(sources, needle, cancellation).noteIds;
+    }));
 }
 
 bool NotesPage::flushPendingSave()
@@ -489,6 +489,31 @@ bool NotesPage::saveNow()
     m_currentContentHash = result.value(); m_dirty = false; QFile::remove(journalPath(m_currentNoteId));
     if (m_nodes.contains(m_currentNoteId)) m_nodes[m_currentNoteId].contentHash = m_currentContentHash;
     m_status->setText(tr("Saved at %1").arg(QTime::currentTime().toString())); return true;
+}
+
+bool NotesPage::assistantEditAllowed(const QString& workspaceId, const QString& noteId) const
+{
+    if (workspaceId != m_workspaceId || !m_nodes.contains(noteId)
+        || m_nodes.value(noteId).trashed || m_nodes.value(noteId).kind != NoteNodeKind::Note) return false;
+    return !(noteId == m_currentNoteId && m_dirty) && !QFileInfo::exists(journalPath(noteId));
+}
+
+shared::common::Result<QString> NotesPage::applyAssistantEdit(const QString& workspaceId,
+    const QString& noteId, const QString& content, const QString& expectedHash)
+{
+    if (!assistantEditAllowed(workspaceId, noteId)) return shared::common::Result<QString>::failure(
+        domain::errors::AppError::failure(domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Internal,
+            tr("Resolve pending note edits or recovery copies before allowing this edit."), {}, QStringLiteral("assistant note edit")));
+    auto result = m_repository.saveContent(workspaceId, noteId, content, expectedHash);
+    if (!result) return result;
+    m_nodes[noteId].contentHash = result.value();
+    if (m_currentNoteId == noteId) {
+        m_saveTimer.stop(); m_journalTimer.stop(); m_loading = true;
+        m_editor->setPlainText(content); m_loading = false; m_dirty = false;
+        m_currentContentHash = result.value(); updatePreview();
+        m_status->setText(tr("Saved approved Assistant edit."));
+    }
+    return result;
 }
 
 void NotesPage::updatePreview()

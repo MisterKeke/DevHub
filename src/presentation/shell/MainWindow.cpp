@@ -16,6 +16,8 @@
 #include "../logs/LogsPage.h"
 #include "../databases/DatabasePage.h"
 #include "../notes/NotesPage.h"
+#include "../assistant/AssistantPage.h"
+#include "../assistant/AssistantNavigation.h"
 #include "../files/FileBrowserPage.h"
 #include "../overview/OverviewPage.h"
 #include "../commands/CommandPaletteDialog.h"
@@ -32,6 +34,7 @@
 #include "../../application/authentication/AuthenticationService.h"
 #include "../../application/authentication/SessionController.h"
 #include "../../application/authentication/SessionState.h"
+#include "../../application/lifecycle/ShutdownCoordinator.h"
 
 #include <QAction>
 #include <QApplication>
@@ -51,11 +54,13 @@
 #include <QSettings>
 #include <QSplitter>
 #include <QStackedWidget>
+#include "presentation/widgets/CurrentPageStack.h"
 #include <QStatusBar>
 #include <QMessageBox>
 #include <QDir>
 #include <QUrl>
-#include <QUrlQuery>
+#include <QPainter>
+#include <QStyledItemDelegate>
 #include <QToolButton>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -76,6 +81,21 @@ using devhub::presentation::theme::ThemePalette;
 using devhub::presentation::theme::ThemeTokens;
 using devhub::presentation::theme::SizeToken;
 using devhub::presentation::widgets::EmptyStateWidget;
+
+class ModuleNavigationDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        auto adjusted = option;
+        if (index.row() == 9) {
+            painter->save(); painter->setPen(option.palette.mid().color());
+            painter->drawLine(option.rect.topLeft(), option.rect.topRight()); painter->restore();
+            adjusted.rect.adjust(0, 6, 0, 0);
+        }
+        QStyledItemDelegate::paint(painter, adjusted, index);
+    }
+};
 
 QToolButton* makeToolButton(const QString& name, IconName iconName, QWidget* parent,
                             bool iconOnly = false)
@@ -122,6 +142,9 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
                        application::notifications::NotificationService& notificationService,
                        application::support::SupportBundleBuilder& supportBundleBuilder,
                        const shared::security::RedactionService& redactor,
+                       application::assistant::AssistantController& assistantController,
+                       application::assistant::ICodexExecutableProbe& assistantSetupProbe,
+                       application::lifecycle::ShutdownCoordinator& shutdownCoordinator,
                        QWidget* parent)
     : QMainWindow(parent),
       m_session(session),
@@ -134,6 +157,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
       m_scheduler(scheduler),
       m_serviceCoordinator(serviceCoordinator),
       m_settingsService(settingsService),
+      m_assistantController(assistantController), m_assistantSetupProbe(assistantSetupProbe),
+      m_shutdownCoordinator(shutdownCoordinator),
       m_themeManager(themeManager),
       m_eventHub(eventHub),
       m_notificationRepository(notificationRepository),
@@ -247,9 +272,11 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::Settings,
                                                               ThemePalette::color(ColorToken::TextSecondary),
                                                               18), tr("Settings")));
-    moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::Notes,
+    moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::Assistant,
                                                               ThemePalette::color(ColorToken::TextSecondary),
-                                                              18), tr("Quick Ask")));
+                                                              18), tr("Assistant")));
+    moduleList->setItemDelegate(new ModuleNavigationDelegate(moduleList));
+    moduleList->item(9)->setSizeHint(QSize(120, 46));
     moduleList->setCurrentRow(0);
     navigationLayout->addWidget(moduleList, 1);
 
@@ -257,19 +284,24 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     const QStringList navigationIds{QStringLiteral("nav.overview"), QStringLiteral("nav.git"),
         QStringLiteral("nav.services"), QStringLiteral("nav.ports"), QStringLiteral("nav.logs"),
         QStringLiteral("nav.database"), QStringLiteral("nav.notes"), QStringLiteral("nav.files"),
-        QStringLiteral("nav.settings"), QStringLiteral("nav.quickAsk")};
+        QStringLiteral("nav.settings"), QStringLiteral("nav.assistant")};
     const QStringList navigationTitles{tr("Overview"), tr("Git"), tr("Services"), tr("Ports"),
-        tr("Logs"), tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Quick Ask")};
+        tr("Logs"), tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant")};
     for (int row = 0; row < navigationIds.size(); ++row) {
+        if (row == presentation::assistant::AssistantNavigation::Index) {
+            presentation::assistant::AssistantNavigation::registerCommand(*m_commandRegistry,
+                [this](int index) { selectQuickModule(index); });
+            continue;
+        }
         using Category = application::commands::CommandCategory;
         const auto category = row == 1 ? Category::Git : row == 2 ? Category::Services
             : row == 3 ? Category::Ports : row == 4 ? Category::Logs
             : row == 5 ? Category::Database : row == 6 ? Category::Notes
             : row == 7 ? Category::Files : row == 8 ? Category::Settings : Category::Navigation;
         m_commandRegistry->addCommand(navigationIds[row], navigationTitles[row], category,
-            [this, moduleList, row] {
+            [this, row] {
                 if (row == 8) openQuickSettings();
-                else moduleList->setCurrentRow(row);
+                else selectQuickModule(row);
             }, {},
             tr("Open the %1 module").arg(navigationTitles[row]), {navigationTitles[row].toLower()});
     }
@@ -394,7 +426,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         .arg(ThemePalette::color(ColorToken::TextMuted).name()));
     headerLayout->addWidget(appMeta);
     contentLayout->addWidget(header);
-    m_pageHost = new QStackedWidget(content);
+    m_pageHost = new devhub::presentation::widgets::CurrentPageStack(content);
     m_pageHost->setObjectName(QStringLiteral("mainPageHost"));
     m_overviewComposer = new application::overview::OverviewStateComposer(this);
     m_overviewPage = new devhub::presentation::overview::OverviewPage(*m_commandRegistry, m_pageHost);
@@ -458,54 +490,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     settingsLayout->addWidget(supportBundleButton, 0, Qt::AlignLeft);
     settingsLayout->addStretch();
     m_pageHost->addWidget(settingsPage);
-    auto* quickAskPage = new QWidget(m_pageHost);
-    quickAskPage->setObjectName(QStringLiteral("quickAskPage"));
-    auto* quickAskLayout = new QVBoxLayout(quickAskPage);
-    quickAskLayout->setContentsMargins(32, 28, 32, 28);
-    quickAskLayout->setSpacing(ThemeTokens::spacing(devhub::presentation::theme::SpaceToken::Three));
-    auto* quickAskTitle = new QLabel(tr("Quick Ask"), quickAskPage);
-    quickAskTitle->setFont(ThemeTokens::font(devhub::presentation::theme::TypographyToken::PageTitle));
-    auto* quickAskPrompt = new QLineEdit(quickAskPage);
-    quickAskPrompt->setObjectName(QStringLiteral("quickAskPrompt"));
-    quickAskPrompt->setAccessibleName(tr("Quick Ask prompt"));
-    quickAskPrompt->setPlaceholderText(tr("Ask something..."));
-    quickAskPrompt->setClearButtonEnabled(true);
-    quickAskPrompt->setMaximumWidth(680);
-    auto* quickAskButtons = new QHBoxLayout();
-    auto* quickAskStatus = new QLabel(quickAskPage);
-    quickAskStatus->setWordWrap(true);
-    quickAskStatus->setStyleSheet(QStringLiteral("color: palette(mid);"));
-    struct QuickAskProvider { QString name; QString url; QString promptParameter; };
-    const QuickAskProvider quickAskProviders[]{
-        {QStringLiteral("ChatGPT"), QStringLiteral("https://chatgpt.com/"), QStringLiteral("q")},
-        {QStringLiteral("Gemini"), QStringLiteral("https://gemini.google.com/app"), {}},
-        {QStringLiteral("DeepSeek"), QStringLiteral("https://chat.deepseek.com/"), {}}
-    };
-    for (const auto& provider : quickAskProviders) {
-        auto* button = new devhub::presentation::widgets::SecondaryButton(provider.name, quickAskPage);
-        quickAskButtons->addWidget(button);
-        connect(button, &QPushButton::clicked, this, [quickAskPrompt, quickAskStatus, provider] {
-            quickAskStatus->clear();
-            const QString prompt = quickAskPrompt->text().trimmed();
-            if (prompt.isEmpty()) return;
-            QUrl url(provider.url);
-            if (!provider.promptParameter.isEmpty()) {
-                QUrlQuery query;
-                // Encode literal '+' and '%' as well as query delimiters before adding the value.
-                query.addQueryItem(provider.promptParameter, QString::fromLatin1(QUrl::toPercentEncoding(prompt)));
-                url.setQuery(query);
-            }
-            if (!QDesktopServices::openUrl(url))
-                quickAskStatus->setText(tr("The system could not open the browser."));
-        });
-    }
-    quickAskButtons->addStretch();
-    quickAskLayout->addWidget(quickAskTitle);
-    quickAskLayout->addWidget(quickAskPrompt);
-    quickAskLayout->addLayout(quickAskButtons);
-    quickAskLayout->addWidget(quickAskStatus);
-    quickAskLayout->addStretch();
-    m_pageHost->addWidget(quickAskPage);
+    m_assistantPage = new devhub::presentation::assistant::AssistantPage(assistantController, m_pageHost);
+    m_pageHost->addWidget(m_assistantPage);
     m_commandPalette = new devhub::presentation::commands::CommandPaletteDialog(*m_commandRegistry, this);
     m_workspaceSearchProvider = new application::commands::WorkspaceSearchProvider();
     m_servicesSearchProvider = new application::commands::ServiceSearchProvider();
@@ -849,7 +835,12 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     connect(openSettingsButton, &QPushButton::clicked, this, [this, databasePage] {
         const QString workspaceId = m_workspaceContext.activeWorkspace()
             ? m_workspaceContext.activeWorkspace()->id().toString() : QString{};
-        devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this);
+        devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this, &m_assistantController, &m_assistantSetupProbe);
+        connect(&dialog, &devhub::presentation::settings::SettingsWindow::settingsApplied, &m_assistantController, [this] {
+            m_assistantController.applyConfiguration({m_settingsService.value(QStringLiteral("assistant/executable")).toString(), m_settingsService.value(QStringLiteral("assistant/model")).toString()});
+            if (m_session.account()) m_assistantController.setPersistenceContext(m_session.account()->id().toString(),
+                m_settingsService.value(QStringLiteral("assistant/restoreConversation")).toBool());
+        });
         connect(&dialog, &devhub::presentation::settings::SettingsWindow::changePasswordRequested,
                 &dialog, [this] {
             if (!m_session.account()) return;
@@ -871,6 +862,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             running += state.lifecycle == application::services::ServiceLifecycleState::Running ? 1 : 0;
         status << tr("Managed services running: %1 of %2").arg(running).arg(serviceStates.size());
         status << tr("Open-port records cached: %1").arg(m_workspaceContext.activeWorkspace() ? tr("available in Ports") : tr("not loaded"));
+        status.append(m_assistantController.diagnosticsSnapshot());
         devhub::presentation::settings::SupportBundleDialog dialog(m_supportBundleBuilder, status, this);
         dialog.exec();
     });
@@ -890,7 +882,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         emit shellChanged();
     });
     m_modulePages = {m_overviewPage, gitPage, servicePage, portPage, logsPage,
-                     databasePage, m_notesPage, filesPage, settingsPage, quickAskPage};
+                     databasePage, m_notesPage, filesPage, settingsPage, m_assistantPage};
 
     auto* quickView = new QQuickView;
     quickView->setResizeMode(QQuickView::SizeRootObjectToView);
@@ -991,10 +983,22 @@ void MainWindow::selectQuickModule(int index)
         return;
     }
     m_pageHost->setCurrentWidget(m_modulePages.at(index));
+    if (index == 9) m_assistantPage->activate();
     m_moduleWindow->setWindowTitle(tr("DevHub — %1").arg(QStringList{
         tr("Overview"), tr("Git"), tr("Services"), tr("Ports"), tr("Logs"),
-        tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Quick Ask")}.at(index)));
+        tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant")}.at(index)));
     m_moduleWindow->show();
+    // Clamp the complete decorated window to the current monitor's work area.
+    if (auto* targetScreen = screen()) {
+        const QRect available = targetScreen->availableGeometry();
+        const QSize decoration = m_moduleWindow->frameGeometry().size() - m_moduleWindow->size();
+        const QSize limit = available.size() - decoration;
+        m_moduleWindow->resize(m_moduleWindow->size().boundedTo(limit));
+        const QSize frame = m_moduleWindow->frameGeometry().size();
+        const QPoint position(qBound(available.left(), m_moduleWindow->frameGeometry().left(), qMax(available.left(), available.right() - frame.width() + 1)),
+                              qBound(available.top(), m_moduleWindow->frameGeometry().top(), qMax(available.top(), available.bottom() - frame.height() + 1)));
+        m_moduleWindow->move(position);
+    }
     m_moduleWindow->raise();
     m_moduleWindow->activateWindow();
 }
@@ -1049,7 +1053,12 @@ void MainWindow::openQuickSettings()
 {
     const QString workspaceId = m_workspaceContext.activeWorkspace()
         ? m_workspaceContext.activeWorkspace()->id().toString() : QString{};
-    devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this);
+    devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this, &m_assistantController, &m_assistantSetupProbe);
+    connect(&dialog, &devhub::presentation::settings::SettingsWindow::settingsApplied, &m_assistantController, [this] {
+        m_assistantController.applyConfiguration({m_settingsService.value(QStringLiteral("assistant/executable")).toString(), m_settingsService.value(QStringLiteral("assistant/model")).toString()});
+        if (m_session.account()) m_assistantController.setPersistenceContext(m_session.account()->id().toString(),
+            m_settingsService.value(QStringLiteral("assistant/restoreConversation")).toBool());
+    });
     connect(&dialog, &devhub::presentation::settings::SettingsWindow::changePasswordRequested,
             &dialog, [this] {
         if (!m_session.account()) return;
@@ -1137,17 +1146,27 @@ void MainWindow::addWorkspace(QString initialPath)
     activateWorkspace(id);
 }
 
-void MainWindow::activateWorkspace(const QString& id)
+bool MainWindow::requestAssistantWorkspaceOpen(const QString& id,
+    std::function<bool()> revalidate, std::function<void()> committed)
 {
-    if (id.isEmpty()) return;
-    const auto& active = m_workspaceContext.activeWorkspace();
+    return activateWorkspace(id, std::move(revalidate), std::move(committed));
+}
+
+bool MainWindow::activateWorkspace(const QString& id, std::function<bool()> revalidate,
+    std::function<void()> committed)
+{
+    if (id.isEmpty() || (revalidate && !revalidate())) return false;
+    const auto active = m_workspaceContext.activeWorkspace();
     if (active && active->id().toString() != id && !confirmDatabaseTransition()) {
         const QSignalBlocker blocker(m_workspaceList->selectionModel());
         m_workspaceList->setCurrentIndex(m_workspaceModel->index(m_workspaceModel->rowForId(active->id().toString()), 0));
-        return;
+        return false;
     }
+    // Transition prompts may run a nested event loop. Recheck authorization,
+    // target path and scope after those prompts, immediately before activation.
+    if (revalidate && !revalidate()) return false;
     auto workspaceId = domain::workspace::WorkspaceId::fromString(id);
-    if (!workspaceId) return;
+    if (!workspaceId) return false;
     auto result = m_workspaceManager.activate(workspaceId.value());
     if (!result) {
         statusBar()->showMessage(result.error().userMessage, 6000);
@@ -1157,12 +1176,14 @@ void MainWindow::activateWorkspace(const QString& id)
         draft.title = tr("Workspace unavailable"); draft.message = result.error().userMessage;
         draft.deduplicationKey = QStringLiteral("workspace-unavailable:%1").arg(id);
         (void)m_notificationService.post(std::move(draft));
-        return;
+        return false;
     }
+    if (committed) committed();
     m_workspaceContext.activate(result.value());
     m_workspaceState.setSelected(m_workspaceManager.accountId(), result.value().id());
     const int row = m_workspaceModel->rowForId(id);
     if (row >= 0 && m_workspaceList->currentIndex().row() != row) m_workspaceList->setCurrentIndex(m_workspaceModel->index(row, 0));
+    return true;
 }
 
 void MainWindow::showWorkspaceMenu(const QPoint& position)
@@ -1286,6 +1307,7 @@ void MainWindow::resizeEvent(QResizeEvent* event)
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    if (m_shutdownRequested) { event->ignore(); return; }
     if (m_serviceCoordinator.hasRunningServices()) {
         if (!m_closeAfterServicesStop) {
             QMessageBox dialog(this); dialog.setWindowTitle(tr("Services are running"));
@@ -1304,7 +1326,11 @@ void MainWindow::closeEvent(QCloseEvent* event)
         QSettings().setValue(QStringLiteral("window/normalGeometry"), normalGeometry());
     }
     QSettings().setValue(QStringLiteral("window/lastPage"), m_pageHost->currentIndex());
-    QMainWindow::closeEvent(event);
+    // All feature transition guards accepted the close. Keep owners alive while
+    // the asynchronous Assistant participant drains its child process.
+    m_shutdownRequested = true;
+    m_shutdownCoordinator.requestShutdown();
+    event->ignore();
 }
 
 void MainWindow::restoreSafeGeometry()

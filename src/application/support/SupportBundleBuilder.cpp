@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
+#include <QRegularExpression>
 #include <QSysInfo>
 
 namespace devhub::application::support {
@@ -55,6 +56,26 @@ shared::common::Result<void> failure(const QString& detail)
         domain::errors::ErrorCode::IoFailure, domain::errors::ErrorCategory::FileSystem,
         QStringLiteral("DevHub could not create the support bundle."), detail, QStringLiteral("write support bundle")));
 }
+QString safeSupportLog(const QString& source, const shared::security::RedactionService& redactor)
+{
+    QStringList kept;
+    const auto lines = source.split(QLatin1Char('\n'));
+    for (const auto& line : lines) {
+        // Assistant/Codex categories are deliberately omitted from exports. Their
+        // live diagnostics are a separate allowlisted summary, never log payloads.
+        if (line.contains(QStringLiteral("[devhub.assistant]"), Qt::CaseInsensitive)
+            || line.contains(QStringLiteral("[devhub.codex."), Qt::CaseInsensitive)) continue;
+        kept.append(redactor.redact(line));
+    }
+    return kept.join(QLatin1Char('\n'));
+}
+QStringList safeModuleStatus(const QStringList& source, const shared::security::RedactionService& redactor)
+{
+    static const QRegularExpression excluded(QStringLiteral("(?i)(transcript|prompt|response body|message body|codex state|thread id|turn id|payload|credential|authorization)"));
+    QStringList kept;
+    for (const auto& line : source) if (!excluded.match(line).hasMatch()) kept.append(redactor.redact(line));
+    return kept;
+}
 }
 
 SupportBundleBuilder::SupportBundleBuilder(QString logDirectory, settings::SettingsService& settings,
@@ -68,7 +89,7 @@ QStringList SupportBundleBuilder::previewCategories(const SupportBundleOptions& 
     if (options.logs) items << QStringLiteral("Sanitized rotating application logs");
     if (options.moduleStatus) items << QStringLiteral("Workspace and module status summaries");
     if (options.crashInformation) items << QStringLiteral("Crash information (only when a local crash file exists)");
-    items << QStringLiteral("Excluded: source files, databases, query values, notes, and workspace file contents");
+    items << QStringLiteral("Excluded: source files, databases, query values, notes, workspace file contents, Assistant transcripts, and Codex state");
     return items;
 }
 
@@ -96,15 +117,15 @@ shared::common::Result<void> SupportBundleBuilder::write(const QString& outputPa
         for (const auto& info : files) {
             if (info.size() > 5 * 1024 * 1024) continue;
             QFile file(info.absoluteFilePath()); if (!file.open(QIODevice::ReadOnly)) continue;
-            entries.push_back({QStringLiteral("logs/%1").arg(info.fileName()), m_redactor.redact(QString::fromUtf8(file.readAll())).toUtf8()});
+            entries.push_back({QStringLiteral("logs/%1").arg(info.fileName()), safeSupportLog(QString::fromUtf8(file.readAll()), m_redactor).toUtf8()});
         }
     }
     if (options.moduleStatus) entries.push_back({QStringLiteral("module-status.txt"),
-        m_redactor.redact(moduleStatus.join(QLatin1Char('\n'))).toUtf8()});
+        safeModuleStatus(moduleStatus, m_redactor).join(QLatin1Char('\n')).toUtf8()});
     if (options.crashInformation) {
         QFile crash(QDir(m_logDirectory).filePath(QStringLiteral("crash-info.txt")));
         if (crash.exists() && crash.size() <= 1024 * 1024 && crash.open(QIODevice::ReadOnly))
-            entries.push_back({QStringLiteral("crash-info.txt"), m_redactor.redact(QString::fromUtf8(crash.readAll())).toUtf8()});
+            entries.push_back({QStringLiteral("crash-info.txt"), safeSupportLog(QString::fromUtf8(crash.readAll()), m_redactor).toUtf8()});
     }
     QSaveFile file(outputPath);
     if (!file.open(QIODevice::WriteOnly)) return failure(file.errorString());

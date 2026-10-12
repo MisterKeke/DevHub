@@ -6,5 +6,6 @@
         <file alias="0004_service_lifecycle.sql">database/migrations/0004_service_lifecycle.sql</file>
         <file alias="0005_notes_state.sql">database/migrations/0005_notes_state.sql</file>
         <file alias="0006_settings_notifications.sql">database/migrations/0006_settings_notifications.sql</file>
+        <file alias="0007_assistant_conversations.sql">database/migrations/0007_assistant_conversations.sql</file>
     </qresource>
 </RCC>

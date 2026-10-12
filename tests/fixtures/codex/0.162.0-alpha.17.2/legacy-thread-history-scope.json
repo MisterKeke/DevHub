@@ -1,0 +1,15 @@
+{
+  "codexVersion": "0.162.0-alpha.17.2",
+  "source": "Native read-only thread/read of the conversation associated with DevHub metadata",
+  "sanitized": true,
+  "loginRequested": false,
+  "inference": false,
+  "scope": {
+    "directoryMatchesDevHubScratch": true,
+    "modelProvider": "openai",
+    "historyMode": "legacy",
+    "environments": null,
+    "turnStatuses": ["interrupted"]
+  },
+  "threadResumeValidatedBy": "Fixture regressions; authenticated native resume not run"
+}

@@ -10,7 +10,8 @@ class RuntimeCheckTest final : public QObject
   private slots:
     void embeddedViewsLoad()
     {
-        QTemporaryDir temp;
+        QTemporaryDir temp(QDir::current().filePath(QStringLiteral("runtime-check-XXXXXX")));
+        QVERIFY(temp.isValid());
         const QString report = temp.filePath(QStringLiteral("runtime report.txt"));
         QProcess process;
         process.start(QString::fromUtf8(DEVHUB_TEST_EXECUTABLE),
@@ -26,6 +27,7 @@ class RuntimeCheckTest final : public QObject
         QVERIFY(output.contains("PASS: SQLite"));
         QVERIFY(output.contains("PASS: Authentication.qml"));
         QVERIFY(output.contains("PASS: MainShell.qml"));
+        QVERIFY(output.contains("PASS: Assistant navigation at module index 9"));
         QVERIFY(output.contains("PASS: packaged runtime"));
     }
 
@@ -46,7 +48,8 @@ class RuntimeCheckTest final : public QObject
     {
         QFETCH(QByteArray, qml);
         QFETCH(QByteArray, expected);
-        QTemporaryDir temp;
+        QTemporaryDir temp(QDir::current().filePath(QStringLiteral("runtime-check-XXXXXX")));
+        QVERIFY(temp.isValid());
         const QDir source(QString::fromUtf8(DEVHUB_TEST_QML_SOURCE));
         for (const auto &name : source.entryList({QStringLiteral("*.qml")}, QDir::Files))
             QVERIFY(QFile::copy(source.filePath(name), temp.filePath(name)));

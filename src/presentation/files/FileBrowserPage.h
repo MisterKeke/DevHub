@@ -3,8 +3,10 @@
 #include "FileBrowserController.h"
 #include "../../application/files/ITrashService.h"
 #include "../../application/files/IExternalEditorLauncher.h"
+#include "../../application/files/WorkspaceFileService.h"
 
 #include <QWidget>
+#include <optional>
 
 class QFileSystemModel;
 class QSortFilterProxyModel;
@@ -13,6 +15,7 @@ class QPlainTextEdit;
 class QLabel;
 class QCheckBox;
 class QModelIndex;
+template<typename T> class QFutureWatcher;
 
 namespace devhub::presentation::files {
 
@@ -26,6 +29,7 @@ public:
     void setWorkspace(QString workspaceId, QString rootPath);
 private:
     void updatePreview(const QModelIndex& proxyIndex);
+    void startPreviewJob(application::files::WorkspaceFileService service, QString relative, quint64 generation);
     void showContextMenu(const QPoint& position);
     void createFile();
     void createDirectory();
@@ -52,6 +56,11 @@ private:
     QPlainTextEdit* m_preview = nullptr;
     QLabel* m_status = nullptr;
     QCheckBox* m_showHidden = nullptr;
+    QFutureWatcher<application::files::WorkspaceFileRead>* m_previewWatcher = nullptr;
+    QString m_loadingPreviewPath;
+    std::optional<QPair<application::files::WorkspaceFileService, QString>> m_pendingPreview;
+    quint64 m_loadingPreviewGeneration = 0;
+    quint64 m_previewGeneration = 0;
 };
 
 } // namespace devhub::presentation::files

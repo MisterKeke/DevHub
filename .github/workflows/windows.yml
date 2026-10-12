@@ -43,7 +43,24 @@ jobs:
         run: cmake --build --preset windows-ci-release --parallel
 
       - name: Test
-        run: ctest --preset windows-ci-release
+        shell: pwsh
+        run: |
+          ctest --preset windows-ci-release
+          $ctestExitCode = $LASTEXITCODE
+          if ($ctestExitCode -ne 0) {
+            Get-ChildItem -Path out/build/windows-ci/tests/Release -Filter '*-tests.txt' | ForEach-Object {
+              Write-Host ('::group::' + $_.Name)
+              Get-Content -LiteralPath $_.FullName
+              Write-Host '::endgroup::'
+            }
+          }
+          exit $ctestExitCode
+
+      - name: Verify Assistant baseline rendering and keyboard flow at four DPI scales
+        shell: pwsh
+        run: |
+          ./tools/verify-assistant-ui.ps1 -Executable out/build/windows-ci/tests/Release/devhub_assistant_ui_tests.exe -QtRoot "$env:QT_ROOT_DIR" -OutputDirectory out/assistant-ui-verification -ExpectedQtVersion 6.8.3
+          ./tools/verify-assistant-ui.ps1 -Executable out/build/windows-ci/tests/Release/devhub_assistant_settings_tests.exe -QtRoot "$env:QT_ROOT_DIR" -OutputDirectory out/assistant-ui-verification/settings -ExpectedQtVersion 6.8.3
 
       - name: Stage Release runtime
         shell: pwsh
@@ -62,4 +79,8 @@ jobs:
             out/ci-runtime-reports/*.txt
             out/build/windows-ci/tests/Release/*-tests.txt
             out/build/windows-ci/Testing/Temporary/LastTest.log
+            out/assistant-ui-verification/*.txt
+            out/assistant-ui-verification/*.png
+            out/assistant-ui-verification/settings/*.txt
+            out/assistant-ui-verification/settings/*.png
           if-no-files-found: ignore

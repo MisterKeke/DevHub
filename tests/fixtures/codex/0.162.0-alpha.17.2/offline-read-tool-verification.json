@@ -1,0 +1,16 @@
+{
+  "authenticated": false,
+  "checks": {
+    "isolatedHome": true,
+    "responseConsumed": true,
+    "restrictedOfferedSurface": true,
+    "singleValidCall": true,
+    "taggedSpecAccepted": true,
+    "turnCompleted": true
+  },
+  "codexVersion": "0.162.0-alpha.17.2",
+  "fixtureScopePassed": true,
+  "format": 1,
+  "realInference": false,
+  "releaseEligible": false
+}

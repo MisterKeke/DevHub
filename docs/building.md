@@ -1,5 +1,17 @@
 # Building DevHub
 
+Codex is optional and is not a build/CTest dependency. Assistant setup accepts
+the tested native `codex-cli 0.160.1` and `0.162.0-alpha.17.2` Windows executables. Select it with Settings
+→ Assistant → Browse/Recheck, or leave the override empty for native `codex.exe`
+on PATH. Installation locations are not guessed; `.cmd`, `.bat` and PowerShell
+wrappers are unsupported. An invalid override never falls back to PATH.
+No API key is required or accepted by DevHub. Explicit ChatGPT/device-code
+authorization uses Codex-managed sign-in; native Send still requires the runtime
+safety gate. Tests use synthetic protocol fixtures, without real sign-in or
+inference. The Qt 6.8.3 Windows CI job also runs chat/settings checks at
+100/125/150/200% scaling with `tools/verify-assistant-ui.ps1` and retains snapshots.
+See [Assistant setup](architecture/assistant-settings.md) for the boundaries.
+
 ## Prerequisites
 
 - Windows 11 x64.
@@ -34,7 +46,38 @@ cmake -S . -B out/build/qtcreator-mingw -G Ninja `
 
 Set the same `CMAKE_TOOLCHAIN_FILE` and `VCPKG_TARGET_TRIPLET` in Qt Creator's CMake configuration. The manifest installs libsodium for the selected triplet.
 
+When Qt Creator supplies an absolute `CMAKE_CXX_COMPILER` for a MinGW kit,
+DevHub puts that compiler's directory first on the configure process's `PATH`
+before vcpkg installs dependencies. This keeps dependencies on the same MinGW
+compiler/runtime as the application even when MSYS2 is also installed.
+If linking reports `libsodium.a ... undefined reference to memset_explicit`,
+run **Build → Run CMake** and rebuild. This error can occur when libsodium was
+built with a newer MSYS2 compiler while DevHub uses Qt's MinGW compiler;
+reconfiguration rebuilds the dependencies for the selected kit.
+
 Build configurations are Debug, RelWithDebInfo, and Release. The CI preset turns warnings into errors and pins the MSVC v143 14.44 toolset.
+
+If Qt Creator reports missing project headers while the compiler builds normally,
+check its clangd compilation database. An empty
+`out/build/windows-dev/.qtc_clangd/compile_commands.json` loses both the source
+and Qt include paths and produces cascading diagnostics. Check that the selected
+kit has its C/C++ compilers and Qt version assigned. Absolute compiler paths in
+CMake can still permit successful builds with an incomplete Qt Creator kit.
+For this MinGW preset, select Qt's paired MinGW compilers and the corresponding
+Qt version in the kit, then reopen the project/run CMake to regenerate the code
+model. Copying CMake's database into `.qtc_clangd` is only temporary: Qt Creator
+generates that file again. Newer Qt Creator versions also offer an
+[external compilation database setting](https://doc.qt.io/qtcreator/creator-preferences-cpp-clangd.html);
+the installed Qt Creator 19 does not support that option.
+
+When diagnosing a crash after a class layout changed, ensure the caller was
+rebuilt too. For Ninja, `ninja -C out/build/windows-dev -t deps
+CMakeFiles/devhub.dir/Debug/src/app/ApplicationBootstrapper.cpp.obj` should list
+its included headers, including `AssistantController.h`. A stale object with an
+empty dependency list can be linked against a newer library despite allocating
+the old object size. Close the debugger and clean/rebuild the affected target;
+the normal CMake compiler rules regenerate the header dependencies. Do not mix
+objects or executables from different build directories.
 
 ## Formatting and analysis
 

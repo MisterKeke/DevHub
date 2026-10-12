@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 3.28)
 
+# vcpkg selects its MinGW compilers from PATH independently of the application
+# compiler supplied by Qt Creator. Put that kit first before project() triggers
+# the manifest install, so cached dependencies use the same compiler/runtime.
+if(CMAKE_HOST_WIN32 AND VCPKG_TARGET_TRIPLET MATCHES "-mingw-" AND
+   IS_ABSOLUTE "${CMAKE_CXX_COMPILER}")
+    get_filename_component(_devhub_compiler_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    if(EXISTS "${_devhub_compiler_bin}/gcc.exe")
+        file(TO_NATIVE_PATH "${_devhub_compiler_bin}" _devhub_compiler_bin_native)
+        set(ENV{PATH} "${_devhub_compiler_bin_native};$ENV{PATH}")
+    endif()
+endif()
+
 project(DevHub VERSION 0.0.1 LANGUAGES CXX)
 
 include(CTest)
@@ -7,6 +19,7 @@ include(cmake/ProjectOptions.cmake)
 include(cmake/ProjectWarnings.cmake)
 
 option(DEVHUB_BUILD_TESTS "Build DevHub tests" ${BUILD_TESTING})
+option(DEVHUB_BUILD_LIVE_ASSISTANT_TESTS "Build the explicitly opted-in real Codex integration harness" OFF)
 option(DEVHUB_ENABLE_PACKAGING "Enable installer and packaging targets" OFF)
 option(DEVHUB_ENABLE_SANITIZERS "Enable supported compiler sanitizers" OFF)
 option(DEVHUB_WARNINGS_AS_ERRORS "Treat DevHub warnings as errors" OFF)
@@ -79,6 +92,76 @@ target_link_libraries(devhub_core
     PUBLIC project_options
     PRIVATE project_warnings Qt6::Core
 )
+
+set(DEVHUB_ASSISTANT_SOURCES
+    src/application/assistant/ICodexExecutableProbe.h
+    src/application/assistant/ICodexClient.h
+    src/application/assistant/IConversationRepository.h
+    src/infrastructure/assistant/SqlConversationRepository.h
+    src/infrastructure/assistant/SqlConversationRepository.cpp
+    src/application/assistant/AssistantController.h
+    src/application/assistant/AssistantController.cpp
+    src/application/assistant/AssistantTypes.h
+    src/application/assistant/AssistantToolRegistry.h
+    src/application/assistant/AssistantToolRegistry.cpp
+    src/application/assistant/AssistantToolHandlers.h
+    src/application/assistant/AssistantToolHandlers.cpp
+    src/application/assistant/AssistantToolRuntime.h
+    src/application/assistant/AssistantToolRuntime.cpp
+    src/application/assistant/AssistantApprovalCoordinator.h
+    src/application/assistant/AssistantApprovalCoordinator.cpp
+    src/application/assistant/ICodexTransport.h
+    src/infrastructure/codex/CodexExecutableLocator.h
+    src/infrastructure/codex/CodexExecutableLocator.cpp
+    src/infrastructure/codex/CodexVersionSupport.h
+    src/infrastructure/codex/CodexVersionSupport.cpp
+    src/infrastructure/codex/CodexProtocolCodec.h
+    src/infrastructure/codex/CodexProtocolCodec.cpp
+    src/infrastructure/codex/CodexWriteQueue.h
+    src/infrastructure/codex/CodexWriteQueue.cpp
+    src/infrastructure/codex/CodexProcess.h
+    src/infrastructure/codex/CodexProcess.cpp
+    src/infrastructure/codex/CodexClient.h
+    src/infrastructure/codex/CodexClient.cpp
+    src/infrastructure/codex/CodexRuntimeProfile.h
+    src/infrastructure/codex/CodexRuntimeProfile.cpp
+    src/infrastructure/codex/CodexWireContract.h
+    src/infrastructure/codex/CodexWireContract.cpp
+    src/application/git/GitExecutableLocator.cpp
+    src/application/git/GitCommandRunner.cpp
+    src/application/git/GitStatusParser.cpp
+    src/application/git/GitRepositoryLocator.cpp
+    src/application/git/GitService.cpp
+    resources/codex_contracts.qrc
+)
+
+add_library(devhub_file_services STATIC
+    src/application/files/WorkspaceFilePolicy.h
+    src/application/files/WorkspaceFilePolicy.cpp
+    src/application/files/WorkspaceFileService.h
+    src/application/files/WorkspaceFileService.cpp
+    src/application/notes/NoteSearchService.h
+    src/application/notes/NoteSearchService.cpp)
+target_include_directories(devhub_file_services PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(devhub_file_services PUBLIC project_options devhub_core Qt6::Core PRIVATE project_warnings)
+
+function(configure_devhub_assistant target)
+    target_include_directories(${target} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(${target} PUBLIC project_options devhub_core devhub_file_services devhub_services devhub_workspaces Qt6::Core
+        PRIVATE project_warnings devhub_database Qt6::Sql)
+endfunction()
+
+add_library(devhub_assistant STATIC ${DEVHUB_ASSISTANT_SOURCES})
+configure_devhub_assistant(devhub_assistant)
+
+if(DEVHUB_BUILD_LIVE_ASSISTANT_TESTS)
+    # Keep the development inference-validation policy out of the production
+    # library and app even when the dedicated opt-in test target is enabled.
+    add_library(devhub_assistant_live_validation STATIC ${DEVHUB_ASSISTANT_SOURCES})
+    configure_devhub_assistant(devhub_assistant_live_validation)
+    target_compile_definitions(devhub_assistant_live_validation PRIVATE
+        DEVHUB_ASSISTANT_LIVE_VALIDATION_BUILD=1)
+endif()
 
 add_library(devhub_database STATIC
     src/application/databases/DatabaseTypes.cpp
@@ -206,10 +289,13 @@ add_executable(devhub WIN32
     src/presentation/theme/ThemeTokens.cpp
     src/presentation/icons/IconLoader.cpp
     src/presentation/widgets/ReusableWidgets.cpp
+    src/presentation/widgets/SafeMarkdownBrowser.cpp
+    src/presentation/assistant/AssistantPage.cpp
     src/presentation/shell/MainWindow.cpp
     src/presentation/overview/OverviewPage.cpp
     src/presentation/commands/CommandPaletteDialog.cpp
     src/presentation/settings/SettingsWindow.cpp
+    src/presentation/settings/AssistantSettingsPanel.cpp
     src/presentation/settings/SupportBundleDialog.cpp
     src/presentation/notifications/NotificationListModel.cpp
     src/presentation/notifications/NotificationCenterDialog.cpp
@@ -233,11 +319,6 @@ add_executable(devhub WIN32
     src/infrastructure/notifications/SqlNotificationRepository.cpp
     src/infrastructure/logging/ApplicationLogManager.cpp
     src/infrastructure/workspace/WindowsTerminalLauncher.cpp
-    src/application/git/GitExecutableLocator.cpp
-    src/application/git/GitCommandRunner.cpp
-    src/application/git/GitStatusParser.cpp
-    src/application/git/GitRepositoryLocator.cpp
-    src/application/git/GitService.cpp
     src/application/git/GitStateStore.cpp
     src/presentation/workspaces/AddWorkspaceDialog.cpp
     src/presentation/workspaces/WorkspaceListDelegate.cpp
@@ -256,6 +337,7 @@ target_link_libraries(devhub PRIVATE
     project_options
     project_warnings
     devhub_core
+    devhub_assistant
     devhub_database
     devhub_accounts
     devhub_workspaces
@@ -322,6 +404,9 @@ endif()
 if(DEVHUB_BUILD_TESTS)
     find_package(Qt6 6.8.3 REQUIRED COMPONENTS Test)
     add_subdirectory(tests)
+endif()
+if(DEVHUB_BUILD_LIVE_ASSISTANT_TESTS AND NOT DEVHUB_BUILD_TESTS)
+    message(FATAL_ERROR "DEVHUB_BUILD_LIVE_ASSISTANT_TESTS requires DEVHUB_BUILD_TESTS=ON")
 endif()
 
 if(DEVHUB_ENABLE_PACKAGING)

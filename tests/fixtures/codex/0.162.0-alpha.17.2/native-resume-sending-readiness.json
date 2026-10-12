@@ -1,0 +1,64 @@
+{
+  "accountRoutingVerified": true,
+  "canSend": true,
+  "chatGptAccount": true,
+  "codexVersion": "0.162.0-alpha.17.2",
+  "completedReconnects": 1,
+  "configurationWriteRequested": false,
+  "inference": false,
+  "launchCount": 4,
+  "loginRequested": false,
+  "newChatSelected": true,
+  "profileChecks": [
+    "inherited-mcp-enabled",
+    "verified",
+    "inherited-mcp-enabled",
+    "verified"
+  ],
+  "profileVerified": true,
+  "protocolFailure": "",
+  "requestFailures": [
+    "account/read: The Codex connection is stopping.",
+    "account/read: The account state changed.",
+    "account/read: The Codex connection is stopping.",
+    "account/read: The account state changed."
+  ],
+  "restorationCount": 1,
+  "restored": true,
+  "resumeScope": {
+    "approvalPolicy": "on-request",
+    "environmentCount": 1,
+    "environments": [
+      {
+        "runtimeRootCount": 0,
+        "scratchMatches": true
+      }
+    ],
+    "environmentsNull": false,
+    "historyMode": "paginated",
+    "initialPageBackwardsCursor": true,
+    "initialPageNextCursor": false,
+    "initialPageTurnCount": 1,
+    "initialTurnsPageNull": false,
+    "itemCursorPresent": false,
+    "runtimeRootCount": 0,
+    "sandbox": {
+      "networkAccess": false,
+      "type": "readOnly"
+    },
+    "turnCursorPresent": true,
+    "turns": [
+      {
+        "itemTypes": [],
+        "itemsView": "full",
+        "status": "interrupted"
+      }
+    ]
+  },
+  "sharedProfile": true,
+  "status": "Codex is ready. Text chat stays inside DevHub.",
+  "textModelAvailable": true,
+  "transportFailure": "",
+  "source": "Production native probe: associated thread/resume, New Chat, reconnect; metadata writes confined to an in-memory repository",
+  "verifiedOn": "2026-10-11"
+}

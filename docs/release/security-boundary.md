@@ -7,3 +7,21 @@ The application stores internal metadata, settings, logs, notes, and recovery ma
 DevHub does not request administrator privileges. Service definitions can launch programs with the current user's privileges. Shell mode is opt-in for a service definition. The Port Monitor can terminate selected processes only after confirmation and rechecks process identity.
 
 Users remain responsible for Windows account security, disk protection, backups, third-party program trust, and review of service executable paths and environment-variable names. The local account password is not a Windows credential and is not sent to a server.
+
+Assistant uses Codex-managed ChatGPT authorization, separate from DevHub's local
+password. DevHub requests no API key and does not read or persist credential
+files. Its settings store only executable/model preferences, excluded from
+support settings exports. Authorization URL/device-code challenges are transient
+and clear on cancellation, expiry, completion and local session revocation.
+Opening the validated authorization page requires an explicit button click;
+ordinary chat stays in DevHub. Completing authorization can change Codex's shared
+account used by other applications. Sign-in and the model catalog do not bypass
+the native text/scope safety gate. See [Assistant setup](../architecture/assistant-settings.md).
+
+DevHub restores only thread IDs it previously associated in its own account-
+scoped database. Each association is checked against the current Codex account,
+Codex home fingerprint, compatibility profile, and DevHub workspace binding.
+The Codex working directory is a stable isolated cache subdirectory; this path is
+not a workspace grant. Local conversation metadata does not include message
+bodies. Disabling `assistant/restoreConversation` prevents new association
+saves and automatic restore without erasing existing metadata or Codex history.

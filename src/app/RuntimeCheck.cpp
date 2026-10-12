@@ -110,6 +110,13 @@ void countDelegates(QQuickItem *item, int &workspaceCount, int &overviewCount)
     for (auto *child : item->childItems())
         countDelegates(child, workspaceCount, overviewCount);
 }
+int countAssistantNavigation(QQuickItem* item)
+{
+    int count = item->property("moduleIndex").isValid() && item->property("moduleIndex").toInt() == 9
+        && item->property("modelData").toString() == QStringLiteral("Assistant") ? 1 : 0;
+    for (auto* child : item->childItems()) count += countAssistantNavigation(child);
+    return count;
+}
 } // namespace
 
 int checkRuntime(QApplication &application, const QString &reportPath, const QString &qmlRoot)
@@ -219,6 +226,10 @@ int checkRuntime(QApplication &application, const QString &reportPath, const QSt
             else
                 diagnostics.append(
                     QStringLiteral("PASS: MainShell.qml with workspace and overview delegates"));
+            if (countAssistantNavigation(item) != 1) {
+                diagnostics.append(QStringLiteral("FAIL: Assistant navigation must occupy module index 9 exactly once"));
+                qmlFailed = true;
+            } else diagnostics.append(QStringLiteral("PASS: Assistant navigation at module index 9"));
         }
     }
     success = success && !qmlFailed;

@@ -1,0 +1,274 @@
+[
+    {
+        "description": "Read Git status in the selected workspace.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+            },
+            "required": [
+            ],
+            "type": "object"
+        },
+        "name": "devhub_git_status",
+        "type": "function"
+    },
+    {
+        "description": "List local or remote Git branches in the selected workspace.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+                "remote": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "remote"
+            ],
+            "type": "object"
+        },
+        "name": "devhub_git_branches",
+        "type": "function"
+    },
+    {
+        "description": "Read a bounded page of Git history in the selected workspace.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+                "limit": {
+                    "maximum": 100,
+                    "minimum": 1,
+                    "type": "integer"
+                },
+                "offset": {
+                    "maximum": 1000000,
+                    "minimum": 0,
+                    "type": "integer"
+                }
+            },
+            "required": [
+            ],
+            "type": "object"
+        },
+        "name": "devhub_git_log",
+        "type": "function"
+    },
+    {
+        "description": "Read metadata for the selected registered workspace.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+            },
+            "required": [
+            ],
+            "type": "object"
+        },
+        "name": "devhub_workspace_metadata",
+        "type": "function"
+    },
+    {
+        "description": "List service names and runtime states for the selected workspace.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+            },
+            "required": [
+            ],
+            "type": "object"
+        },
+        "name": "devhub_services_list",
+        "type": "function"
+    },
+    {
+        "description": "Read a selected-workspace note after note-text disclosure is enabled.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+                "noteId": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                }
+            },
+            "required": [
+                "noteId"
+            ],
+            "type": "object"
+        },
+        "name": "devhub_notes_read",
+        "type": "function"
+    },
+    {
+        "description": "Search note text in the selected workspace after disclosure is enabled.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+                "query": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                }
+            },
+            "required": [
+                "query"
+            ],
+            "type": "object"
+        },
+        "name": "devhub_notes_search",
+        "type": "function"
+    },
+    {
+        "description": "Read a bounded file range after file-text disclosure is enabled.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+                "length": {
+                    "maximum": 65536,
+                    "minimum": 1,
+                    "type": "integer"
+                },
+                "offset": {
+                    "maximum": 1048576,
+                    "minimum": 0,
+                    "type": "integer"
+                },
+                "path": {
+                    "maxLength": 1024,
+                    "minLength": 1,
+                    "type": "string"
+                }
+            },
+            "required": [
+                "path"
+            ],
+            "type": "object"
+        },
+        "name": "devhub_files_read",
+        "type": "function"
+    },
+    {
+        "description": "Search workspace file names and relative paths.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+                "query": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                }
+            },
+            "required": [
+                "query"
+            ],
+            "type": "object"
+        },
+        "name": "devhub_files_search",
+        "type": "function"
+    },
+    {
+        "description": "Propose replacing a note with human approval and a current SHA-256 hash.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+                "content": {
+                    "maxLength": 32768,
+                    "minLength": 0,
+                    "type": "string"
+                },
+                "expectedHash": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                },
+                "noteId": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                }
+            },
+            "required": [
+                "noteId",
+                "expectedHash",
+                "content"
+            ],
+            "type": "object"
+        },
+        "name": "devhub_notes_edit",
+        "type": "function"
+    },
+    {
+        "description": "Request approval to start an existing service; waits for process startup.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+                "serviceId": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                }
+            },
+            "required": [
+                "serviceId"
+            ],
+            "type": "object"
+        },
+        "name": "devhub_services_start",
+        "type": "function"
+    },
+    {
+        "description": "Request approval to stop an existing managed service; waits for process exit.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+                "serviceId": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                }
+            },
+            "required": [
+                "serviceId"
+            ],
+            "type": "object"
+        },
+        "name": "devhub_services_stop",
+        "type": "function"
+    },
+    {
+        "description": "Request approval to restart an existing managed service; waits for its replacement process.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+                "serviceId": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                }
+            },
+            "required": [
+                "serviceId"
+            ],
+            "type": "object"
+        },
+        "name": "devhub_services_restart",
+        "type": "function"
+    },
+    {
+        "description": "Request approval to open a registered workspace through Notes and Database transition guards; ends this chat's workspace scope.",
+        "inputSchema": {
+            "additionalProperties": false,
+            "properties": {
+                "workspaceId": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                }
+            },
+            "required": [
+                "workspaceId"
+            ],
+            "type": "object"
+        },
+        "name": "devhub_project_open",
+        "type": "function"
+    }
+]

@@ -1,0 +1,48 @@
+{
+  "candidateVersion": "0.160.1",
+  "evidenceDate": "2026-10-09",
+  "host": "Windows 11 x64",
+  "qtVersion": "6.11.0",
+  "isolatedHome": true,
+  "inference": false,
+  "operations": ["initialize", "initialized", "config/read"],
+  "scenarios": [
+    {
+      "scenario": "stop",
+      "initialized": true,
+      "configRead": true,
+      "observedOwnedProcessCount": 2,
+      "survivingOwnedProcessCount": 0,
+      "stoppedCount": 1,
+      "transportFailed": false
+    },
+    {
+      "scenario": "crash",
+      "initialized": true,
+      "configRead": true,
+      "observedOwnedProcessCount": 2,
+      "survivingOwnedProcessCount": 0,
+      "stoppedCount": 1,
+      "transportFailed": true
+    },
+    {
+      "scenario": "kill",
+      "initialized": true,
+      "configRead": true,
+      "observedOwnedProcessCount": 2,
+      "survivingOwnedProcessCount": 0,
+      "stoppedCount": 1,
+      "transportFailed": false
+    }
+  ],
+  "containmentDecision": "No persistent survivor observed under the isolated restricted profile; no Job Object introduced.",
+  "treeContainmentClaim": false,
+  "releaseEligible": false,
+  "exclusions": [
+    "authenticated inference and user home",
+    "managed hooks, inherited MCP, attached computer/browser runtimes",
+    "arbitrary persistent grandchildren or escaped descendants",
+    "processes which start and exit between sampling intervals",
+    "other Codex versions, Qt 6.8.3 and clean packaged machines"
+  ]
+}

@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 
 #include <QMainWindow>
 #include <QPointer>
@@ -43,11 +44,14 @@ class UnlockWidget;
 }
 namespace devhub::presentation::workspaces { class WorkspaceListModel; }
 namespace devhub::presentation::notes { class NotesPage; }
+namespace devhub::presentation::assistant { class AssistantPage; }
+namespace devhub::application::assistant { class AssistantController; class ICodexExecutableProbe; }
 namespace devhub::presentation::databases { class DatabasePage; }
 namespace devhub::application::overview { class OverviewStateComposer; }
 namespace devhub::application::commands { class CommandRegistry; }
 namespace devhub::application::commands { class CachedSearchProvider; }
 namespace devhub::application::settings { class SettingsService; }
+namespace devhub::application::lifecycle { class ShutdownCoordinator; }
 namespace devhub::application::support { class SupportBundleBuilder; }
 namespace devhub::presentation::theme { class ThemeManager; }
 namespace devhub::presentation::overview { class OverviewPage; }
@@ -91,10 +95,15 @@ public:
                application::notifications::NotificationService& notificationService,
                application::support::SupportBundleBuilder& supportBundleBuilder,
                const shared::security::RedactionService& redactor,
+               application::assistant::AssistantController& assistantController,
+               application::assistant::ICodexExecutableProbe& assistantSetupProbe,
+               application::lifecycle::ShutdownCoordinator& shutdownCoordinator,
                QWidget* parent = nullptr);
     void restoreWorkspaceSelection();
     bool flushNotesForShutdown();
     [[nodiscard]] bool confirmDatabaseTransition();
+    [[nodiscard]] bool requestAssistantWorkspaceOpen(const QString& id,
+        std::function<bool()> revalidate, std::function<void()> committed);
     void showRecoveryNotice();
     QString shellWorkspaceTitle() const;
     QString shellWorkspacePath() const;
@@ -130,7 +139,8 @@ private:
     void submitUnlock();
     void reloadWorkspaces(QString preferredId = {});
     void addWorkspace(QString initialPath = {});
-    void activateWorkspace(const QString& id);
+    bool activateWorkspace(const QString& id, std::function<bool()> revalidate = {},
+                           std::function<void()> committed = {});
     void showWorkspaceMenu(const QPoint& position);
 
     QLabel* m_workspaceTitle = nullptr;
@@ -153,6 +163,9 @@ private:
     application::tasks::TaskScheduler& m_scheduler;
     application::services::ServiceCoordinator& m_serviceCoordinator;
     application::settings::SettingsService& m_settingsService;
+    application::assistant::AssistantController& m_assistantController;
+    application::assistant::ICodexExecutableProbe& m_assistantSetupProbe;
+    application::lifecycle::ShutdownCoordinator& m_shutdownCoordinator;
     presentation::theme::ThemeManager& m_themeManager;
     application::events::ApplicationEventHub& m_eventHub;
     application::notifications::INotificationRepository& m_notificationRepository;
@@ -161,6 +174,7 @@ private:
     const shared::security::RedactionService& m_redactor;
     devhub::presentation::notifications::ToastManager* m_toastManager = nullptr;
     bool m_closeAfterServicesStop = false;
+    bool m_shutdownRequested = false;
     devhub::presentation::workspaces::WorkspaceListModel* m_workspaceModel = nullptr;
     QListView* m_workspaceList = nullptr;
     QLineEdit* m_workspaceSearch = nullptr;
@@ -170,6 +184,7 @@ private:
     QWidget* m_lockPage = nullptr;
     authentication::UnlockWidget* m_unlockWidget = nullptr;
     devhub::presentation::notes::NotesPage* m_notesPage = nullptr;
+    devhub::presentation::assistant::AssistantPage* m_assistantPage = nullptr;
     devhub::presentation::databases::DatabasePage* m_databasePage = nullptr;
     application::overview::OverviewStateComposer* m_overviewComposer = nullptr;
     application::commands::CommandRegistry* m_commandRegistry = nullptr;

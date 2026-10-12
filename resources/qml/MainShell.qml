@@ -113,16 +113,18 @@ Rectangle {
                 anchors.fill: parent; anchors.margins: 12; spacing: 5
                 Text { text: qsTr("MODULES"); color: root.muted; font.pixelSize: 10; font.letterSpacing: 1.1; font.weight: Font.DemiBold; Layout.bottomMargin: 8 }
                 Repeater {
-                    model: [qsTr("Overview"), qsTr("Git"), qsTr("Services"), qsTr("Ports"), qsTr("Logs"), qsTr("Database"), qsTr("Notes"), qsTr("Files"), qsTr("Quick Ask")]
+                    model: [qsTr("Overview"), qsTr("Git"), qsTr("Services"), qsTr("Ports"), qsTr("Logs"), qsTr("Database"), qsTr("Notes"), qsTr("Files"), qsTr("Assistant")]
                     delegate: Rectangle {
                         required property string modelData
                         required property int index
                         readonly property int moduleIndex: index < 8 ? index : index + 1
                         Layout.fillWidth: true; height: 40; radius: 8
+                        Layout.topMargin: index === 8 ? 12 : 0
+                        Rectangle { visible: index === 8; anchors.bottom: parent.top; anchors.bottomMargin: 6; width: parent.width; height: 1; color: root.border; objectName: "assistantSeparator" }
                         color: root.selectedModule === moduleIndex ? root.activeSurface : navHover.hovered ? root.hoverSurface : "transparent"
                         RowLayout {
                             anchors.fill: parent; anchors.leftMargin: 11; spacing: 10
-                            Text { text: ["⌂","⑂","▷","◉","≡","▤","▧","▱","?"][index]; color: root.selectedModule === moduleIndex ? root.accent : root.secondary; font.pixelSize: 18; Layout.preferredWidth: 21 }
+                            Text { text: ["⌂","⑂","▷","◉","≡","▤","▧","▱","✦"][index]; color: root.selectedModule === moduleIndex ? root.accent : root.secondary; font.pixelSize: 18; Layout.preferredWidth: 21 }
                             Text { text: modelData; color: root.selectedModule === moduleIndex ? root.accent : root.text; font.pixelSize: 12 }
                         }
                         HoverHandler { id: navHover }

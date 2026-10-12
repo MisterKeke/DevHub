@@ -6,9 +6,11 @@
 /cmake-build-*/
 compile_commands.json
 CMakeUserPresets.json
+__pycache__/
 
 # Local assistant planning
 /CODEX_ASSISTANT_IMPLEMENTATION_PLAN.md
+/docs/architecture/codebase-review-2026-10-11.md
 
 # Editor and IDE state
 /.qtcreator/

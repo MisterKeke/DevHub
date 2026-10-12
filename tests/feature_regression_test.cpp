@@ -7,6 +7,7 @@
 #include "presentation/databases/DatabasePage.h"
 
 #include <QComboBox>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QMessageBox>
@@ -360,6 +361,60 @@ class FeatureRegressionTest final : public QObject
         executor.close();
     }
 
+    void gridPreservesLiteralNullEmptyTextAndExplicitSqlNull()
+    {
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const auto path = root.filePath(QStringLiteral("null-values.sqlite"));
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); file.close();
+        auto control = std::make_shared<infrastructure::database::SqliteQueryControl>();
+        infrastructure::database::NativeSqliteQueryExecutor setup(control);
+        QVERIFY(setup.open(path, DatabaseOpenMode::ReadWrite).isEmpty());
+        QVERIFY(setup.run({QStringLiteral("CREATE TABLE things(id INTEGER PRIMARY KEY, value TEXT, number INTEGER)"),
+            QStringLiteral("INSERT INTO things VALUES(1, NULL, 42), (2, 'old', 42), (3, 'old', 42)")}, 0).message.isEmpty());
+        setup.close();
+        infrastructure::database::QtSqlDatabaseWorker worker(QStringLiteral("null-regression"));
+        worker.open(path, DatabaseOpenMode::ReadWrite);
+        QSignalSpy pages(&worker, &infrastructure::database::QtSqlDatabaseWorker::pageReady);
+        worker.loadPage(QStringLiteral("things"), 0, 25, {}, true);
+        QCOMPARE(pages.size(), 1);
+        presentation::databases::DatabaseTableModel model;
+        QVector<DatabaseColumn> columns(3);
+        columns[0].name = "id"; columns[0].declaredType = "INTEGER";
+        columns[1].name = "value"; columns[1].declaredType = "TEXT";
+        columns[2].name = "number"; columns[2].declaredType = "INTEGER";
+        model.setPage(QStringLiteral("things"), qvariant_cast<DatabasePageResult>(pages.first().at(1)),
+            columns);
+        model.setEditMode(true);
+        const QVariant sqlNull{QMetaType(QMetaType::QString)};
+        QVERIFY(model.setData(model.index(0, 1), QStringLiteral(""), Qt::EditRole));
+        QVERIFY(!model.data(model.index(0, 1), Qt::EditRole).isNull());
+        for (const auto& text : {QStringLiteral("null"), QStringLiteral("Null"), QStringLiteral("NULL")}) {
+            QVERIFY(model.setData(model.index(1, 1), text, Qt::EditRole));
+            QCOMPARE(model.data(model.index(1, 1), Qt::EditRole).toString(), text);
+            QVERIFY(!model.data(model.index(1, 1), Qt::EditRole).isNull());
+        }
+        QVERIFY(model.setData(model.index(2, 1), sqlNull, Qt::EditRole));
+        QVERIFY(model.setData(model.index(2, 2), sqlNull, Qt::EditRole));
+        QVERIFY(model.data(model.index(2, 2), Qt::EditRole).isNull());
+        QVERIFY(model.data(model.index(1, 1), Qt::DisplayRole) != model.data(model.index(2, 1), Qt::DisplayRole));
+        QVERIFY(!model.setData(model.index(0, 0), 99, Qt::EditRole));
+        QSignalSpy commits(&worker, &infrastructure::database::QtSqlDatabaseWorker::commitFinished);
+        worker.commit(model.pendingChanges()); QCOMPARE(commits.size(), 1); QVERIFY(commits.first().first().toBool());
+        QSignalSpy queries(&worker, &infrastructure::database::QtSqlDatabaseWorker::queryReady);
+        worker.executeQuery(QStringLiteral("SELECT value, number FROM things ORDER BY id"), false);
+        const auto result = qvariant_cast<DatabaseQueryResult>(queries.first().first());
+        QCOMPARE(result.rows.size(), 3);
+        QVERIFY(!result.rows.at(0).at(0).isNull()); QCOMPARE(result.rows.at(0).at(0).toString(), QStringLiteral(""));
+        QCOMPARE(result.rows.at(1).at(0).toString(), QStringLiteral("NULL"));
+        QVERIFY(result.rows.at(2).at(0).isNull()); QVERIFY(result.rows.at(2).at(1).isNull());
+        model.appendBlankRow();
+        QVERIFY(model.setData(model.index(3, 0), 4, Qt::EditRole));
+        QVERIFY(model.setData(model.index(3, 1), sqlNull, Qt::EditRole));
+        const auto insert = model.pendingChanges().inserts.first();
+        QVERIFY(insert.values.contains("value")); QVERIFY(insert.values.value("value").isNull());
+        worker.close();
+    }
+
     void visualCommitsAndSqlQueriesShareFileChanges()
     {
         QTemporaryDir root;
@@ -469,16 +524,26 @@ class FeatureRegressionTest final : public QObject
 
     void supportBundleHasValidCentralDirectory()
     {
-        QTemporaryDir root;
+        QTemporaryDir root(QDir::current().filePath(QStringLiteral("support-bundle-XXXXXX")));
+        QVERIFY(root.isValid());
         SettingsRepository repository;
         application::settings::SettingsService settings(repository);
         shared::security::RedactionService redactor;
         application::support::SupportBundleBuilder builder(root.path(), settings, redactor);
+        QFile log(root.filePath(QStringLiteral("devhub.log")));
+        QVERIFY2(log.open(QIODevice::WriteOnly | QIODevice::Text), qPrintable(log.errorString()));
+        const QByteArray planted = QByteArrayLiteral("PLANTED_ASSISTANT_TRANSCRIPT_SECRET_7f83c4");
+        log.write("2026-10-10 INFO [devhub.assistant] transcript="); log.write(planted); log.write("\n");
+        log.write("2026-10-10 INFO [devhub.codex.protocol] state="); log.write(planted); log.write("\n");
+        log.write("2026-10-10 INFO [devhub.workspace] status=ready\n"); log.close();
         const auto path = root.filePath(QStringLiteral("support.zip"));
-        QVERIFY(builder.write(path, {}, {QStringLiteral("Healthy")}));
+        QVERIFY(builder.write(path, {}, {QStringLiteral("Healthy"), QString::fromLatin1(planted),
+            QStringLiteral("Codex state: ") + QString::fromLatin1(planted)}));
         QFile file(path);
         QVERIFY(file.open(QIODevice::ReadOnly));
         const QByteArray bytes = file.readAll();
+        QVERIFY(!bytes.contains(planted));
+        QVERIFY(builder.previewCategories({}).join(QLatin1Char('\n')).contains(QStringLiteral("Assistant transcripts, and Codex state")));
         const qsizetype central = bytes.indexOf(QByteArray::fromHex("504b0102"));
         QVERIFY(central >= 0);
         const auto u16 = [&bytes](qsizetype at)
