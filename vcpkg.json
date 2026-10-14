@@ -1,6 +1,6 @@
 {
   "name": "devhub",
-  "version-string": "0.0.1",
+  "version-string": "0.0.2",
   "description": "A local-first desktop workspace manager for developers.",
   "dependencies": [ "libsodium", { "name": "sqlite3", "features": [ "fts3", "fts4", "fts5", "rtree", "math", "dbstat" ] } ],
   "builtin-baseline": "72adbfe37c8d10cc4497baa358469ab0908482a1"

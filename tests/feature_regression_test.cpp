@@ -6,6 +6,7 @@
 #include "infrastructure/database/NativeSqliteQueryExecutor.h"
 #include "infrastructure/database/QtSqlDatabaseSession.h"
 #include "infrastructure/database/QtSqlDatabaseWorker.h"
+#include "infrastructure/database/QtSqlConnectionFactory.h"
 #include "presentation/databases/DatabasePage.h"
 
 #include <QComboBox>
@@ -26,6 +27,9 @@
 #include <QtEndian>
 #include <QtTest/QtTest>
 #ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 
@@ -103,11 +107,12 @@ domain::services::ServiceDefinition definition(const QString &id, const QString 
 class References final : public IDatabaseReferenceRepository
 {
   public:
+    QString filePath = QStringLiteral("unused.sqlite");
     Result<QVector<DatabaseReference>> list(const QString &workspace) override
     {
         return Result<QVector<DatabaseReference>>::success(
             {{QStringLiteral("db"), workspace, QStringLiteral("Test"),
-              QStringLiteral("unused.sqlite")}});
+              filePath}});
     }
     Result<void> add(const DatabaseReference &) override
     {
@@ -377,6 +382,116 @@ class FeatureRegressionTest final : public QObject
 #else
         QSKIP("Windows Job Object process-tree behavior is Windows-specific.");
 #endif
+    }
+
+    void projectDatabasePageOpensRealSessionRepeatedly()
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const auto path = root.filePath(QStringLiteral("project.sqlite"));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.close();
+        auto control = std::make_shared<infrastructure::database::SqliteQueryControl>();
+        infrastructure::database::NativeSqliteQueryExecutor setup(control);
+        QVERIFY(setup.open(path, DatabaseOpenMode::ReadWrite).isEmpty());
+        QVERIFY(setup.run({QStringLiteral("CREATE TABLE things(id INTEGER PRIMARY KEY, value TEXT)"),
+                          QStringLiteral("INSERT INTO things VALUES(1,'project row')")}, 0).message.isEmpty());
+        setup.close();
+
+        References references;
+        references.filePath = path;
+        infrastructure::database::QtSqlConnectionFactory factory;
+        presentation::databases::DatabasePage page(references, factory);
+        page.setWorkspace(QStringLiteral("workspace"), root.path());
+        auto* open = button(page, QStringLiteral("Open Read-Only"));
+        auto* close = button(page, QStringLiteral("Close"));
+        auto* tree = page.findChild<QTreeView*>();
+        auto* table = page.findChild<QTableView*>(QStringLiteral("databaseDataTable"));
+        QVERIFY(open); QVERIFY(close); QVERIFY(tree); QVERIFY(table);
+        QSignalSpy failures(&page, &presentation::databases::DatabasePage::databaseOperationFailed);
+        const auto connections = QSqlDatabase::connectionNames();
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            open->click();
+            QTRY_COMPARE(tree->model()->rowCount(), 4);
+            const auto tables = tree->model()->index(0, 0);
+            QTRY_COMPARE(tree->model()->rowCount(tables), 1);
+            tree->clicked(tree->model()->index(0, 0, tables));
+            QTRY_COMPARE(table->model()->rowCount(), 1);
+            QCOMPARE(table->model()->data(table->model()->index(0, 1)).toString(), QStringLiteral("project row"));
+            QVERIFY(!(table->model()->flags(table->model()->index(0, 1)) & Qt::ItemIsEditable));
+            // Project sessions must not open a second connection in Qt's separate engine.
+            QCOMPARE(QSqlDatabase::connectionNames(), connections);
+            close->click();
+            QCOMPARE(table->model()->rowCount(), 0);
+        }
+        QCOMPARE(failures.count(), 0);
+    }
+
+    void readOnlyBackupRestoresWriteProtectionAfterSuccessAndFailure()
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const auto path = root.filePath(QStringLiteral("project.sqlite"));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.close();
+        auto control = std::make_shared<infrastructure::database::SqliteQueryControl>();
+        infrastructure::database::NativeSqliteQueryExecutor setup(control);
+        QVERIFY(setup.open(path, DatabaseOpenMode::ReadWrite).isEmpty());
+        QVERIFY(setup.run({QStringLiteral("CREATE TABLE things(id INTEGER PRIMARY KEY)"),
+                          QStringLiteral("INSERT INTO things VALUES(1)")}, 0).message.isEmpty());
+        setup.close();
+        infrastructure::database::QtSqlDatabaseWorker worker(QStringLiteral("read-only-backup"));
+        QSignalSpy opened(&worker, &infrastructure::database::QtSqlDatabaseWorker::openFinished);
+        QSignalSpy backups(&worker, &infrastructure::database::QtSqlDatabaseWorker::backupFinished);
+        QSignalSpy queries(&worker, &infrastructure::database::QtSqlDatabaseWorker::queryReady);
+        worker.open(path, DatabaseOpenMode::ReadOnly);
+        QVERIFY(opened.first().first().toBool());
+        const auto backup = root.filePath(QStringLiteral("backup.sqlite"));
+        worker.backup(backup);
+        QVERIFY2(backups.last().first().toBool(), qPrintable(backups.last().at(1).toString()));
+        QVERIFY(setup.open(backup, DatabaseOpenMode::ReadOnly).isEmpty());
+        QCOMPARE(setup.run({QStringLiteral("SELECT COUNT(*) FROM things")}, 0).rows.first().first().toInt(), 1);
+        setup.close();
+        worker.executeQuery(QStringLiteral("DELETE FROM things"), false);
+        QVERIFY(!qvariant_cast<DatabaseQueryResult>(queries.last().first()).message.isEmpty());
+        worker.backup(root.filePath(QStringLiteral("missing-directory/backup.sqlite")));
+        QVERIFY(!backups.last().first().toBool());
+        worker.executeQuery(QStringLiteral("PRAGMA query_only"), false);
+        QCOMPARE(qvariant_cast<DatabaseQueryResult>(queries.last().first()).rows.first().first().toInt(), 1);
+        worker.executeQuery(QStringLiteral("DELETE FROM things"), false);
+        QVERIFY(!qvariant_cast<DatabaseQueryResult>(queries.last().first()).message.isEmpty());
+        worker.executeQuery(QStringLiteral("SELECT COUNT(*) FROM things"), false);
+        QCOMPARE(qvariant_cast<DatabaseQueryResult>(queries.last().first()).rows.first().first().toInt(), 1);
+        worker.close();
+        worker.open(root.filePath(QStringLiteral("missing.sqlite")), DatabaseOpenMode::ReadOnly);
+        QVERIFY(!opened.last().first().toBool());
+        QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("missing.sqlite"))));
+        worker.close();
+    }
+
+    void nativeParametersPreserveSqliteStorageTypes()
+    {
+        auto control = std::make_shared<infrastructure::database::SqliteQueryControl>();
+        infrastructure::database::NativeSqliteQueryExecutor executor(control);
+        QVERIFY(executor.open(QStringLiteral(":memory:"), DatabaseOpenMode::ReadWrite).isEmpty());
+        const QByteArray blob = QByteArray::fromHex("00ff0100");
+        const auto result = executor.run({QStringLiteral("SELECT typeof(?), ?, typeof(?), ?, typeof(?), ?, typeof(?), ?")},
+            0, {3.25, 3.25, blob, blob, QVariant::fromValue<qint64>(9007199254740993LL),
+                QVariant::fromValue<qint64>(9007199254740993LL), QVariant(QMetaType(QMetaType::QString)),
+                QVariant(QMetaType(QMetaType::QString))});
+        QVERIFY2(result.message.isEmpty(), qPrintable(result.message));
+        QCOMPARE(result.rows.size(), 1);
+        const auto row = result.rows.first();
+        QCOMPARE(row.at(0).toString(), QStringLiteral("real"));
+        QCOMPARE(row.at(1).toDouble(), 3.25);
+        QCOMPARE(row.at(2).toString(), QStringLiteral("blob"));
+        QCOMPARE(row.at(3).toByteArray(), blob);
+        QCOMPARE(row.at(4).toString(), QStringLiteral("integer"));
+        QCOMPARE(row.at(5).toLongLong(), 9007199254740993LL);
+        QCOMPARE(row.at(6).toString(), QStringLiteral("null"));
+        QVERIFY(row.at(7).isNull());
     }
 
     void pageSizesAndOffsetsAgree()

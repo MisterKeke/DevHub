@@ -106,8 +106,6 @@ QVariant readValue(sqlite3_stmt *statement, int column, qint64 &bytes)
     }
     }
 }
-} // namespace
-
 QString configureExternalSqliteConnection(sqlite3* database)
 {
     if (!database) return QStringLiteral("SQLite connection is unavailable.");
@@ -129,6 +127,7 @@ QString registerRowFingerprintFunction(sqlite3* database)
         SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_DIRECTONLY, nullptr, rowFingerprint, nullptr, nullptr, nullptr);
     return status == SQLITE_OK ? QString{} : QString::fromUtf8(sqlite3_errmsg(database));
 }
+} // namespace
 
 NativeSqliteQueryExecutor::NativeSqliteQueryExecutor(std::shared_ptr<SqliteQueryControl> control)
     : m_control(std::move(control))
@@ -218,9 +217,19 @@ DatabaseQueryResult NativeSqliteQueryExecutor::run(const QStringList &statements
             const auto &value = parameters.at(i);
             if (value.isNull())
                 status = sqlite3_bind_null(raw, index);
-            else if (value.metaType().id() == QMetaType::Int ||
+            else if (value.metaType().id() == QMetaType::Bool ||
+                     value.metaType().id() == QMetaType::Int ||
                      value.metaType().id() == QMetaType::LongLong)
                 status = sqlite3_bind_int64(raw, index, value.toLongLong());
+            else if (value.metaType().id() == QMetaType::Double ||
+                     value.metaType().id() == QMetaType::Float)
+                status = sqlite3_bind_double(raw, index, value.toDouble());
+            else if (value.metaType().id() == QMetaType::QByteArray)
+            {
+                const QByteArray blob = value.toByteArray();
+                status = sqlite3_bind_blob(raw, index, blob.constData(),
+                                          static_cast<int>(blob.size()), SQLITE_TRANSIENT);
+            }
             else
             {
                 const QByteArray text = value.toString().toUtf8();

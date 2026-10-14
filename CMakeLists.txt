@@ -12,7 +12,7 @@ if(CMAKE_HOST_WIN32 AND VCPKG_TARGET_TRIPLET MATCHES "-mingw-" AND
     endif()
 endif()
 
-project(DevHub VERSION 0.0.1 LANGUAGES CXX)
+project(DevHub VERSION 0.0.2 LANGUAGES CXX)
 
 include(CTest)
 include(cmake/ProjectOptions.cmake)

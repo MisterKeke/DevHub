@@ -2,15 +2,7 @@
 
 #include "../../application/databases/DatabaseTypes.h"
 
-#include <QElapsedTimer>
 #include <QFileInfo>
-#include <QRegularExpression>
-#include <QSqlError>
-#include <QSqlDriver>
-#include <QSqlQuery>
-#include <QSqlRecord>
-#include <QThread>
-#include <QUuid>
 #include <sqlite3.h>
 
 #include <algorithm>
@@ -73,15 +65,17 @@ QString rowFingerprintSql(const QVector<DatabaseColumn>& columns)
     return QStringLiteral("devhub_row_fingerprint(%1)").arg(expressions.join(QLatin1Char(',')));
 }
 
-QString sqlError(const QSqlQuery& query) { return query.lastError().text(); }
 }
 
 QtSqlDatabaseWorker::QtSqlDatabaseWorker(QString connectionName, std::shared_ptr<SqliteQueryControl> control)
-    : m_connectionName(std::move(connectionName)), m_queryExecutor(std::move(control)) {}
-
-QString QtSqlDatabaseWorker::errorText(const QString& operation) const
+    : m_queryControl(control), m_queryExecutor(std::move(control))
 {
-    return QStringLiteral("%1: %2").arg(operation, m_database.lastError().text());
+    setObjectName(std::move(connectionName));
+}
+
+DatabaseQueryResult QtSqlDatabaseWorker::run(const QString& sql, const QVector<QVariant>& parameters)
+{
+    return m_queryExecutor.run({sql}, m_queryControl->generation.load(), parameters);
 }
 
 void QtSqlDatabaseWorker::open(QString path, DatabaseOpenMode mode)
@@ -98,47 +92,10 @@ void QtSqlDatabaseWorker::open(QString path, DatabaseOpenMode mode)
         emit openFinished(false, QStringLiteral("The database file is not writable."), mode);
         return;
     }
-    m_database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_connectionName);
-    m_registered = true;
-    m_database.setDatabaseName(m_filePath);
-    m_database.setConnectOptions(mode == DatabaseOpenMode::ReadOnly
-        ? QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_BUSY_TIMEOUT=2500")
-        : QStringLiteral("QSQLITE_BUSY_TIMEOUT=2500"));
-    if (!m_database.open()) {
-        const QString message = errorText(QStringLiteral("Open SQLite database"));
-        m_database = QSqlDatabase();
-        QSqlDatabase::removeDatabase(m_connectionName);
-        m_registered = false;
-        emit openFinished(false, message, mode);
-        return;
-    }
-    const QVariant handle = m_database.driver()->handle();
-    sqlite3* qtSqlite = nullptr;
-    if (handle.isValid() && QByteArray(handle.typeName()) == QByteArrayLiteral("sqlite3*"))
-        qtSqlite = *static_cast<sqlite3* const*>(handle.constData());
-    const QString defensiveError = configureExternalSqliteConnection(qtSqlite);
-    if (!defensiveError.isEmpty()) {
-        close();
-        emit openFinished(false, defensiveError, mode);
-        return;
-    }
-    const QString fingerprintError = registerRowFingerprintFunction(qtSqlite);
-    if (!fingerprintError.isEmpty()) {
-        close();
-        emit openFinished(false, fingerprintError, mode);
-        return;
-    }
-    QSqlQuery configure(m_database);
-    if (!configure.exec(QStringLiteral("PRAGMA query_only = %1").arg(mode == DatabaseOpenMode::ReadOnly ? 1 : 0))) {
-        const QString message = sqlError(configure);
-        close();
-        emit openFinished(false, message, mode);
-        return;
-    }
-    configure.exec(QStringLiteral("PRAGMA foreign_keys = ON"));
+    // The Qt QSQLITE plugin bundles a separate SQLite engine. Its handles must
+    // never be passed to the native SQLite API linked into DevHub.
     const QString nativeError = m_queryExecutor.open(m_filePath, mode);
     if (!nativeError.isEmpty()) {
-        configure.finish();
         close();
         emit openFinished(false, nativeError, mode);
         return;
@@ -150,32 +107,31 @@ QVector<DatabaseColumn> QtSqlDatabaseWorker::columnsFor(const QString& tableName
 {
     QVector<DatabaseColumn> columns;
     const QString quoted = quoteIdentifier(tableName);
-    QSqlQuery query(m_database);
-    if (!query.exec(QStringLiteral("PRAGMA table_xinfo(%1)").arg(quoted))) return columns;
-    while (query.next()) {
+    const auto query = run(QStringLiteral("PRAGMA table_xinfo(%1)").arg(quoted));
+    if (!query.message.isEmpty()) return columns;
+    for (const auto& row : query.rows) {
         DatabaseColumn column;
-        column.name = query.value(1).toString();
-        column.declaredType = query.value(2).toString();
-        column.notNull = query.value(3).toBool();
-        column.defaultValue = query.value(4).toString();
-        column.primaryKeyOrder = query.value(5).toInt();
+        column.name = row.at(1).toString();
+        column.declaredType = row.at(2).toString();
+        column.notNull = row.at(3).toBool();
+        column.defaultValue = row.at(4).toString();
+        column.primaryKeyOrder = row.at(5).toInt();
         columns.append(std::move(column));
     }
-    QSqlQuery foreignKeys(m_database);
-    if (foreignKeys.exec(QStringLiteral("PRAGMA foreign_key_list(%1)").arg(quoted))) {
-        while (foreignKeys.next()) {
-            const QString from = foreignKeys.value(3).toString();
+    const auto foreignKeys = run(QStringLiteral("PRAGMA foreign_key_list(%1)").arg(quoted));
+    if (foreignKeys.message.isEmpty()) {
+        for (const auto& row : foreignKeys.rows) {
+            const QString from = row.at(3).toString();
             for (auto& column : columns) if (column.name == from) {
-                column.foreignTable = foreignKeys.value(2).toString();
-                column.foreignColumn = foreignKeys.value(4).toString();
+                column.foreignTable = row.at(2).toString();
+                column.foreignColumn = row.at(4).toString();
             }
         }
     }
     if (withoutRowId) {
-        QSqlQuery sql(m_database);
-        sql.prepare(QStringLiteral("SELECT sql FROM sqlite_master WHERE type='table' AND name=?"));
-        sql.addBindValue(tableName);
-        *withoutRowId = sql.exec() && sql.next() && sql.value(0).toString().contains(QStringLiteral("WITHOUT ROWID"), Qt::CaseInsensitive);
+        const auto sql = run(QStringLiteral("SELECT sql FROM sqlite_master WHERE type='table' AND name=?"), {tableName});
+        *withoutRowId = sql.message.isEmpty() && !sql.rows.isEmpty()
+            && sql.rows.first().first().toString().contains(QStringLiteral("WITHOUT ROWID"), Qt::CaseInsensitive);
     }
     return columns;
 }
@@ -183,18 +139,18 @@ QVector<DatabaseColumn> QtSqlDatabaseWorker::columnsFor(const QString& tableName
 void QtSqlDatabaseWorker::loadSchema()
 {
     QVector<DatabaseSchemaObject> objects;
-    QSqlQuery query(m_database);
-    if (!query.exec(QStringLiteral("SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_master "
+    const auto query = run(QStringLiteral("SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_master "
         "WHERE type IN ('table','view','index','trigger') AND name NOT LIKE 'sqlite_%' "
-        "ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 WHEN 'index' THEN 2 ELSE 3 END,name COLLATE NOCASE"))) {
-        emit operationFailed(sqlError(query)); return;
+        "ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 WHEN 'index' THEN 2 ELSE 3 END,name COLLATE NOCASE"));
+    if (!query.message.isEmpty()) {
+        emit operationFailed(query.message); return;
     }
-    while (query.next()) {
-        const QString type = query.value(0).toString();
+    for (const auto& row : query.rows) {
+        const QString type = row.at(0).toString();
         const auto kind = type == QStringLiteral("table") ? DatabaseObjectKind::Table
             : type == QStringLiteral("view") ? DatabaseObjectKind::View
             : type == QStringLiteral("index") ? DatabaseObjectKind::Index : DatabaseObjectKind::Trigger;
-        objects.append({kind, query.value(1).toString(), query.value(2).toString(), query.value(3).toString()});
+        objects.append({kind, row.at(1).toString(), row.at(2).toString(), row.at(3).toString()});
     }
     emit schemaReady(std::move(objects));
 }
@@ -271,25 +227,26 @@ void QtSqlDatabaseWorker::executeQuery(QString sql, bool allowScript, quint64 ge
 
 void QtSqlDatabaseWorker::backup(QString targetPath)
 {
-    if (!m_database.isOpen()) { emit backupFinished(false, QStringLiteral("No database session is open."), targetPath); return; }
+    if (!m_queryExecutor.databaseHandle()) { emit backupFinished(false, QStringLiteral("No database session is open."), targetPath); return; }
     if (QFileInfo::exists(targetPath)) { emit backupFinished(false, QStringLiteral("The selected backup file already exists."), targetPath); return; }
-    QSqlQuery query(m_database);
-    query.exec(QStringLiteral("PRAGMA query_only = OFF"));
-    query.prepare(QStringLiteral("VACUUM INTO ?")); query.addBindValue(targetPath);
-    if (!query.exec()) {
-        const QString message = query.lastError().text();
-        query.finish();
-        if (m_mode == DatabaseOpenMode::ReadOnly) QSqlQuery(m_database).exec(QStringLiteral("PRAGMA query_only = ON"));
-        emit backupFinished(false, message, targetPath); return;
+    // VACUUM INTO writes a separate file, so temporarily allow that operation.
+    // Always restore query_only, including after a failed or cancelled backup.
+    const auto configured = run(QStringLiteral("PRAGMA query_only = OFF"));
+    if (!configured.message.isEmpty()) { emit backupFinished(false, configured.message, targetPath); return; }
+    const auto query = run(QStringLiteral("VACUUM INTO ?"), {targetPath});
+    const auto restored = m_mode == DatabaseOpenMode::ReadOnly
+        ? run(QStringLiteral("PRAGMA query_only = ON")) : DatabaseQueryResult{};
+    if (!restored.message.isEmpty()) {
+        close();
+        emit backupFinished(false, restored.message, targetPath); return;
     }
-    query.finish();
-    if (m_mode == DatabaseOpenMode::ReadOnly) QSqlQuery(m_database).exec(QStringLiteral("PRAGMA query_only = ON"));
+    if (!query.message.isEmpty()) { emit backupFinished(false, query.message, targetPath); return; }
     emit backupFinished(true, {}, targetPath);
 }
 
 void QtSqlDatabaseWorker::commit(PendingChanges changes)
 {
-    if (m_mode != DatabaseOpenMode::ReadWrite || !m_database.isOpen()) {
+    if (m_mode != DatabaseOpenMode::ReadWrite || !m_queryExecutor.databaseHandle()) {
         emit commitFinished(false, QStringLiteral("Enable edit mode before committing changes.")); return;
     }
     bool withoutRowId = false;
@@ -298,11 +255,12 @@ void QtSqlDatabaseWorker::commit(PendingChanges changes)
     for (const auto& column : columns) if (column.primaryKeyOrder > 0) keys.append({column.primaryKeyOrder, column.name});
     std::sort(keys.begin(), keys.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     if (keys.isEmpty()) { emit commitFinished(false, QStringLiteral("This table has no declared primary key. Grid edits are refused.")); return; }
-    QSqlQuery begin(m_database);
-    if (!begin.exec(QStringLiteral("BEGIN IMMEDIATE"))) { emit commitFinished(false, begin.lastError().text()); return; }
+    const auto begin = run(QStringLiteral("BEGIN IMMEDIATE"));
+    if (!begin.message.isEmpty()) { emit commitFinished(false, begin.message); return; }
     const QString table = quoteIdentifier(changes.tableName);
     auto fail = [this](const QString& message) {
-        QSqlQuery rollback(m_database); rollback.exec(QStringLiteral("ROLLBACK"));
+        // Cleanup must complete even if the operation was cancelled.
+        sqlite3_exec(m_queryExecutor.databaseHandle(), "ROLLBACK", nullptr, nullptr, nullptr);
         emit commitFinished(false, message);
     };
 
@@ -311,11 +269,12 @@ void QtSqlDatabaseWorker::commit(PendingChanges changes)
             && std::any_of(columns.cbegin(), columns.cend(), [&edit](const DatabaseColumn& column) { return column.name == edit.columnName; })) {
             QStringList predicate; for (const auto& key : keys) predicate.append(quoteIdentifier(key.second) + QStringLiteral(" IS ?"));
             predicate.append(quoteIdentifier(edit.columnName) + QStringLiteral(" IS ?"));
-            QSqlQuery query(m_database); query.prepare(QStringLiteral("UPDATE %1 SET %2=? WHERE %3")
-                .arg(table, quoteIdentifier(edit.columnName), predicate.join(QStringLiteral(" AND "))));
-            query.addBindValue(edit.value); for (const auto& value : edit.primaryKey) query.addBindValue(value);
-            query.addBindValue(edit.originalValue);
-            if (!query.exec() || query.numRowsAffected() != 1) { fail(query.lastError().isValid() ? query.lastError().text()
+            QVector<QVariant> parameters{edit.value};
+            parameters += edit.primaryKey;
+            parameters.append(edit.originalValue);
+            const auto query = run(QStringLiteral("UPDATE %1 SET %2=? WHERE %3")
+                .arg(table, quoteIdentifier(edit.columnName), predicate.join(QStringLiteral(" AND "))), parameters);
+            if (!query.message.isEmpty() || query.affectedRows != 1) { fail(!query.message.isEmpty() ? query.message
                 : QStringLiteral("The row changed or disappeared outside DevHub. No changes were committed.")); return; }
         } else { fail(QStringLiteral("An edit did not contain a valid stable row identity.")); return; }
     }
@@ -328,8 +287,10 @@ void QtSqlDatabaseWorker::commit(PendingChanges changes)
             QStringList placeholders(names.size(), QStringLiteral("?"));
             sql = QStringLiteral("INSERT INTO %1 (%2) VALUES (%3)").arg(table, quoted.join(QLatin1Char(',')), placeholders.join(QLatin1Char(',')));
         }
-        QSqlQuery query(m_database); query.prepare(sql); for (const auto& name : names) query.addBindValue(insert.values.value(name));
-        if (!query.exec() || query.numRowsAffected() != 1) { fail(query.lastError().isValid() ? query.lastError().text() : QStringLiteral("The inserted row was rejected.")); return; }
+        QVector<QVariant> parameters;
+        for (const auto& name : names) parameters.append(insert.values.value(name));
+        const auto query = run(sql, parameters);
+        if (!query.message.isEmpty() || query.affectedRows != 1) { fail(!query.message.isEmpty() ? query.message : QStringLiteral("The inserted row was rejected.")); return; }
     }
     for (const auto& deletion : changes.deletes) {
         if (deletion.primaryKey.size() != keys.size() || deletion.originalFingerprint.size() != 32) {
@@ -337,26 +298,20 @@ void QtSqlDatabaseWorker::commit(PendingChanges changes)
         }
         QStringList predicate; for (const auto& key : keys) predicate.append(quoteIdentifier(key.second) + QStringLiteral(" IS ?"));
         predicate.append(rowFingerprintSql(columns) + QStringLiteral(" = ?"));
-        QSqlQuery query(m_database); query.prepare(QStringLiteral("DELETE FROM %1 WHERE %2").arg(table, predicate.join(QStringLiteral(" AND "))));
-        for (const auto& value : deletion.primaryKey) query.addBindValue(value);
-        query.addBindValue(deletion.originalFingerprint);
-        if (!query.exec() || query.numRowsAffected() != 1) { fail(query.lastError().isValid() ? query.lastError().text()
+        QVector<QVariant> parameters = deletion.primaryKey;
+        parameters.append(deletion.originalFingerprint);
+        const auto query = run(QStringLiteral("DELETE FROM %1 WHERE %2").arg(table, predicate.join(QStringLiteral(" AND "))), parameters);
+        if (!query.message.isEmpty() || query.affectedRows != 1) { fail(!query.message.isEmpty() ? query.message
             : QStringLiteral("The row changed or disappeared outside DevHub. No changes were committed.")); return; }
     }
-    QSqlQuery commit(m_database);
-    if (!commit.exec(QStringLiteral("COMMIT"))) { const QString message = commit.lastError().text(); fail(message); return; }
+    const auto committed = run(QStringLiteral("COMMIT"));
+    if (!committed.message.isEmpty()) { fail(committed.message); return; }
     emit commitFinished(true, QStringLiteral("Changes committed."));
 }
 
 void QtSqlDatabaseWorker::close()
 {
     m_queryExecutor.close();
-    if (m_registered) {
-        if (m_database.isOpen()) m_database.close();
-        m_database = QSqlDatabase();
-        QSqlDatabase::removeDatabase(m_connectionName);
-        m_registered = false;
-    }
     emit closed();
 }
 

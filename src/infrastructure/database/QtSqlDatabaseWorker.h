@@ -4,7 +4,6 @@
 #include "NativeSqliteQueryExecutor.h"
 
 #include <QObject>
-#include <QSqlDatabase>
 
 namespace devhub::infrastructure::database {
 
@@ -40,12 +39,11 @@ signals:
 
 private:
     [[nodiscard]] QVector<devhub::application::databases::DatabaseColumn> columnsFor(const QString& tableName, bool* withoutRowId = nullptr);
-    [[nodiscard]] QString errorText(const QString& operation) const;
-    QString m_connectionName;
+    [[nodiscard]] devhub::application::databases::DatabaseQueryResult run(
+        const QString& sql, const QVector<QVariant>& parameters = {});
     QString m_filePath;
-    QSqlDatabase m_database;
+    std::shared_ptr<SqliteQueryControl> m_queryControl;
     NativeSqliteQueryExecutor m_queryExecutor;
-    bool m_registered = false;
     devhub::application::databases::DatabaseOpenMode m_mode = devhub::application::databases::DatabaseOpenMode::ReadOnly;
 };
 

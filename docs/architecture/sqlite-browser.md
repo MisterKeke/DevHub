@@ -21,7 +21,7 @@ numeric values are rejected rather than rounded. SQL NULL displays as italic
 
 ## Current limits
 
-- SQL execution, counting, and paging use the vcpkg native SQLite 3.53.4 connection on the session worker; Qt SQL handles metadata, backups, and visual commits with its bundled SQLite driver (measured as 3.51.2 in the reviewed Qt 6.11.0 kit). The arbitrary SQL/script path uses the patched native engine. Both connections enable defensive mode and disable trusted schemas; the Qt driver does not receive arbitrary user SQL. SQLite's own advisory says the 2026 FTS5 issue needs FTS5, arbitrary SQL, and defensive mode disabled, so the older driver version alone does not establish an exploitable path.
+- Project database sessions use one vcpkg native SQLite 3.53.4 connection on the session worker for opening, metadata, SQL execution, counting, paging, backups, and visual commits. The connection enables defensive mode and disables trusted schemas. Qt SQL remains responsible for DevHub's internal profile database; its bundled SQLite handles never cross into the native engine.
 - Run Query accepts exactly one SQLite-prepared statement. Run Script prepares statements using SQLite's parser, preserving comments and trigger bodies. Scripts do not get an implicit transaction: valid statements before a later runtime error, cancellation, or execution limit may already be committed. A syntax/preparation error is found before script execution begins. Add explicit `BEGIN`/`COMMIT` when an all-or-nothing script is needed. A progress callback supports Cancel SQL and enforces a ten-second execution deadline.
 - BLOBs are shown as a size marker; preview and export actions are not implemented.
 - Grid sorting is not exposed yet, though the worker accepts a quoted sort column.

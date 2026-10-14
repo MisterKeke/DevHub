@@ -36,8 +36,4 @@ class NativeSqliteQueryExecutor final
     std::shared_ptr<SqliteQueryControl> m_control;
 };
 
-// Applies the restricted-schema and defensive settings used for user-selected database files.
-[[nodiscard]] QString configureExternalSqliteConnection(sqlite3* database);
-[[nodiscard]] QString registerRowFingerprintFunction(sqlite3* database);
-
 } // namespace devhub::infrastructure::database
