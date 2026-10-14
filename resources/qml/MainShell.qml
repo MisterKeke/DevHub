@@ -5,6 +5,7 @@ import QtQuick.Layouts
 Rectangle {
     id: root
     color: themeController.background
+    property bool moduleNavigationExpanded: true
     property color accent: themeController.accent
     property color surface: themeController.raisedSurface
     property color panel: themeController.panelSurface
@@ -16,6 +17,10 @@ Rectangle {
     property color text: themeController.textPrimary
     property color secondary: themeController.textSecondary
     property color muted: themeController.textMuted
+    property color success: themeController.success
+    property color warning: themeController.warning
+    property color error: themeController.error
+    property color info: themeController.info
     readonly property int selectedModule: shellController.quickModule
 
     RowLayout {
@@ -29,25 +34,27 @@ Rectangle {
             border.color: root.border
             ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 18
-                spacing: 14
+                anchors.margins: 16
+                spacing: 12
                 RowLayout {
                     Layout.fillWidth: true
+                    spacing: 10
                     Rectangle {
                         width: 38; height: 38; radius: 11
                         color: root.activeSurface
                         Text { anchors.centerIn: parent; text: "◆"; color: root.accent; font.pixelSize: 24 }
                     }
-                    Text { text: "DevHub"; color: root.text; font.pixelSize: 22; font.weight: Font.DemiBold }
+                    Text { text: "DevHub"; color: root.text; font.pixelSize: 21; font.weight: Font.DemiBold }
                     Item { Layout.fillWidth: true }
                     ToolButton {
                         id: appMenuButton
                         text: "⋮"
-                        implicitWidth: 28; implicitHeight: 34
+                        implicitWidth: 30; implicitHeight: 34
+                        Accessible.name: qsTr("Open settings")
+                        ToolTip.visible: hovered
+                        ToolTip.text: qsTr("Settings")
                         contentItem: Text { text: appMenuButton.text; color: root.secondary; font.pixelSize: 20; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        background: Rectangle { radius: 6; color: appMenuButton.hovered ? root.hoverSurface : "transparent" }
-                        // Open settings directly. A nested Controls Menu was unreliable
-                        // here on Windows because it could lose its popup owner/focus.
+                        background: Rectangle { radius: 7; color: appMenuButton.hovered ? root.hoverSurface : "transparent" }
                         onClicked: shellController.openQuickSettings()
                     }
                 }
@@ -73,13 +80,14 @@ Rectangle {
                         required property string name
                         required property string path
                         required property bool favorite
-                        width: workspaceList.width; height: 60; radius: 9
+                        width: workspaceList.width; height: 62; radius: 9
                         color: workspaceId === shellController.shellWorkspaceId ? root.activeSurface : hover.hovered ? root.hoverSurface : root.panel
                         border.color: workspaceId === shellController.shellWorkspaceId ? root.borderStrong : hover.hovered ? root.borderStrong : root.border
+                        Behavior on color { ColorAnimation { duration: 140 } }
                         RowLayout {
-                            anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 9
-                            Rectangle { width: 4; Layout.fillHeight: true; radius: 2; color: shellController.shellWorkspaceId === workspaceId ? root.accent : "transparent" }
-                            Text { text: "▱"; color: root.accent; font.pixelSize: 21 }
+                            anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 9; spacing: 9
+                            Rectangle { width: 3; Layout.fillHeight: true; radius: 2; color: shellController.shellWorkspaceId === workspaceId ? root.accent : "transparent" }
+                            Text { text: "▱"; color: root.accent; font.pixelSize: 20 }
                             ColumnLayout {
                                 Layout.fillWidth: true; spacing: 3
                                 Text { Layout.fillWidth: true; text: name; color: root.text; font.pixelSize: 13; font.weight: Font.DemiBold; elide: Text.ElideRight }
@@ -94,24 +102,46 @@ Rectangle {
                 }
                 ShellButton {
                     Layout.fillWidth: true; text: qsTr("＋   Add Workspace")
-                    implicitHeight: 38; primary: true
+                    implicitHeight: 40; primary: true
                     onClicked: shellController.addQuickWorkspace()
                 }
                 Text { text: qsTr("Workspace files stay in place"); color: root.muted; font.pixelSize: 10 }
                 ShellButton {
                     Layout.fillWidth: true; text: qsTr("Lock DevHub")
-                    implicitHeight: 34
+                    implicitHeight: 36
                     onClicked: shellController.lockQuickSession()
                 }
             }
         }
 
         Rectangle {
-            Layout.preferredWidth: 152; Layout.fillHeight: true
-            color: root.surface; border.color: root.border
+            id: moduleNavigation
+            property real navWidth: root.moduleNavigationExpanded ? 158 : 62
+            Layout.preferredWidth: navWidth
+            Layout.fillHeight: true
+            color: root.surface
+            border.color: root.border
+            Behavior on navWidth { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
             ColumnLayout {
-                anchors.fill: parent; anchors.margins: 12; spacing: 5
-                Text { text: qsTr("MODULES"); color: root.muted; font.pixelSize: 10; font.letterSpacing: 1.1; font.weight: Font.DemiBold; Layout.bottomMargin: 8 }
+                anchors.fill: parent; anchors.margins: root.moduleNavigationExpanded ? 12 : 8; spacing: 5
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text { visible: root.moduleNavigationExpanded; text: qsTr("MODULES"); color: root.muted; font.pixelSize: 10; font.letterSpacing: 1.1; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                    ToolButton {
+                        id: collapseNavigation
+                        text: root.moduleNavigationExpanded ? "‹" : "›"
+                        implicitWidth: 34; implicitHeight: 32
+                        Accessible.name: root.moduleNavigationExpanded ? qsTr("Collapse module navigation") : qsTr("Expand module navigation")
+                        ToolTip.visible: hovered
+                        ToolTip.text: Accessible.name
+                        contentItem: Text { text: collapseNavigation.text; color: root.secondary; font.pixelSize: 21; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle {
+                            radius: 7
+                            color: collapseNavigation.hovered ? root.hoverSurface : "transparent"
+                        }
+                        onClicked: root.moduleNavigationExpanded = !root.moduleNavigationExpanded
+                    }
+                }
                 Repeater {
                     model: [qsTr("Overview"), qsTr("Git"), qsTr("Services"), qsTr("Ports"), qsTr("Logs"), qsTr("Database"), qsTr("Notes"), qsTr("Files"), qsTr("Assistant")]
                     delegate: Rectangle {
@@ -120,19 +150,31 @@ Rectangle {
                         readonly property int moduleIndex: index < 8 ? index : index + 1
                         Layout.fillWidth: true; height: 40; radius: 8
                         Layout.topMargin: index === 8 ? 12 : 0
-                        Rectangle { visible: index === 8; anchors.bottom: parent.top; anchors.bottomMargin: 6; width: parent.width; height: 1; color: root.border; objectName: "assistantSeparator" }
+                        Rectangle { visible: index === 8; anchors.bottom: parent.top; anchors.bottomMargin: 6; width: parent.width; height: 1; color: root.border }
                         color: root.selectedModule === moduleIndex ? root.activeSurface : navHover.hovered ? root.hoverSurface : "transparent"
+                        Behavior on color { ColorAnimation { duration: 130 } }
                         RowLayout {
-                            anchors.fill: parent; anchors.leftMargin: 11; spacing: 10
-                            Text { text: ["⌂","⑂","▷","◉","≡","▤","▧","▱","✦"][index]; color: root.selectedModule === moduleIndex ? root.accent : root.secondary; font.pixelSize: 18; Layout.preferredWidth: 21 }
-                            Text { text: modelData; color: root.selectedModule === moduleIndex ? root.accent : root.text; font.pixelSize: 12 }
+                            anchors.fill: parent
+                            anchors.leftMargin: root.moduleNavigationExpanded ? 10 : 0
+                            anchors.rightMargin: root.moduleNavigationExpanded ? 6 : 0
+                            spacing: 9
+                            Item { Layout.fillWidth: !root.moduleNavigationExpanded }
+                            Text {
+                                text: ["⌂", "⑂", "▷", "◉", "≡", "▤", "▧", "▱", "✦"][index]
+                                color: root.selectedModule === moduleIndex ? root.accent : root.secondary
+                                font.pixelSize: 18; Layout.preferredWidth: 22; horizontalAlignment: Text.AlignHCenter
+                            }
+                            Text { visible: root.moduleNavigationExpanded; text: modelData; color: root.selectedModule === moduleIndex ? root.accent : root.text; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
+                            Item { Layout.fillWidth: !root.moduleNavigationExpanded }
                         }
                         HoverHandler { id: navHover }
+                        ToolTip.visible: navHover.hovered && !root.moduleNavigationExpanded
+                        ToolTip.text: modelData
                         TapHandler { onTapped: shellController.selectQuickModule(moduleIndex) }
                     }
                 }
                 Item { Layout.fillHeight: true }
-                Text { text: "DevHub v" + Qt.application.version + "  ·  Local"; color: root.muted; font.pixelSize: 10 }
+                Text { visible: root.moduleNavigationExpanded; text: "DevHub v" + Qt.application.version + "  ·  Local"; color: root.muted; font.pixelSize: 10 }
             }
         }
 
@@ -142,7 +184,7 @@ Rectangle {
                 Layout.fillWidth: true; Layout.preferredHeight: 78
                 color: root.surface; border.color: root.border
                 RowLayout {
-                    anchors.fill: parent; anchors.leftMargin: 22; anchors.rightMargin: 20; spacing: 12
+                    anchors.fill: parent; anchors.leftMargin: 22; anchors.rightMargin: 20; spacing: 10
                     ColumnLayout {
                         Layout.fillWidth: true; spacing: 4
                         Text { text: shellController.shellWorkspaceTitle; color: root.text; font.pixelSize: 20; font.weight: Font.DemiBold; elide: Text.ElideRight }
@@ -150,7 +192,8 @@ Rectangle {
                     }
                     ShellButton { text: "›  " + qsTr("Open Terminal"); primary: true; onClicked: shellController.openQuickTerminal() }
                     ShellButton { text: "↻  " + qsTr("Restart Services"); primary: true; onClicked: shellController.restartQuickServices() }
-                    ShellButton { text: "▱  " + qsTr("Open Folder"); onClicked: shellController.openQuickFolder() }
+                    ShellButton { visible: root.width > 1180; text: "▱  " + qsTr("Open Folder"); onClicked: shellController.openQuickFolder() }
+                    ShellButton { visible: root.width > 1180; text: "✦  " + qsTr("Assistant"); onClicked: shellController.selectQuickModule(9) }
                 }
             }
             Flickable {
@@ -158,48 +201,79 @@ Rectangle {
                 contentWidth: width; contentHeight: pageColumn.implicitHeight
                 ColumnLayout {
                     id: pageColumn
-                    width: parent.width; spacing: 16
-                    Item { Layout.preferredHeight: 2 }
+                    width: parent.width; spacing: 14
+                    Item { Layout.preferredHeight: 4 }
                     RowLayout {
                         Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 4
-                            Text { text: qsTr("Workspace Overview"); color: root.text; font.pixelSize: 19; font.weight: Font.DemiBold }
-                            Text { text: qsTr("Everything you need for productive development, in one place."); color: root.muted; font.pixelSize: 12 }
+                            Text { text: qsTr("Workspace Overview"); color: root.text; font.pixelSize: 21; font.weight: Font.DemiBold }
+                            Text { text: qsTr("Your development workspace at a glance."); color: root.muted; font.pixelSize: 12 }
                         }
-                        Rectangle { radius: 8; color: root.panel; border.color: root.border; implicitWidth: quote.implicitWidth + 24; implicitHeight: 42
-                            Text { id: quote; anchors.centerIn: parent; text: "\"Small steps, consistent progress.\""; color: root.secondary; font.pixelSize: 11 }
+                        Rectangle {
+                            radius: 10; color: root.panel; border.color: root.border
+                            implicitWidth: workspaceState.implicitWidth + 30; implicitHeight: 34
+                            RowLayout {
+                                anchors.centerIn: parent; spacing: 7
+                                Rectangle { width: 7; height: 7; radius: 4; color: shellController.shellWorkspaceId.length > 0 ? root.success : root.muted }
+                                Text { id: workspaceState; text: shellController.shellWorkspaceId.length > 0 ? qsTr("Workspace active") : qsTr("No workspace selected"); color: root.secondary; font.pixelSize: 10 }
+                            }
                         }
                     }
                     GridLayout {
                         Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24; Layout.bottomMargin: 24
-                        columns: width >= 1100 ? 3 : width >= 680 ? 2 : 1
+                        columns: width >= 1160 ? 3 : width >= 700 ? 2 : 1
                         rowSpacing: 14; columnSpacing: 14
                         Repeater {
                             model: shellController.overviewSections
                             delegate: Rectangle {
+                                id: overviewCard
                                 required property var modelData
-                                Layout.fillWidth: true; Layout.preferredHeight: 270
-                                radius: 10; color: root.panel; border.color: root.border
+                                Layout.fillWidth: true; Layout.preferredHeight: 258; Layout.minimumHeight: 238
+                                radius: 11; color: root.panel; border.color: root.border
                                 ColumnLayout {
-                                    anchors.fill: parent; anchors.margins: 15; spacing: 10
+                                    anchors.fill: parent; anchors.margins: 14; spacing: 8
                                     RowLayout {
-                                        Layout.fillWidth: true
-                                        Text { text: modelData.icon; color: root.accent; font.pixelSize: 18 }
-                                        Text { text: modelData.title; color: root.text; font.pixelSize: 13; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                                        Rectangle { visible: modelData.status.length > 0; radius: 8; color: modelData.tone === "success" ? "#0d3827" : modelData.tone === "error" ? "#451c27" : "#202c41"; border.color: modelData.tone === "success" ? "#148958" : modelData.tone === "error" ? "#a43d5d" : "#315783"; implicitWidth: badge.implicitWidth + 16; implicitHeight: 22
-                                            Text { id: badge; anchors.centerIn: parent; text: modelData.status; color: modelData.tone === "success" ? "#48dc98" : modelData.tone === "error" ? "#ff6c89" : "#75b2ff"; font.pixelSize: 10 }
+                                        Layout.fillWidth: true; spacing: 8
+                                        Rectangle {
+                                            width: 30; height: 30; radius: 8; color: root.activeSurface
+                                            Text { anchors.centerIn: parent; text: modelData.icon; color: root.accent; font.pixelSize: 17 }
+                                        }
+                                        Text { text: modelData.title; color: root.text; font.pixelSize: 13; font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideRight }
+                                        Rectangle {
+                                            visible: (modelData.status || "").length > 0 || modelData.loading
+                                            readonly property color toneColor: modelData.tone === "success" ? root.success : modelData.tone === "warning" ? root.warning : modelData.tone === "error" ? root.error : root.info
+                                            radius: 9
+                                            color: Qt.rgba(toneColor.r, toneColor.g, toneColor.b, 0.12)
+                                            border.color: Qt.rgba(toneColor.r, toneColor.g, toneColor.b, 0.55)
+                                            implicitWidth: badge.implicitWidth + 16; implicitHeight: 23
+                                            Text { id: badge; anchors.centerIn: parent; text: modelData.loading && !(modelData.status || "").length ? qsTr("Updating") : modelData.status; color: parent.toneColor; font.pixelSize: 10 }
                                         }
                                     }
-                                    Text { Layout.fillWidth: true; text: modelData.summary; color: root.secondary; font.pixelSize: 11; wrapMode: Text.WordWrap; maximumLineCount: 3 }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: modelData.summary || qsTr("Select a workspace to see live details.")
+                                        color: root.secondary; font.pixelSize: 11; wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
+                                    }
                                     ColumnLayout {
                                         Layout.fillWidth: true; spacing: 5
-                                        Repeater { model: modelData.details; delegate: Text { required property string modelData; Layout.fillWidth: true; text: modelData; color: root.muted; font.pixelSize: 10; elide: Text.ElideRight } }
+                                        Repeater {
+                                            model: modelData.details || []
+                                            delegate: Text { required property string modelData; Layout.fillWidth: true; text: modelData; color: root.muted; font.pixelSize: 10; elide: Text.ElideRight }
+                                        }
+                                        Text {
+                                            visible: !(modelData.details || []).length
+                                            text: modelData.loading ? qsTr("Collecting current workspace data…") : modelData.hasWorkspace ? qsTr("No recent items.") : qsTr("Choose a workspace to load this section.")
+                                            color: root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap
+                                        }
                                     }
                                     Item { Layout.fillHeight: true }
-                                    Text { text: modelData.error; color: themeController.accent; visible: text.length > 0; wrapMode: Text.WordWrap; font.pixelSize: 10 }
-                                    Text { text: modelData.updated; color: root.muted; font.pixelSize: 9 }
-                                    ShellButton { visible: modelData.action.length > 0; text: modelData.action; onClicked: shellController.selectQuickModule(modelData.module) }
+                                    Text { Layout.fillWidth: true; text: modelData.error || ""; color: root.error; visible: text.length > 0; wrapMode: Text.WordWrap; font.pixelSize: 10 }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Text { text: modelData.updated || ""; color: root.muted; font.pixelSize: 9; Layout.fillWidth: true; elide: Text.ElideRight }
+                                        ShellButton { visible: (modelData.action || "").length > 0; text: modelData.action; onClicked: shellController.selectQuickModule(modelData.module) }
+                                    }
                                 }
                             }
                         }

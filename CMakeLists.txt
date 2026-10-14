@@ -31,7 +31,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 6.8.3 REQUIRED COMPONENTS Core Gui Widgets Sql Concurrent Svg Network Qml Quick QuickControls2)
+find_package(Qt6 6.11.0 REQUIRED COMPONENTS Core Gui Widgets Sql Concurrent Svg Network Qml Quick QuickControls2)
 # vcpkg's sodium config caches library paths without the triplet in the cache
 # key. Clear paths left by an earlier dynamic/static triplet configuration.
 foreach(_sodium_config DEBUG RELEASE)
@@ -402,7 +402,7 @@ if(MSVC)
 endif()
 
 if(DEVHUB_BUILD_TESTS)
-    find_package(Qt6 6.8.3 REQUIRED COMPONENTS Test)
+    find_package(Qt6 6.11.0 REQUIRED COMPONENTS Test)
     add_subdirectory(tests)
 endif()
 if(DEVHUB_BUILD_LIVE_ASSISTANT_TESTS AND NOT DEVHUB_BUILD_TESTS)

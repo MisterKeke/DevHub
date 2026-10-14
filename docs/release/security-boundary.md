@@ -6,7 +6,7 @@ The application stores internal metadata, settings, logs, notes, and recovery ma
 
 DevHub does not request administrator privileges. Service definitions can launch programs with the current user's privileges. Shell mode is opt-in for a service definition. The Port Monitor can terminate selected processes only after confirmation and rechecks process identity.
 
-Users remain responsible for Windows account security, disk protection, backups, third-party program trust, and review of service executable paths and environment-variable names. The local account password is not a Windows credential and is not sent to a server.
+Users remain responsible for Windows account security, disk protection, backups, and third-party program trust. Managed services run with the user's privileges and inherit the full DevHub environment; the saved environment-name list is metadata and does not restrict or validate variables. On Windows DevHub owns each service process tree in a Job Object and closes that job during stop/restart or root-process exit. The local account password is not a Windows credential and is not sent to a server.
 
 Assistant uses Codex-managed ChatGPT authorization, separate from DevHub's local
 password. DevHub requests no API key and does not read or persist credential

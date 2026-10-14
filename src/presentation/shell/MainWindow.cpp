@@ -936,6 +936,7 @@ QString MainWindow::shellWorkspaceId() const
 QVariantList MainWindow::overviewSections() const
 {
     const auto snapshot = m_overviewComposer->snapshot();
+    const bool hasWorkspace = !snapshot.workspaceId.isEmpty();
     const QStringList order{QStringLiteral("git"), QStringLiteral("services"), QStringLiteral("ports"),
                             QStringLiteral("logs"), QStringLiteral("database"), QStringLiteral("notes")};
     const QStringList icons{QStringLiteral("⑂"), QStringLiteral("▷"), QStringLiteral("◉"),
@@ -947,6 +948,16 @@ QVariantList MainWindow::overviewSections() const
     QVariantList result;
     for (qsizetype i = 0; i < order.size(); ++i) {
         QVariantMap item;
+        item.insert(QStringLiteral("summary"), hasWorkspace
+            ? tr("Waiting for the first update from this workspace.")
+            : tr("Select a workspace to see live details."));
+        item.insert(QStringLiteral("status"), QString{});
+        item.insert(QStringLiteral("tone"), QStringLiteral("info"));
+        item.insert(QStringLiteral("details"), QStringList{});
+        item.insert(QStringLiteral("error"), QString{});
+        item.insert(QStringLiteral("updated"), QString{});
+        item.insert(QStringLiteral("loading"), false);
+        item.insert(QStringLiteral("hasWorkspace"), hasWorkspace);
         const auto it = snapshot.sections.constFind(order.at(i));
         if (it != snapshot.sections.cend()) {
             item.insert(QStringLiteral("summary"), it->summary);
@@ -961,7 +972,7 @@ QVariantList MainWindow::overviewSections() const
         item.insert(QStringLiteral("id"), order.at(i));
         item.insert(QStringLiteral("title"), labels.at(i));
         item.insert(QStringLiteral("icon"), icons.at(i));
-        item.insert(QStringLiteral("action"), shellWorkspaceTitle() == tr("DevHub") ? QString{} : actions.at(i));
+        item.insert(QStringLiteral("action"), hasWorkspace ? actions.at(i) : QString{});
         item.insert(QStringLiteral("module"), static_cast<int>(i + 1));
         result.append(item);
     }

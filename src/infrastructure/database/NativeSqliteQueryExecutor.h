@@ -26,6 +26,7 @@ class NativeSqliteQueryExecutor final
 
     [[nodiscard]] QString open(const QString &path, application::databases::DatabaseOpenMode mode);
     void close();
+    [[nodiscard]] sqlite3* databaseHandle() const noexcept { return m_database; }
     [[nodiscard]] application::databases::DatabaseQueryResult
     run(const QStringList &statements, quint64 generation, const QVector<QVariant> &parameters = {},
         int maximumRows = 10000, int timeoutMs = 10000);
@@ -34,5 +35,9 @@ class NativeSqliteQueryExecutor final
     sqlite3 *m_database = nullptr;
     std::shared_ptr<SqliteQueryControl> m_control;
 };
+
+// Applies the restricted-schema and defensive settings used for user-selected database files.
+[[nodiscard]] QString configureExternalSqliteConnection(sqlite3* database);
+[[nodiscard]] QString registerRowFingerprintFunction(sqlite3* database);
 
 } // namespace devhub::infrastructure::database

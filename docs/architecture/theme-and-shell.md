@@ -6,8 +6,9 @@ dark rose and dark blue palettes; changing the palette takes effect after restar
 Logical-pixel sizing follows the UI direction in the master development plan.
 
 `ThemeManager` is parented to `QApplication`. It applies the global palette, Fusion-based
-focus treatment, and small application stylesheet layer. It persists the reduced-motion
-preference. Current shell components use no continuous or timed animation.
+focus treatment, and application stylesheet layer. Saving a theme choice applies it
+immediately; the reduced-motion preference is persisted with the other settings.
+The QML shell uses short transitions for navigation width and selection colors.
 
 `MainWindow` keeps the standard operating-system window frame and arranges workspace,
 module navigation, and page content in three regions. Saved normal geometry is restored only
@@ -16,7 +17,8 @@ screen. General settings can disable restoring the previous page or window geome
 minimum is 1180 by 720 logical pixels.
 
 The shell hosts the Overview, Git, Services, Ports, Logs, Database, Notes, Files, and Settings
-pages. The folder action opens an existing workspace or registers a selected folder. The
+pages. Module navigation can collapse to an icon rail; tooltips and accessible names retain
+the section labels. The folder action opens an existing workspace or registers a selected folder. The
 terminal action opens the selected terminal profile at the active workspace; the Command Prompt
 profile starts in a separate console window. Shared fields, buttons, cards,
 badges, empty states, error details, confirmation, loading, and authentication-background

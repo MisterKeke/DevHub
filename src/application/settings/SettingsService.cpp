@@ -131,16 +131,32 @@ QVariant SettingsService::value(const QString& id, const QString& workspaceId) c
 
 shared::common::Result<void> SettingsService::setValue(const QString& id, QVariant value, const QString& workspaceId)
 {
-    const auto item = descriptor(id);
-    if (item.id.isEmpty() || !item.validate || !item.validate(value))
-        return shared::common::Result<void>::failure(domain::errors::AppError::failure(
-            domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Configuration,
-            QStringLiteral("That setting value is invalid."), QStringLiteral("Setting value failed descriptor validation."),
-            QStringLiteral("save application setting")));
-    if (item.scope == SettingScope::Session) { m_sessionValues.insert(id, std::move(value)); return shared::common::Result<void>::success(); }
-    const auto scope = item.scope == SettingScope::Workspace && !workspaceId.isEmpty()
-        ? SettingScope::Workspace : SettingScope::Global;
-    return m_repository.save(scope, scope == SettingScope::Workspace ? workspaceId : QString{}, id, value);
+    return setValues({{id, std::move(value)}}, workspaceId);
+}
+
+shared::common::Result<void> SettingsService::setValues(const SettingValues& values, const QString& workspaceId)
+{
+    SettingUpdates persistent;
+    SettingValues session;
+    for (auto i = values.cbegin(); i != values.cend(); ++i) {
+        const auto item = descriptor(i.key());
+        if (item.id.isEmpty() || !item.validate || !item.validate(i.value()))
+            return shared::common::Result<void>::failure(domain::errors::AppError::failure(
+                domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Configuration,
+                QStringLiteral("That setting value is invalid."), QStringLiteral("Setting value failed descriptor validation."),
+                QStringLiteral("save application setting")));
+        if (item.scope == SettingScope::Session) {
+            session.insert(i.key(), i.value());
+            continue;
+        }
+        const auto scope = item.scope == SettingScope::Workspace && !workspaceId.isEmpty()
+            ? SettingScope::Workspace : SettingScope::Global;
+        persistent.append({scope, scope == SettingScope::Workspace ? workspaceId : QString{}, i.key(), i.value()});
+    }
+    const auto saved = m_repository.saveBatch(persistent);
+    if (!saved) return saved;
+    for (auto i = session.cbegin(); i != session.cend(); ++i) m_sessionValues.insert(i.key(), i.value());
+    return shared::common::Result<void>::success();
 }
 
 SettingValues SettingsService::sanitizedValues(const QString& workspaceId) const

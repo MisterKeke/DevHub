@@ -1,4 +1,5 @@
 #include "GitPage.h"
+#include "../../domain/errors/AppError.h"
 #include "../../application/git/GitExecutableLocator.h"
 #include "../../application/git/GitService.h"
 #include "../../application/settings/SettingsService.h"
@@ -76,19 +77,17 @@ GitPage::GitPage(application::tasks::TaskScheduler& scheduler, QWidget* parent,
         QStringList paths;
         for (auto* item : m_status->selectedItems()) paths.append(QString::fromUtf8(item->data(Qt::UserRole).toByteArray()));
         if (paths.isEmpty()) { m_state->setText(tr("Select one or more files first.")); return; }
-        QStringList args{QStringLiteral("add"), QStringLiteral("--")}; args.append(paths);
-        runMutation(QStringLiteral("stage"), args);
+        runMutation(QStringLiteral("stage"), paths);
     });
     connect(stageAll, &QPushButton::clicked, this, [this] {
         if (QMessageBox::question(this, tr("Stage all changes"), tr("Stage every change in this repository?")) == QMessageBox::Yes)
-            runMutation(QStringLiteral("stage-all"), {QStringLiteral("add"), QStringLiteral("-A")});
+            runMutation(QStringLiteral("stage-all"), {});
     });
     connect(unstageSelected, &QPushButton::clicked, this, [this] {
         QStringList paths;
         for (auto* item : m_status->selectedItems()) paths.append(QString::fromUtf8(item->data(Qt::UserRole).toByteArray()));
         if (paths.isEmpty()) { m_state->setText(tr("Select one or more files first.")); return; }
-        QStringList args{QStringLiteral("restore"), QStringLiteral("--staged"), QStringLiteral("--")}; args.append(paths);
-        runMutation(QStringLiteral("unstage"), args);
+        runMutation(QStringLiteral("unstage"), paths);
     });
     connect(commitButton, &QPushButton::clicked, this, [this] {
         bool accepted = false;
@@ -98,7 +97,7 @@ GitPage::GitPage(application::tasks::TaskScheduler& scheduler, QWidget* parent,
         if (summary.isEmpty() || summary.size() > 200) {
             QMessageBox::warning(this, tr("Invalid summary"), tr("Enter a commit summary between 1 and 200 characters.")); return;
         }
-        runMutation(QStringLiteral("commit"), {QStringLiteral("commit"), QStringLiteral("-m"), summary});
+        runMutation(QStringLiteral("commit"), {summary});
     });
     connect(workingDiff, &QPushButton::clicked, this, [this] { showDiff({}, false); });
     connect(stagedDiff, &QPushButton::clicked, this, [this] { showDiff({}, true); });
@@ -165,7 +164,15 @@ void GitPage::runMutation(QString operation, QStringList arguments) {
     m_activeTask = m_scheduler.submit<QString>(request,
         [path, executablePath, operation, arguments](const application::tasks::TaskContext& context) {
             application::git::GitService service{application::git::GitCommandRunner(executablePath)};
-            auto result = service.mutate(path, operation, arguments, context.cancellationToken);
+            shared::common::Result<application::git::GitCommandResult> result =
+                shared::common::Result<application::git::GitCommandResult>::failure(
+                    domain::errors::AppError::failure(domain::errors::ErrorCode::InvalidArgument,
+                        domain::errors::ErrorCategory::Git, QStringLiteral("Unsupported Git action."), {}, operation));
+            if (operation == QStringLiteral("stage")) result = service.stage(path, arguments, context.cancellationToken);
+            else if (operation == QStringLiteral("stage-all")) result = service.stageAll(path, context.cancellationToken);
+            else if (operation == QStringLiteral("unstage")) result = service.unstage(path, arguments, context.cancellationToken);
+            else if (operation == QStringLiteral("commit") && arguments.size() == 1)
+                result = service.commit(path, arguments.first(), context.cancellationToken);
             if (!result) return shared::common::Result<QString>::failure(result.error());
             return shared::common::Result<QString>::success(QString::fromUtf8(result.value().standardOutput));
         }, [this, operation, generation](shared::common::TaskOutcome<QString> outcome) {

@@ -15,7 +15,10 @@ QtObject {
     readonly property color accentSecondary: themeController.accentHover
     readonly property color text: themeController.textPrimary
     readonly property color textSecondary: themeController.textSecondary
+    readonly property color success: themeController.success
+    readonly property color warning: themeController.warning
     readonly property color error: themeController.error
+    readonly property color info: themeController.info
     readonly property int radiusSmall: 8
     readonly property int radiusMedium: 12
     readonly property int radiusLarge: 18

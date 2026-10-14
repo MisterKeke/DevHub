@@ -28,11 +28,12 @@ Its independent locator cannot interrupt the active Assistant backend. Edits and
 dialog closure cancel the owned probe; stale generations cannot replace status.
 Immediate recheck after cancellation waits for the previous child to exit.
 
-Save validates all controls before writing. `settingsApplied` is emitted only
-after every setting write and theme application succeeds. Both settings entry
-points use that hook to reload Assistant preferences. A failed save does not
-apply runtime changes; the repository's individual setting writes are not a
-new transactional batch API. Cancel does not save the draft.
+Save validates all controls, then writes persistent settings in one repository
+transaction. Session-only values enter memory only after that transaction
+commits. Theme and Assistant runtime changes and `settingsApplied` are published
+only after success. Both settings entry points use that hook to reload Assistant
+preferences. A failed batch leaves persisted preferences, session values and
+active runtime configuration unchanged. Cancel does not save the draft.
 
 Preferences set before first connection preserve lazy startup. An opened
 Assistant reconnects on idle changes; changes during a turn, history check or

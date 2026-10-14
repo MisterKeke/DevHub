@@ -10,6 +10,7 @@ public:
         application::settings::SettingScope scope, const QString& workspaceId = {}) override;
     [[nodiscard]] shared::common::Result<void> save(application::settings::SettingScope scope,
         const QString& workspaceId, const QString& id, const QVariant& value) override;
+    [[nodiscard]] shared::common::Result<void> saveBatch(const application::settings::SettingUpdates& updates) override;
 private:
     database::InternalDatabaseManager& m_manager;
 };

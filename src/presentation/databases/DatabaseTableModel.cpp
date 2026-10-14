@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <QFont>
+#include <cmath>
+#include <QRegularExpression>
 
 namespace devhub::presentation::databases {
 using namespace application::databases;
@@ -61,16 +63,33 @@ Qt::ItemFlags DatabaseTableModel::flags(const QModelIndex& index) const
     return result;
 }
 
-QVariant DatabaseTableModel::typedValue(const QVariant& value, int column) const
+QVariant DatabaseTableModel::typedValue(const QVariant& value, int column, bool* valid) const
 {
+    if (valid) *valid = true;
     if (!value.isValid() || value.isNull()) return value;
     if (column < 0 || column >= m_columns.size()) return value;
     const QString type = m_columns.at(column).declaredType.toUpper();
     const QString text = value.toString();
+    static const QRegularExpression integerLiteral(QStringLiteral("^[+-]?[0-9]+$"));
+    static const QRegularExpression numericLiteral(QStringLiteral("^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"));
+    if (type.contains(QStringLiteral("NUM")) && text.compare(QStringLiteral("NULL"), Qt::CaseInsensitive) == 0)
+        return QVariant(QMetaType(QMetaType::QString));
     if (type.contains(QStringLiteral("INT"))) {
         bool ok = false; const qlonglong number = text.toLongLong(&ok); if (ok) return number;
+        if (integerLiteral.match(text).hasMatch()) { if (valid) *valid = false; return {}; }
     } else if (type.contains(QStringLiteral("REAL")) || type.contains(QStringLiteral("FLOA")) || type.contains(QStringLiteral("DOUB")) || type.contains(QStringLiteral("NUM"))) {
-        bool ok = false; const double number = text.toDouble(&ok); if (ok) return number;
+        if (integerLiteral.match(text).hasMatch()) {
+            bool ok = false; const qlonglong number = text.toLongLong(&ok);
+            if (ok) return number;
+            if (valid) *valid = false;
+            return {};
+        }
+        if (numericLiteral.match(text).hasMatch()) {
+            bool ok = false; const double number = text.toDouble(&ok);
+            if (ok && std::isfinite(number)) return number;
+            if (valid) *valid = false;
+            return {};
+        }
     }
     return value;
 }
@@ -83,7 +102,9 @@ bool DatabaseTableModel::setData(const QModelIndex& index, const QVariant& value
         if (current.toString().startsWith(QStringLiteral("[BLOB,"))
             || current.toString().contains(QStringLiteral("… [truncated]"))) return false;
     }
-    const QVariant converted = typedValue(value, index.column());
+    bool valid = true;
+    const QVariant converted = typedValue(value, index.column(), &valid);
+    if (!valid) return false;
     if (sameCellValue(m_rows[index.row()][index.column()], converted)) return true;
     m_rows[index.row()][index.column()] = converted;
     if (!m_insertRows.at(index.row())) {
@@ -107,6 +128,8 @@ void DatabaseTableModel::setPage(QString tableName, DatabasePageResult page, QVe
     beginResetModel();
     m_tableName = std::move(tableName); m_headers = std::move(page.columns); m_rows = std::move(page.rows);
     m_originalRows = m_rows; m_primaryKeyColumns = std::move(page.primaryKeyColumns); m_columns = std::move(columns);
+    m_rowFingerprints = std::move(page.rowFingerprints);
+    if (m_rowFingerprints.size() != m_rows.size()) m_rowFingerprints.fill({}, m_rows.size());
     m_offset = page.offset; m_hasMore = page.hasMore; m_insertRows.clear();
     m_nextOffset = page.offset + static_cast<int>(m_rows.size());
     m_insertRows.resize(m_rows.size()); std::fill(m_insertRows.begin(), m_insertRows.end(), false);
@@ -129,7 +152,8 @@ void DatabaseTableModel::appendBlankRow()
 {
     const int row = static_cast<int>(m_rows.size());
     beginInsertRows({}, row, row);
-    m_rows.append(QVector<QVariant>(m_headers.size())); m_originalRows.append(QVector<QVariant>{}); m_insertRows.append(true);
+    m_rows.append(QVector<QVariant>(m_headers.size())); m_originalRows.append(QVector<QVariant>{});
+    m_rowFingerprints.append(QByteArray{}); m_insertRows.append(true);
     endInsertRows();
 }
 
@@ -142,10 +166,11 @@ void DatabaseTableModel::deleteRows(QModelIndexList selected)
         if (row < 0 || row >= m_rows.size()) continue;
         if (!m_insertRows.at(row)) {
             const auto key = identityFor(row);
-            if (std::none_of(m_deletes.cbegin(), m_deletes.cend(), [&key](const PendingRowDelete& item) { return item.primaryKey == key; })) m_deletes.append({key});
+            if (std::none_of(m_deletes.cbegin(), m_deletes.cend(), [&key](const PendingRowDelete& item) { return item.primaryKey == key; }))
+                m_deletes.append({key, m_rowFingerprints.value(row)});
             m_edits.erase(std::remove_if(m_edits.begin(), m_edits.end(), [&key](const PendingCellEdit& edit) { return edit.primaryKey == key; }), m_edits.end());
         }
-        beginRemoveRows({}, row, row); m_rows.removeAt(row); m_originalRows.removeAt(row); m_insertRows.removeAt(row); endRemoveRows();
+        beginRemoveRows({}, row, row); m_rows.removeAt(row); m_originalRows.removeAt(row); m_rowFingerprints.removeAt(row); m_insertRows.removeAt(row); endRemoveRows();
     }
 }
 

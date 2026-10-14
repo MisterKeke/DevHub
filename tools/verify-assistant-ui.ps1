@@ -5,7 +5,7 @@ param(
     [string] $QtRoot,
     [Parameter(Mandatory = $true)]
     [string] $OutputDirectory,
-    [string] $ExpectedQtVersion = '6.8.3'
+    [string] $ExpectedQtVersion = '6.11.2'
 )
 
 $ErrorActionPreference = 'Stop'

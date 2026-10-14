@@ -21,12 +21,15 @@ class QProcessManagedProcess final : public IManagedProcess {
     Q_OBJECT
 public:
     QProcessManagedProcess(domain::services::ServiceDefinition definition, QObject* parent = nullptr);
+    ~QProcessManagedProcess() override;
     void start() override;
     void stop(int timeoutMs) override;
     [[nodiscard]] qint64 processId() const override;
 private:
+    void finishOwnedProcessTree();
     domain::services::ServiceDefinition m_definition;
     QProcess m_process;
+    void* m_jobObject = nullptr;
 };
 class IProcessLauncher {
 public:

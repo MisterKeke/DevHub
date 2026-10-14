@@ -17,10 +17,10 @@ public:
         int limit = 50, const tasks::CancellationToken& cancellation = {}) const;
     [[nodiscard]] shared::common::Result<GitDiff> diff(const QString& directory, bool staged,
         const QString& commit = {}, const tasks::CancellationToken& cancellation = {}) const;
-    [[nodiscard]] shared::common::Result<GitCommandResult> mutate(const QString& directory,
-        QString operation, QStringList arguments, const tasks::CancellationToken& cancellation = {}) const;
     [[nodiscard]] shared::common::Result<GitCommandResult> stage(const QString& directory,
         const QStringList& paths, const tasks::CancellationToken& cancellation = {}) const;
+    [[nodiscard]] shared::common::Result<GitCommandResult> stageAll(const QString& directory,
+        const tasks::CancellationToken& cancellation = {}) const;
     [[nodiscard]] shared::common::Result<GitCommandResult> unstage(const QString& directory,
         const QStringList& paths, const tasks::CancellationToken& cancellation = {}) const;
     [[nodiscard]] shared::common::Result<GitCommandResult> commit(const QString& directory,
@@ -49,6 +49,9 @@ public:
         const tasks::CancellationToken& cancellation = {}) const;
     [[nodiscard]] shared::common::Result<GitCommandResult> abortMerge(const QString& directory,
         const tasks::CancellationToken& cancellation = {}) const;
-private: GitCommandRunner m_runner;
+private:
+    [[nodiscard]] shared::common::Result<GitCommandResult> mutate(const QString& directory,
+        QString operation, QStringList arguments, const tasks::CancellationToken& cancellation = {}) const;
+    GitCommandRunner m_runner;
 };
 }

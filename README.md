@@ -7,8 +7,10 @@ The application currently includes workspace management, Git and service pages, 
 The project distribution license has not been selected yet. Qt’s open-source license obligations must be reviewed against that choice before binary distribution.
 
 Assistant now replaces Quick Ask inside DevHub. Its streaming UI, controller and
-safe Markdown rendering are tested offline; native Send remains disabled until
-the authenticated Codex runtime/model profile is verified. See the
+safe Markdown rendering are tested offline. Native Send is available only for
+the pinned, verified runtime profile after account, model and restricted-profile
+checks pass; authenticated inference and clean-machine release validation are
+separate checks. See the
 [Assistant UI report](docs/architecture/assistant-ui.md) for current behavior and
 remaining release checks. Opening the page checks the configured native
 `codex.exe` (or PATH when the override is empty); it does not sign in or open an external chat page.

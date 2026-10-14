@@ -1,6 +1,7 @@
 param(
     [string]$QtRoot = $env:QT_ROOT_DIR,
     [string]$VcpkgRoot = $env:VCPKG_ROOT,
+    [string]$VcpkgInstalledDirectory,
     [string]$CompilerBin,
     [string]$CMakePath,
     [string]$InnoCompiler,
@@ -69,6 +70,15 @@ foreach ($compiler in @($cCompiler, $cxxCompiler, $resourceCompiler)) {
 }
 $env:PATH = "$CompilerBin;$env:PATH"
 $qtPackagePrefix = $env:QT_ROOT_DIR.Replace('\', '/')
+$resolvedVcpkgInstalledDirectory = if ([string]::IsNullOrWhiteSpace($VcpkgInstalledDirectory)) {
+    Join-Path $repoRoot ".tools/vcpkg_installed"
+} else {
+    if (!(Test-Path -LiteralPath $VcpkgInstalledDirectory)) {
+        New-Item -ItemType Directory -Path $VcpkgInstalledDirectory -Force | Out-Null
+    }
+    (Resolve-Path -LiteralPath $VcpkgInstalledDirectory).Path
+}
+$cmakeVcpkgInstalledDirectory = $resolvedVcpkgInstalledDirectory.Replace('\', '/')
 $cCompiler = $cCompiler.Replace('\', '/')
 $cxxCompiler = $cxxCompiler.Replace('\', '/')
 $resourceCompiler = $resourceCompiler.Replace('\', '/')
@@ -90,6 +100,7 @@ try {
     & $CMakePath --preset windows-package `
         "-DCMAKE_PREFIX_PATH=$qtPackagePrefix" `
         "-DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain" `
+        "-DVCPKG_INSTALLED_DIR=$cmakeVcpkgInstalledDirectory" `
         "-DCMAKE_C_COMPILER=$cCompiler" `
         "-DCMAKE_CXX_COMPILER=$cxxCompiler" `
         "-DCMAKE_RC_COMPILER=$resourceCompiler"
@@ -140,7 +151,7 @@ try {
     & (Join-Path $PSScriptRoot 'check-packaged-runtime.ps1') -Executable $stagedExecutable `
         -ReportPath (Join-Path $repoRoot 'out/package-runtime-check.txt')
 
-    $shareRoot = Join-Path $repoRoot ".tools/vcpkg_installed/$configuredTriplet/share"
+    $shareRoot = Join-Path $resolvedVcpkgInstalledDirectory "$configuredTriplet/share"
     $qtLicenseDirectory = Join-Path $qtBaseDirectory "Licenses"
     $inventory = @()
     $notices = [System.Collections.Generic.List[string]]::new()

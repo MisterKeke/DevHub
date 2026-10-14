@@ -9,6 +9,8 @@ public:
     [[nodiscard]] SettingValues effectiveValues(const QString& workspaceId = {}) const;
     [[nodiscard]] shared::common::Result<void> setValue(const QString& id, QVariant value,
                                                          const QString& workspaceId = {});
+    [[nodiscard]] shared::common::Result<void> setValues(const SettingValues& values,
+                                                          const QString& workspaceId = {});
     [[nodiscard]] SettingDescriptor descriptor(const QString& id) const;
     [[nodiscard]] QVector<SettingDescriptor> descriptors() const;
     [[nodiscard]] SettingValues sanitizedValues(const QString& workspaceId = {}) const;

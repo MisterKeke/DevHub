@@ -40,6 +40,7 @@ struct DatabasePageResult final {
     QStringList columns;
     QVector<int> primaryKeyColumns;
     QVector<QVector<QVariant>> rows;
+    QVector<QByteArray> rowFingerprints;
     int pageSize = 0;
     int offset = 0;
     bool hasMore = false;
@@ -68,6 +69,7 @@ struct PendingRowInsert final {
 
 struct PendingRowDelete final {
     QVector<QVariant> primaryKey;
+    QByteArray originalFingerprint;
 };
 
 struct PendingChanges final {

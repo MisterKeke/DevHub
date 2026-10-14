@@ -18,4 +18,11 @@ struct SettingDescriptor final {
     std::function<bool(const QVariant&)> validate;
 };
 using SettingValues = QMap<QString, QVariant>;
+struct SettingUpdate final {
+    SettingScope scope = SettingScope::Global;
+    QString workspaceId;
+    QString id;
+    QVariant value;
+};
+using SettingUpdates = QVector<SettingUpdate>;
 } // namespace devhub::application::settings

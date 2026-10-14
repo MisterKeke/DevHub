@@ -8,7 +8,7 @@ wrappers are unsupported. An invalid override never falls back to PATH.
 No API key is required or accepted by DevHub. Explicit ChatGPT/device-code
 authorization uses Codex-managed sign-in; native Send still requires the runtime
 safety gate. Tests use synthetic protocol fixtures, without real sign-in or
-inference. The Qt 6.8.3 Windows CI job also runs chat/settings checks at
+inference. The Qt 6.11.2 Windows CI job also runs chat/settings checks at
 100/125/150/200% scaling with `tools/verify-assistant-ui.ps1` and retains snapshots.
 See [Assistant setup](architecture/assistant-settings.md) for the boundaries.
 
@@ -18,7 +18,7 @@ See [Assistant setup](architecture/assistant-settings.md) for the boundaries.
 - CMake 3.28 or newer.
 - Ninja.
 - Visual Studio 2022 C++ build tools with v143 14.44 for the CI preset.
-- Qt 6.8.3 or newer, including Qt Svg, for a supported Windows x64 compiler kit, available via `QT_ROOT_DIR` when configuring outside Qt Creator. CI is pinned to Qt 6.8.3 for MSVC 2022 x64.
+- Qt 6.11.0 or newer, including Qt Svg, for a supported Windows x64 compiler kit, available via `QT_ROOT_DIR` when configuring outside Qt Creator. CI is pinned to Qt 6.11.2 for MSVC 2022 x64. Qt 6.8.0–6.8.3 is excluded because its Markdown importer is affected by CVE-2025-3512. Later advisories are reviewed against APIs DevHub actually uses; linking a Qt module alone does not establish an exploitable path.
 - vcpkg checkout matching the baseline in `vcpkg.json`; set `VCPKG_ROOT` and pass its toolchain file when configuring.
 - clang-format and clang-tidy for formatting and static analysis.
 
@@ -98,7 +98,7 @@ Install Inno Setup 6 and set `QT_ROOT_DIR` to the Qt kit used by the `windows-pa
 tools/package-windows.ps1
 ```
 
-The script builds Release, stages the Qt runtime and QSQLITE plugin, validates SQLite and both QML entry views, adds vcpkg and Qt notices plus a dependency inventory, creates a portable ZIP and a per-user installer, and writes SHA-256 checksums. Use `tools/package-windows.ps1 -PortableOnly` when Inno Setup is unavailable. The installer is unsigned by default. See [packaging/README.md](../packaging/README.md) for signing hooks and release gates. Do not distribute until Qt license obligations and clean-machine checks have been reviewed.
+The script builds Release, stages the Qt runtime and QSQLITE plugin, validates SQLite and both QML entry views, adds vcpkg and Qt notices plus a dependency inventory, creates a portable ZIP and a per-user installer, and writes SHA-256 checksums. Use `tools/package-windows.ps1 -PortableOnly` when Inno Setup is unavailable. `-VcpkgInstalledDirectory` selects a separate vcpkg install tree when the shared install is locked or needs isolation. The installer is unsigned by default. See [packaging/README.md](../packaging/README.md) for signing hooks and release gates. Do not distribute until Qt license obligations and clean-machine checks have been reviewed.
 
 CTest includes failure tests for notes recovery, profile reset rollback, export collisions, background-worker shutdown, and QML imports. Windows CI also installs the Release runtime into an isolated staging folder and checks it with development Qt environment variables cleared. It verifies that removing either a QML plugin or QSQLITE causes failure with useful diagnostics, then restores the plugin. To repeat the positive check manually:
 

@@ -2,6 +2,7 @@
 #include "application/assistant/AssistantApprovalCoordinator.h"
 #include "application/assistant/AssistantToolRuntime.h"
 #include "presentation/widgets/SafeMarkdownBrowser.h"
+#include "presentation/theme/ThemePalette.h"
 #include "presentation/theme/ThemeTokens.h"
 #include <QApplication>
 #include <QAbstractTextDocumentLayout>
@@ -10,6 +11,7 @@
 #include <QClipboard>
 #include <QCheckBox>
 #include <QDesktopServices>
+#include <QFrame>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QLabel>
@@ -17,8 +19,10 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSizePolicy>
 #include <QTextDocument>
 #include <QTextCursor>
+#include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QTimer>
 #include <QtMath>
@@ -29,26 +33,41 @@ using namespace application::assistant;
 AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) : QWidget(parent), m_controller(controller)
 {
     setObjectName(QStringLiteral("assistantPage"));
-    auto* root = new QVBoxLayout(this); root->setContentsMargins(24, 20, 24, 20); root->setSpacing(10);
+    auto* root = new QVBoxLayout(this); root->setContentsMargins(24, 20, 24, 20); root->setSpacing(12);
     auto* heading = new QHBoxLayout;
     auto* label = new QLabel(tr("Assistant"), this); label->setFont(theme::ThemeTokens::font(theme::TypographyToken::PageTitle));
     m_title = new QLabel(this); m_title->setTextFormat(Qt::PlainText);
     m_new = new QPushButton(tr("New Chat"), this); m_new->setObjectName(QStringLiteral("assistantNewChat"));
     heading->addWidget(label); heading->addWidget(m_title, 1); heading->addWidget(m_new); root->addLayout(heading);
-    m_status = new QLabel(this); m_status->setObjectName(QStringLiteral("assistantStatus")); m_status->setTextFormat(Qt::PlainText); m_status->setWordWrap(true); root->addWidget(m_status);
+    auto* subtitle = new QLabel(tr("Use Codex inside DevHub to work with your project."), this);
+    subtitle->setObjectName(QStringLiteral("assistantPageDescription"));
+    subtitle->setStyleSheet(QStringLiteral("color: %1;").arg(theme::ThemePalette::color(theme::ColorToken::TextSecondary).name()));
+    root->addWidget(subtitle);
+    auto* connectionRow = new QWidget(this); connectionRow->setObjectName(QStringLiteral("assistantConnectionCard"));
+    auto* connectionLayout = new QHBoxLayout(connectionRow);
+    connectionLayout->setContentsMargins(12, 6, 12, 6);
+    connectionLayout->setSpacing(10);
+    m_status = new QLabel(this); m_status->setObjectName(QStringLiteral("assistantStatus")); m_status->setTextFormat(Qt::PlainText); m_status->setWordWrap(true);
+    connectionLayout->addWidget(m_status, 1);
+    m_reconnect = new QPushButton(tr("Reconnect"), connectionRow); m_reconnect->setObjectName(QStringLiteral("assistantReconnect"));
+    connectionLayout->addWidget(m_reconnect);
+    root->addWidget(connectionRow);
+    auto* contextCard = new QWidget(this); contextCard->setObjectName(QStringLiteral("assistantContextCard"));
+    auto* contextLayout = new QVBoxLayout(contextCard); contextLayout->setContentsMargins(12, 9, 12, 9); contextLayout->setSpacing(7);
     auto* contextRow = new QHBoxLayout;
-    m_context = new QLabel(this); m_context->setObjectName(QStringLiteral("assistantContext")); m_context->setTextFormat(Qt::PlainText); m_context->setWordWrap(true);
-    m_reconnect = new QPushButton(tr("Reconnect"), this); m_reconnect->setObjectName(QStringLiteral("assistantReconnect"));
-    contextRow->addWidget(m_context, 1); contextRow->addWidget(m_reconnect); root->addLayout(contextRow);
+    m_context = new QLabel(contextCard); m_context->setObjectName(QStringLiteral("assistantContext")); m_context->setTextFormat(Qt::PlainText); m_context->setWordWrap(true);
+    contextRow->addWidget(m_context, 1);
+    contextLayout->addLayout(contextRow);
     auto* disclosureRow = new QHBoxLayout;
-    m_allowNotes = new QCheckBox(tr("Allow note text for this chat"), this); m_allowNotes->setObjectName(QStringLiteral("assistantAllowNoteText"));
-    m_allowFiles = new QCheckBox(tr("Allow file text for this chat"), this); m_allowFiles->setObjectName(QStringLiteral("assistantAllowFileText"));
+    m_allowNotes = new QCheckBox(tr("Allow note text for this chat"), contextCard); m_allowNotes->setObjectName(QStringLiteral("assistantAllowNoteText"));
+    m_allowFiles = new QCheckBox(tr("Allow file text for this chat"), contextCard); m_allowFiles->setObjectName(QStringLiteral("assistantAllowFileText"));
     m_allowNotes->setToolTip(tr("Allows read-only Assistant tools to return bounded text from notes in the selected workspace."));
     m_allowFiles->setToolTip(tr("Allows read-only Assistant tools to return bounded text from files in the selected workspace."));
-    m_toolActivity = new QLabel(this); m_toolActivity->setObjectName(QStringLiteral("assistantToolActivity"));
+    m_toolActivity = new QLabel(contextCard); m_toolActivity->setObjectName(QStringLiteral("assistantToolActivity"));
     m_toolActivity->setTextFormat(Qt::PlainText); m_toolActivity->setAccessibleName(tr("Assistant tool activity"));
     disclosureRow->addWidget(m_allowNotes); disclosureRow->addWidget(m_allowFiles); disclosureRow->addWidget(m_toolActivity, 1);
-    root->addLayout(disclosureRow);
+    contextLayout->addLayout(disclosureRow);
+    root->addWidget(contextCard);
     auto* uncertainAction = new QLabel(this); uncertainAction->setObjectName(QStringLiteral("assistantUncertainAction"));
     uncertainAction->setTextFormat(Qt::PlainText); uncertainAction->setWordWrap(true); uncertainAction->hide(); root->addWidget(uncertainAction);
     connect(&controller, &AssistantController::toolMutationUncertain, uncertainAction, [uncertainAction](const QString& name) {
@@ -73,14 +92,17 @@ AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) :
         if (shouldFollow()) { const QScopedValueRollback<bool> adjusting(m_adjustingScroll, true); m_scroll->verticalScrollBar()->setValue(maximum); }
     });
     m_latest = new QPushButton(tr("Jump to latest"), this); m_latest->setObjectName(QStringLiteral("assistantLatest")); m_latest->hide(); root->addWidget(m_latest, 0, Qt::AlignRight);
-    m_composer = new QPlainTextEdit(this); m_composer->setObjectName(QStringLiteral("assistantComposer")); m_composer->setAccessibleName(tr("Assistant message"));
-    m_composer->setPlaceholderText(tr("Write a message. Enter sends; Shift+Enter adds a line.")); m_composer->setMinimumHeight(85); m_composer->setMaximumHeight(150); m_composer->installEventFilter(this); root->addWidget(m_composer);
+    auto* composerPanel = new QWidget(this); composerPanel->setObjectName(QStringLiteral("assistantComposerPanel"));
+    auto* composerLayout = new QVBoxLayout(composerPanel); composerLayout->setContentsMargins(10, 10, 10, 8); composerLayout->setSpacing(6);
+    m_composer = new QPlainTextEdit(composerPanel); m_composer->setObjectName(QStringLiteral("assistantComposer")); m_composer->setAccessibleName(tr("Assistant message"));
+    m_composer->setPlaceholderText(tr("Ask anything about your project…  Enter sends; Shift+Enter adds a line.")); m_composer->setMinimumHeight(72); m_composer->setMaximumHeight(150); m_composer->installEventFilter(this); composerLayout->addWidget(m_composer);
     m_composer->setTabChangesFocus(true);
     auto* actions = new QHBoxLayout;
-    m_send = new QPushButton(tr("Send"), this); m_send->setObjectName(QStringLiteral("assistantSend"));
-    m_stop = new QPushButton(tr("Stop"), this); m_stop->setObjectName(QStringLiteral("assistantStop"));
-    m_error = new QLabel(this); m_error->setObjectName(QStringLiteral("assistantError")); m_error->setWordWrap(true); m_error->setTextFormat(Qt::PlainText);
-    actions->addWidget(m_send); actions->addWidget(m_stop); actions->addWidget(m_error, 1); root->addLayout(actions);
+    m_error = new QLabel(composerPanel); m_error->setObjectName(QStringLiteral("assistantError")); m_error->setWordWrap(true); m_error->setTextFormat(Qt::PlainText); m_error->hide(); composerLayout->addWidget(m_error);
+    m_stop = new QPushButton(tr("Stop"), composerPanel); m_stop->setObjectName(QStringLiteral("assistantStop"));
+    m_send = new QPushButton(tr("Send"), composerPanel); m_send->setObjectName(QStringLiteral("assistantSend"));
+    actions->addStretch(); actions->addWidget(m_stop); actions->addWidget(m_send); composerLayout->addLayout(actions);
+    root->addWidget(composerPanel);
     for (auto* button : {m_send, m_stop, m_new, m_reconnect, m_latest}) button->setAccessibleName(button->text());
     setTabOrder(m_composer, m_send); setTabOrder(m_send, m_stop); setTabOrder(m_stop, m_new); setTabOrder(m_new, m_reconnect);
     connect(m_send, &QPushButton::clicked, this, &AssistantPage::sendDraft);
@@ -185,7 +207,11 @@ void AssistantPage::refreshState()
     m_allowNotes->setEnabled(workspaceSelected && m_controller.accessAllowed());
     m_allowFiles->setEnabled(workspaceSelected && m_controller.accessAllowed());
     if (bytes > 64 * 1024) m_error->setText(tr("The message exceeds the 64 KiB text limit."));
-    m_stop->setEnabled(m_controller.canStop()); m_new->setEnabled(m_controller.canNewChat());
+    m_stop->setEnabled(m_controller.canStop());
+    m_stop->setVisible(m_controller.canStop());
+    m_send->setVisible(!m_controller.canStop());
+    m_error->setVisible(!m_error->text().isEmpty());
+    m_new->setEnabled(m_controller.canNewChat());
     m_reconnect->setEnabled(m_controller.canReconnect());
     for (auto it = m_cards.begin(); it != m_cards.end(); ++it) {
         it->retry->setEnabled(m_controller.canRetry(it.key()));
@@ -222,20 +248,26 @@ void AssistantPage::addMessage(const QUuid& id)
     if (m_cards.contains(id)) return;
     const auto* value = m_controller.message(id); if (!value) return;
     const bool follow = shouldFollow(); const int previous = m_scroll->verticalScrollBar()->value();
-    auto* card = new QWidget(m_scroll->widget()); card->setObjectName(QStringLiteral("assistantMessage"));
-    card->setStyleSheet(QStringLiteral("QWidget#assistantMessage { border: 1px solid palette(mid); border-radius: 8px; }"));
-    auto* layout = new QVBoxLayout(card); layout->setContentsMargins(12, 10, 12, 10);
+    const bool userMessage = value->role == AssistantRole::User;
+    auto* card = new QWidget(m_scroll->widget());
+    card->setObjectName(userMessage ? QStringLiteral("assistantMessageUser") : QStringLiteral("assistantMessageAssistant"));
+    card->setAttribute(Qt::WA_StyledBackground, true);
+    card->setMaximumWidth(userMessage ? 840 : 1120);
+    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    auto* layout = new QVBoxLayout(card); layout->setContentsMargins(14, 11, 14, 11); layout->setSpacing(6);
     auto* heading = new QHBoxLayout;
-    auto* role = new QLabel(value->role == AssistantRole::User ? tr("You") : tr("Assistant"), card); role->setTextFormat(Qt::PlainText);
+    auto* role = new QLabel(userMessage ? tr("You") : tr("Assistant"), card); role->setTextFormat(Qt::PlainText);
+    role->setObjectName(userMessage ? QStringLiteral("assistantMessageRoleUser") : QStringLiteral("assistantMessageRoleAssistant"));
     auto* timestamp = new QLabel(value->createdAtUtc.toLocalTime().toString(QStringLiteral("HH:mm")), card);
+    timestamp->setObjectName(QStringLiteral("assistantMessageTimestamp"));
     heading->addWidget(role); heading->addWidget(timestamp); heading->addStretch();
     auto* copy = new QPushButton(tr("Copy"), card); copy->setAccessibleName(tr("Copy message source")); heading->addWidget(copy);
     auto* retry = new QPushButton(tr("Retry"), card); retry->setVisible(value->role == AssistantRole::User); heading->addWidget(retry); layout->addLayout(heading);
-    auto* body = new widgets::SafeMarkdownBrowser(card); body->setAccessibleName(role->text()); body->setObjectName(id.toString(QUuid::WithoutBraces)); body->setFrameShape(QFrame::NoFrame); body->setMinimumHeight(60); body->setMaximumHeight(600); layout->addWidget(body);
-    body->setFixedHeight(60);
+    auto* body = new widgets::SafeMarkdownBrowser(card); body->setAccessibleName(role->text()); body->setObjectName(id.toString(QUuid::WithoutBraces)); body->setFrameShape(QFrame::NoFrame); body->setMinimumHeight(42); body->setMaximumHeight(760); body->setStyleSheet(QStringLiteral("background: transparent;")); layout->addWidget(body);
+    body->setFixedHeight(42);
     connect(body->document()->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged, this, [this, body](const QSizeF& size) {
         if (m_rendering) return;
-        const int height = qBound(60, qCeil(size.height()) + 12, 600);
+        const int height = qBound(42, qCeil(size.height()) + 12, 760);
         if (body->height() != height) body->setFixedHeight(height);
     });
     connect(body, &QTextEdit::selectionChanged, this, [this] {
@@ -243,8 +275,8 @@ void AssistantPage::addMessage(const QUuid& id)
         for (const auto& message : m_cards) if (message.body->textCursor().hasSelection()) { m_followLatest = false; return; }
         const auto* bar = m_scroll->verticalScrollBar(); m_followLatest = bar->maximum() - bar->value() <= 24;
     });
-    auto* status = new QLabel(card); status->setTextFormat(Qt::PlainText); layout->addWidget(status);
-    m_messages->insertWidget(m_messages->count() - 1, card); m_cards.insert(id, {card, body, status, retry});
+    auto* status = new QLabel(card); status->setObjectName(QStringLiteral("assistantMessageStatus")); status->setTextFormat(Qt::PlainText); layout->addWidget(status);
+    m_messages->insertWidget(m_messages->count() - 1, card, 0, userMessage ? Qt::AlignRight : Qt::Alignment{}); m_cards.insert(id, {card, body, status, retry});
     connect(copy, &QPushButton::clicked, this, [this, id] { if (const auto* message = m_controller.message(id)) QApplication::clipboard()->setText(message->source); });
     connect(retry, &QPushButton::clicked, this, [this, id] { m_controller.retry(id); });
     connect(body, &QTextBrowser::anchorClicked, this, [this](const QUrl& url) {
@@ -259,11 +291,11 @@ void AssistantPage::updateMessage(const QUuid& id)
     m_rendering = true;
     found->body->setSourceText(value->source, value->role == AssistantRole::Assistant);
     m_rendering = false;
-    found->body->setFixedHeight(qBound(60, qCeil(found->body->document()->size().height()) + 12, 600));
+    found->body->setFixedHeight(qBound(42, qCeil(found->body->document()->size().height()) + 12, 760));
     const QString status = value->truncated ? tr("Text limit reached · partial answer retained")
         : value->delivery == AssistantDelivery::NotSent ? tr("Not sent") : value->delivery == AssistantDelivery::Queued ? tr("Awaiting acknowledgement")
         : value->delivery == AssistantDelivery::Accepted ? tr("Responding…") : value->delivery == AssistantDelivery::Failed ? tr("Failed")
         : value->delivery == AssistantDelivery::Interrupted ? tr("Interrupted · partial text retained") : value->delivery == AssistantDelivery::Uncertain ? tr("Delivery uncertain") : QString{};
-    found->status->setText(status); refreshState(); restoreScroll(follow, previous);
+    found->status->setText(status); found->status->setVisible(!status.isEmpty()); refreshState(); restoreScroll(follow, previous);
 }
 }

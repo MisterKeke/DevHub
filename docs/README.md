@@ -17,12 +17,12 @@ native process prototype, bounded JSONL transport, lifecycle tests and ownership
 
 ## Toolchain pins
 
-- Qt 6.8 API baseline, with CI pinned to Qt 6.8.3 (the Qt 6.8 patch release available to open-source users). Local development accepts Qt 6.8.3 or newer.
+- Qt 6.11 API baseline, with a local minimum of Qt 6.11.0 and CI pinned to Qt 6.11.2. The 6.11 line is outside the affected range for the Qt Markdown importer issue CVE-2025-3512; keep CI aligned with reviewed Qt advisories.
 - Visual Studio 2022 17.14 with the MSVC v143 14.44 toolset family (CI pins compiler package 14.44.35207).
 - CMake 3.28 or newer and Ninja Multi-Config for local development.
-- vcpkg registry baseline `9e593bb18ea69cc5095e012465dcd675a822ed0d` (2026-07-29 release).
+- vcpkg registry baseline `72adbfe37c8d10cc4497baa358469ab0908482a1`; it supplies native SQLite 3.53.4, which includes the upstream fix for CVE-2026-11822/CVE-2026-11824.
 
-Qt 6.8.4 and later 6.8 maintenance updates are commercial LTS releases; keep the selected Qt pin compatible with the project’s open-source license policy. Reassess this pin if Qt publishes a newer 6.8 release to the open-source download area.
+Verify the exact Qt runtime modules and licensing notices for each package before redistribution.
 
 ## Dependency updates
 

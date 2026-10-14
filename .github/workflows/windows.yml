@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: microsoft/vcpkg
-          ref: 9e593bb18ea69cc5095e012465dcd675a822ed0d
+          ref: 72adbfe37c8d10cc4497baa358469ab0908482a1
           path: vcpkg
 
       - uses: ilammy/msvc-dev-cmd@v1
@@ -23,7 +23,7 @@ jobs:
 
       - uses: jurplel/install-qt-action@v4
         with:
-          version: 6.8.3
+          version: 6.11.2
           host: windows
           target: desktop
           arch: win64_msvc2022_64
@@ -59,8 +59,8 @@ jobs:
       - name: Verify Assistant baseline rendering and keyboard flow at four DPI scales
         shell: pwsh
         run: |
-          ./tools/verify-assistant-ui.ps1 -Executable out/build/windows-ci/tests/Release/devhub_assistant_ui_tests.exe -QtRoot "$env:QT_ROOT_DIR" -OutputDirectory out/assistant-ui-verification -ExpectedQtVersion 6.8.3
-          ./tools/verify-assistant-ui.ps1 -Executable out/build/windows-ci/tests/Release/devhub_assistant_settings_tests.exe -QtRoot "$env:QT_ROOT_DIR" -OutputDirectory out/assistant-ui-verification/settings -ExpectedQtVersion 6.8.3
+          ./tools/verify-assistant-ui.ps1 -Executable out/build/windows-ci/tests/Release/devhub_assistant_ui_tests.exe -QtRoot "$env:QT_ROOT_DIR" -OutputDirectory out/assistant-ui-verification -ExpectedQtVersion 6.11.2
+          ./tools/verify-assistant-ui.ps1 -Executable out/build/windows-ci/tests/Release/devhub_assistant_settings_tests.exe -QtRoot "$env:QT_ROOT_DIR" -OutputDirectory out/assistant-ui-verification/settings -ExpectedQtVersion 6.11.2
 
       - name: Stage Release runtime
         shell: pwsh

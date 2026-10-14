@@ -32,6 +32,44 @@ domain::errors::AppError commandError(const GitCommandResult& result, const QStr
         domain::errors::ErrorCategory::Git, QStringLiteral("Git could not complete %1.").arg(operation),
         redactor.redact(technical), operation);
 }
+domain::errors::AppError invalidGitInput(const QString& message, const QString& operation) {
+    return domain::errors::AppError::failure(domain::errors::ErrorCode::InvalidArgument,
+        domain::errors::ErrorCategory::Git, message, QStringLiteral("Rejected an invalid Git ref, remote, or selector."), operation);
+}
+bool safeTextArgument(const QString& value) {
+    if (value.isEmpty() || value != value.trimmed() || value.startsWith(QLatin1Char('-'))) return false;
+    for (const QChar character : value) if (character.isNull() || character.category() == QChar::Other_Control) return false;
+    return true;
+}
+bool validBranchName(const GitCommandRunner& runner, const QString& directory, const QString& value,
+                     const tasks::CancellationToken& cancellation) {
+    if (!safeTextArgument(value)) return false;
+    const GitCommand check{QStringLiteral("validate-branch"),
+        {QStringLiteral("check-ref-format"), QStringLiteral("refs/heads/") + value}, directory};
+    return runner.run(check, cancellation).exitCode == 0;
+}
+bool validRevision(const GitCommandRunner& runner, const QString& directory, const QString& value,
+                   const tasks::CancellationToken& cancellation) {
+    if (!safeTextArgument(value)) return false;
+    const GitCommand check{QStringLiteral("validate-revision"),
+        {QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("--end-of-options"),
+         value + QStringLiteral("^{commit}")}, directory};
+    return runner.run(check, cancellation).exitCode == 0;
+}
+bool validRemote(const GitCommandRunner& runner, const QString& directory, const QString& value,
+                 const tasks::CancellationToken& cancellation) {
+    if (!safeTextArgument(value)) return false;
+    const GitCommand list{QStringLiteral("validate-remote"), {QStringLiteral("remote")}, directory};
+    const auto result = runner.run(list, cancellation);
+    if (result.exitCode != 0) return false;
+    for (const QByteArray& line : result.standardOutput.split('\n'))
+        if (QString::fromUtf8(line).trimmed() == value) return true;
+    return false;
+}
+bool validStashSelector(const QString& value) {
+    static const QRegularExpression selector(QStringLiteral("^stash@\\{[0-9]+\\}$|^[0-9a-fA-F]{40,64}$"));
+    return safeTextArgument(value) && selector.match(value).hasMatch();
+}
 }
 shared::common::Result<GitRepositoryState> GitService::status(const QString& directory,
     const tasks::CancellationToken& cancellation) const {
@@ -81,7 +119,7 @@ shared::common::Result<QVector<GitRemote>> GitService::remotes(const QString& di
         GitRemote remote; remote.name = name;
         for (const auto& pair : {qMakePair(QStringLiteral("fetch"), &remote.fetchUrl), qMakePair(QStringLiteral("push"), &remote.pushUrl)}) {
             GitCommand urlCommand{QStringLiteral("remote-url"), {QStringLiteral("remote"), QStringLiteral("get-url"),
-                pair.first == QStringLiteral("push") ? QStringLiteral("--push") : QStringLiteral("--all"), name}, directory};
+                pair.first == QStringLiteral("push") ? QStringLiteral("--push") : QStringLiteral("--all"), QStringLiteral("--"), name}, directory};
             auto urlResult = m_runner.run(urlCommand, cancellation);
             if (urlResult.exitCode == 0) *pair.second = redactor.redact(QString::fromUtf8(urlResult.standardOutput).trimmed());
         }
@@ -116,7 +154,12 @@ shared::common::Result<QVector<GitCommit>> GitService::history(const QString& di
 shared::common::Result<GitDiff> GitService::diff(const QString& directory, bool staged, const QString& commit,
     const tasks::CancellationToken& cancellation) const {
     QStringList args{QStringLiteral("diff"), QStringLiteral("--no-ext-diff"), QStringLiteral("--binary"), QStringLiteral("--")};
-    if (!commit.isEmpty()) args = {QStringLiteral("show"), QStringLiteral("--format="), QStringLiteral("--no-ext-diff"), commit};
+    if (!commit.isEmpty()) {
+        if (!validRevision(m_runner, directory, commit, cancellation))
+            return shared::common::Result<GitDiff>::failure(
+                invalidGitInput(QStringLiteral("Choose a valid commit to inspect."), QStringLiteral("diff preview")));
+        args = {QStringLiteral("show"), QStringLiteral("--format="), QStringLiteral("--no-ext-diff"), commit};
+    }
     else if (staged) args = {QStringLiteral("diff"), QStringLiteral("--cached"), QStringLiteral("--no-ext-diff"), QStringLiteral("--binary")};
     else args = {QStringLiteral("diff"), QStringLiteral("--no-ext-diff"), QStringLiteral("--binary")};
     GitCommand command{QStringLiteral("diff-preview"), args, directory, std::chrono::milliseconds(15000), false, true};
@@ -146,6 +189,11 @@ shared::common::Result<GitCommandResult> GitService::stage(const QString& direct
     QStringList args{QStringLiteral("add"), QStringLiteral("--")}; args.append(paths);
     return mutate(directory, QStringLiteral("stage"), std::move(args), cancellation);
 }
+shared::common::Result<GitCommandResult> GitService::stageAll(const QString& directory,
+    const tasks::CancellationToken& cancellation) const {
+    return mutate(directory, QStringLiteral("stage-all"),
+        {QStringLiteral("add"), QStringLiteral("--all")}, cancellation);
+}
 shared::common::Result<GitCommandResult> GitService::unstage(const QString& directory, const QStringList& paths,
     const tasks::CancellationToken& cancellation) const {
     if (paths.isEmpty()) return shared::common::Result<GitCommandResult>::failure(
@@ -166,13 +214,16 @@ shared::common::Result<GitCommandResult> GitService::commit(const QString& direc
 }
 shared::common::Result<GitCommandResult> GitService::fetch(const QString& directory, const QString& remote,
     const tasks::CancellationToken& cancellation) const {
-    if (remote.trimmed().isEmpty()) return shared::common::Result<GitCommandResult>::failure(
-        domain::errors::AppError::failure(domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Git,
-            QStringLiteral("Choose a remote to fetch."), QStringLiteral("Remote name is empty."), QStringLiteral("fetch")));
-    return mutate(directory, QStringLiteral("fetch"), {QStringLiteral("fetch"), remote}, cancellation);
+    if (!validRemote(m_runner, directory, remote, cancellation)) return shared::common::Result<GitCommandResult>::failure(
+        invalidGitInput(QStringLiteral("Choose a valid configured remote to fetch."), QStringLiteral("fetch")));
+    return mutate(directory, QStringLiteral("fetch"), {QStringLiteral("fetch"), QStringLiteral("--"), remote}, cancellation);
 }
 shared::common::Result<GitCommandResult> GitService::pull(const QString& directory, const QString& remote,
     const QString& branch, const QString& explicitStrategy, const tasks::CancellationToken& cancellation) const {
+    if (!validRemote(m_runner, directory, remote, cancellation)
+        || !validBranchName(m_runner, directory, branch, cancellation))
+        return shared::common::Result<GitCommandResult>::failure(
+            invalidGitInput(QStringLiteral("Choose a valid configured remote and branch to pull."), QStringLiteral("pull")));
     QString strategy = explicitStrategy;
     if (strategy.isEmpty()) {
         GitCommand query{QStringLiteral("pull-strategy"), {QStringLiteral("config"), QStringLiteral("--get"), QStringLiteral("pull.rebase")}, directory};
@@ -199,43 +250,54 @@ shared::common::Result<GitCommandResult> GitService::pull(const QString& directo
     else return shared::common::Result<GitCommandResult>::failure(domain::errors::AppError::failure(
         domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Git,
         QStringLiteral("Unsupported pull strategy."), strategy, QStringLiteral("pull")));
-    args << remote << branch;
+    args << QStringLiteral("--") << remote << (QStringLiteral("refs/heads/") + branch);
     return mutate(directory, QStringLiteral("pull"), std::move(args), cancellation);
 }
 shared::common::Result<GitCommandResult> GitService::push(const QString& directory, const QString& remote,
     const QString& branch, bool setUpstream, const tasks::CancellationToken& cancellation) const {
+    if (!validRemote(m_runner, directory, remote, cancellation)
+        || !validBranchName(m_runner, directory, branch, cancellation))
+        return shared::common::Result<GitCommandResult>::failure(
+            invalidGitInput(QStringLiteral("Choose a valid configured remote and branch to push."), QStringLiteral("push")));
     QStringList args{QStringLiteral("push")}; if (setUpstream) args.append(QStringLiteral("--set-upstream"));
-    args << remote << branch; return mutate(directory, QStringLiteral("push"), std::move(args), cancellation);
+    args << QStringLiteral("--") << remote << (QStringLiteral("refs/heads/") + branch);
+    return mutate(directory, QStringLiteral("push"), std::move(args), cancellation);
 }
 shared::common::Result<GitCommandResult> GitService::checkout(const QString& directory, const QString& branch,
     const tasks::CancellationToken& cancellation) const {
-    if (branch.trimmed().isEmpty()) return shared::common::Result<GitCommandResult>::failure(
-        domain::errors::AppError::failure(domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Git,
-            QStringLiteral("Choose a branch to check out."), QStringLiteral("Branch is empty."), QStringLiteral("checkout")));
-    return mutate(directory, QStringLiteral("checkout"), {QStringLiteral("checkout"), branch}, cancellation);
+    if (!validBranchName(m_runner, directory, branch, cancellation)) return shared::common::Result<GitCommandResult>::failure(
+        invalidGitInput(QStringLiteral("Choose a valid branch to check out."), QStringLiteral("checkout")));
+    return mutate(directory, QStringLiteral("checkout"), {QStringLiteral("switch"), QStringLiteral("--"), branch}, cancellation);
 }
 shared::common::Result<GitCommandResult> GitService::createBranch(const QString& directory, const QString& branch,
     const QString& startPoint, const tasks::CancellationToken& cancellation) const {
-    if (branch.trimmed().isEmpty() || startPoint.trimmed().isEmpty()) return shared::common::Result<GitCommandResult>::failure(
-        domain::errors::AppError::failure(domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Git,
-            QStringLiteral("Enter a branch name and start point."), QStringLiteral("Branch creation arguments were incomplete."), QStringLiteral("create branch")));
-    return mutate(directory, QStringLiteral("create-branch"), {QStringLiteral("branch"), branch, startPoint}, cancellation);
+    if (!validBranchName(m_runner, directory, branch, cancellation)
+        || !validRevision(m_runner, directory, startPoint, cancellation))
+        return shared::common::Result<GitCommandResult>::failure(
+            invalidGitInput(QStringLiteral("Enter a valid branch name and commit start point."), QStringLiteral("create branch")));
+    return mutate(directory, QStringLiteral("create-branch"),
+        {QStringLiteral("branch"), QStringLiteral("--"), branch, startPoint}, cancellation);
 }
 shared::common::Result<GitCommandResult> GitService::renameBranch(const QString& directory, const QString& oldName,
     const QString& newName, const tasks::CancellationToken& cancellation) const {
-    if (oldName.trimmed().isEmpty() || newName.trimmed().isEmpty()) return shared::common::Result<GitCommandResult>::failure(
-        domain::errors::AppError::failure(domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Git,
-            QStringLiteral("Enter both branch names."), QStringLiteral("Branch rename arguments were incomplete."), QStringLiteral("rename branch")));
-    return mutate(directory, QStringLiteral("rename-branch"), {QStringLiteral("branch"), QStringLiteral("-m"), oldName, newName}, cancellation);
+    if (!validBranchName(m_runner, directory, oldName, cancellation)
+        || !validBranchName(m_runner, directory, newName, cancellation))
+        return shared::common::Result<GitCommandResult>::failure(
+            invalidGitInput(QStringLiteral("Enter valid old and new branch names."), QStringLiteral("rename branch")));
+    return mutate(directory, QStringLiteral("rename-branch"),
+        {QStringLiteral("branch"), QStringLiteral("-m"), QStringLiteral("--"), oldName, newName}, cancellation);
 }
 shared::common::Result<GitCommandResult> GitService::deleteBranch(const QString& directory, const QString& name,
     const tasks::CancellationToken& cancellation) const {
+    if (!validBranchName(m_runner, directory, name, cancellation)) return shared::common::Result<GitCommandResult>::failure(
+        invalidGitInput(QStringLiteral("Choose a valid branch to delete."), QStringLiteral("delete branch")));
     auto state = status(directory, cancellation);
     if (!state) return shared::common::Result<GitCommandResult>::failure(state.error());
     if (state.value().branch == name) return shared::common::Result<GitCommandResult>::failure(
         domain::errors::AppError::failure(domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Git,
             QStringLiteral("Check out another branch before deleting this one."), QStringLiteral("Attempt to delete checked-out branch."), QStringLiteral("delete branch")));
-    return mutate(directory, QStringLiteral("delete-branch"), {QStringLiteral("branch"), QStringLiteral("-d"), name}, cancellation);
+    return mutate(directory, QStringLiteral("delete-branch"),
+        {QStringLiteral("branch"), QStringLiteral("-d"), QStringLiteral("--"), name}, cancellation);
 }
 shared::common::Result<GitCommandResult> GitService::stashCreate(const QString& directory, const QString& message,
     const tasks::CancellationToken& cancellation) const {
@@ -260,20 +322,23 @@ shared::common::Result<QStringList> GitService::stashList(const QString& directo
 }
 shared::common::Result<GitCommandResult> GitService::stashApply(const QString& directory, const QString& stash,
     bool pop, const tasks::CancellationToken& cancellation) const {
-    if (stash.trimmed().isEmpty()) return shared::common::Result<GitCommandResult>::failure(
+    if (!validStashSelector(stash)) return shared::common::Result<GitCommandResult>::failure(
         domain::errors::AppError::failure(domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Git,
-            QStringLiteral("Choose a stash entry."), QStringLiteral("Stash selector is empty."), QStringLiteral("apply stash")));
+            QStringLiteral("Choose a valid stash entry."), QStringLiteral("Stash selector failed validation."), QStringLiteral("apply stash")));
     return mutate(directory, pop ? QStringLiteral("stash-pop") : QStringLiteral("stash-apply"),
-        {QStringLiteral("stash"), pop ? QStringLiteral("pop") : QStringLiteral("apply"), stash}, cancellation);
+        {QStringLiteral("stash"), pop ? QStringLiteral("pop") : QStringLiteral("apply"), QStringLiteral("--"), stash}, cancellation);
 }
 shared::common::Result<GitCommandResult> GitService::merge(const QString& directory, const QString& branch,
     const tasks::CancellationToken& cancellation) const {
+    if (!validRevision(m_runner, directory, branch, cancellation)) return shared::common::Result<GitCommandResult>::failure(
+        invalidGitInput(QStringLiteral("Choose a valid commit or branch to merge."), QStringLiteral("merge")));
     auto state = status(directory, cancellation);
     if (!state) return shared::common::Result<GitCommandResult>::failure(state.error());
     if (!state.value().files.isEmpty()) return shared::common::Result<GitCommandResult>::failure(
         domain::errors::AppError::failure(domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Git,
             QStringLiteral("Commit, stage, or stash local changes before merging."), QStringLiteral("Merge preflight found local changes."), QStringLiteral("merge")));
-    return mutate(directory, QStringLiteral("merge"), {QStringLiteral("merge"), QStringLiteral("--no-edit"), branch}, cancellation);
+    return mutate(directory, QStringLiteral("merge"),
+        {QStringLiteral("merge"), QStringLiteral("--no-edit"), QStringLiteral("--"), branch}, cancellation);
 }
 shared::common::Result<GitCommandResult> GitService::abortMerge(const QString& directory,
     const tasks::CancellationToken& cancellation) const {

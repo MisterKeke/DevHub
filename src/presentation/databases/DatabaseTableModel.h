@@ -34,12 +34,13 @@ public:
 
 private:
     [[nodiscard]] QVector<QVariant> identityFor(int row) const;
-    [[nodiscard]] QVariant typedValue(const QVariant& value, int column) const;
+    [[nodiscard]] QVariant typedValue(const QVariant& value, int column, bool* valid = nullptr) const;
     QString m_tableName;
     QStringList m_headers;
     QVector<application::databases::DatabaseColumn> m_columns;
     QVector<QVector<QVariant>> m_rows;
     QVector<QVector<QVariant>> m_originalRows;
+    QVector<QByteArray> m_rowFingerprints;
     QVector<int> m_primaryKeyColumns;
     QVector<bool> m_insertRows;
     QVector<application::databases::PendingCellEdit> m_edits;

@@ -14,7 +14,8 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalSpy>
-#include <QTabWidget>
+#include <QListWidget>
+#include <QStackedWidget>
 #include <QTest>
 using namespace devhub;
 using namespace application::assistant;
@@ -25,12 +26,26 @@ using presentation::settings::AssistantSettingsPanel;
 using presentation::settings::SettingsWindow;
 class SettingsRepository final : public ISettingsRepository {
 public:
-    SettingValues values; bool failSave = false;
+    SettingValues values; bool failSave = false; int failBatchAfterWrites = -1; int lastBatchWrites = 0;
     shared::common::Result<SettingValues> load(SettingScope, const QString&) override { return shared::common::Result<SettingValues>::success(values); }
     shared::common::Result<void> save(SettingScope, const QString&, const QString& id, const QVariant& value) override {
         if (failSave) return shared::common::Result<void>::failure(domain::errors::AppError::failure(domain::errors::ErrorCode::IoFailure,
             domain::errors::ErrorCategory::Persistence, "Synthetic save failure", {}));
         values.insert(id, value); return shared::common::Result<void>::success();
+    }
+    shared::common::Result<void> saveBatch(const SettingUpdates& updates) override {
+        auto staged = values; lastBatchWrites = 0;
+        for (const auto& update : updates) {
+            if (update.scope == SettingScope::Session) continue;
+            ++lastBatchWrites;
+            if (failSave || (failBatchAfterWrites >= 0 && lastBatchWrites > failBatchAfterWrites))
+                return shared::common::Result<void>::failure(domain::errors::AppError::failure(
+                    domain::errors::ErrorCode::IoFailure, domain::errors::ErrorCategory::Persistence,
+                    "Synthetic save failure", "Failure injected after an earlier staged write."));
+            staged.insert(update.id, update.value);
+        }
+        values = std::move(staged);
+        return shared::common::Result<void>::success();
     }
 };
 class SetupProbe final : public ICodexExecutableProbe {
@@ -129,11 +144,12 @@ private slots:
         connect(&dialog, &SettingsWindow::settingsApplied, &h.controller, [&] { h.controller.applyConfiguration({settings.value("assistant/executable").toString(), settings.value("assistant/model").toString()}); });
         auto* edit = dialog.findChild<QLineEdit*>("assistantExecutable"); QVERIFY(edit); edit->setText("C:/Native path/codex.exe");
         auto* save = dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save);
-        repository.failSave = true; save->click();
+        repository.failBatchAfterWrites = 1; save->click();
         QTRY_VERIFY_WITH_TIMEOUT(QApplication::activeModalWidget() != nullptr, 1000);
         auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()); QVERIFY(message); message->accept();
         QCOMPARE(applied.size(), 0); QCOMPARE(h.controller.configuration().executablePath, QString{});
-        repository.failSave = false; save->click(); QCOMPARE(applied.size(), 1); QCOMPARE(h.controller.configuration().executablePath, edit->text());
+        QVERIFY(repository.lastBatchWrites > 1); QVERIFY(repository.values.isEmpty());
+        repository.failBatchAfterWrites = -1; save->click(); QCOMPARE(applied.size(), 1); QCOMPARE(h.controller.configuration().executablePath, edit->text());
         for (auto i = repository.values.cbegin(); i != repository.values.cend(); ++i) QVERIFY(!i.key().contains("login") && !i.key().contains("token") && !i.key().contains("account") && !i.key().contains("runtime"));
     }
     void cancelSettingsDoesNotApplyDraft() {
@@ -213,16 +229,23 @@ private slots:
     void settingsVisualSample() {
         Harness h; QVERIFY(h.readyController()); SetupProbe probe; SettingsRepository repository; SettingsService settings(repository);
         SettingsWindow dialog(settings, *m_theme, {}, nullptr, &h.controller, &probe); dialog.resize(1000, 820);
-        auto* tabs = dialog.findChild<QTabWidget*>(); int index = -1; for (int i = 0; i < tabs->count(); ++i) if (tabs->tabText(i) == "Assistant") index = i;
-        QVERIFY(index >= 0); tabs->setCurrentIndex(index); dialog.show(); QTest::qWait(40);
-        auto* panel = dialog.findChild<AssistantSettingsPanel*>(); QVERIFY(panel);
+        auto* navigation = dialog.findChild<QListWidget*>("settingsNavigation"); QVERIFY(navigation);
+        auto* stack = dialog.findChild<QStackedWidget*>("settingsPageStack"); QVERIFY(stack);
+        int index = -1; for (int i = 0; i < navigation->count(); ++i) if (navigation->item(i)->text() == "Assistant") index = i;
+        QVERIFY(index >= 0); navigation->setCurrentRow(index); QCOMPARE(stack->currentIndex(), index);
+        dialog.show(); QTest::qWait(40); QVERIFY(navigation->isVisible());
+        auto* panel = dialog.findChild<AssistantSettingsPanel*>(); QVERIFY(panel); QVERIFY(panel->isVisible());
+        auto* connectDevice = panel->findChild<QPushButton*>("assistantConnectDevice"); QVERIFY(connectDevice);
+        auto* deviceCode = panel->findChild<QLineEdit*>("assistantDeviceCode"); QVERIFY(deviceCode);
+        navigation->setFocus(); navigation->setCurrentRow(index - 1); QTest::keyClick(navigation, Qt::Key_Down);
+        QCOMPARE(navigation->currentRow(), index); QCOMPARE(stack->currentIndex(), index);
         const auto snapshot = qEnvironmentVariable("DEVHUB_ASSISTANT_SNAPSHOT");
         if (!snapshot.isEmpty()) QVERIFY(dialog.grab().save(snapshot.chopped(4) + "-idle.png"));
-        panel->findChild<QPushButton*>("assistantConnectDevice")->click();
+        connectDevice->click();
         h.reply("account/login/start", {{"type", "chatgptDeviceCode"}, {"loginId", "visual-fixture"}, {"verificationUrl", "https://auth.openai.com/codex/device"}, {"userCode", "FAKE-1234"}});
         QTest::qWait(20);
         for (auto* button : panel->findChildren<QPushButton*>()) QVERIFY(dialog.rect().contains(QRect(button->mapTo(&dialog, QPoint{}), button->size())));
-        QVERIFY(panel->findChild<QLineEdit*>("assistantDeviceCode")->isVisible());
+        QVERIFY(deviceCode->isVisible());
         if (!snapshot.isEmpty()) QVERIFY(dialog.grab().save(snapshot));
     }
 };

@@ -93,7 +93,8 @@ void ServicePage::editDefinition(const std::optional<domain::services::ServiceDe
     auto* restart=new QComboBox(&dialog);restart->addItem(tr("Never"),0);restart->addItem(tr("On failure"),1);restart->addItem(tr("Always"),2);
     auto* timeout=new QSpinBox(&dialog);timeout->setRange(100,120000);timeout->setValue(existing?existing->stopTimeoutMs:5000);timeout->setSuffix(tr(" ms"));
     form->addRow(tr("Name"),name);form->addRow(tr("Program"),programRow);form->addRow(tr("Arguments"),arguments);form->addRow(tr("Working directory"),working);
-    form->addRow(tr("Environment names"),env);form->addRow(tr("Expected ports"),ports);form->addRow(shell);form->addRow(warning);form->addRow(tr("Restart policy"),restart);form->addRow(tr("Stop timeout"),timeout);
+    env->setToolTip(tr("This field is saved as metadata only. Services inherit the full DevHub environment unchanged; the list does not restrict or validate variables."));
+    form->addRow(tr("Environment names (metadata only; full parent environment inherited)"),env);form->addRow(tr("Expected ports"),ports);form->addRow(shell);form->addRow(warning);form->addRow(tr("Restart policy"),restart);form->addRow(tr("Stop timeout"),timeout);
     auto* buttons=new QDialogButtonBox(QDialogButtonBox::Save|QDialogButtonBox::Cancel,&dialog);form->addRow(buttons);
     connect(buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
     if(dialog.exec()!=QDialog::Accepted)return;

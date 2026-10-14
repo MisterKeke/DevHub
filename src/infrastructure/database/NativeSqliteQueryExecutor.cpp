@@ -1,7 +1,10 @@
 #include "NativeSqliteQueryExecutor.h"
 
 #include <QElapsedTimer>
+#include <QByteArrayView>
+#include <QCryptographicHash>
 #include <QThread>
+#include <QtEndian>
 #include <algorithm>
 #include <memory>
 #include <sqlite3.h>
@@ -42,6 +45,34 @@ int busy(void *value, int attempts)
     return 1;
 }
 
+void rowFingerprint(sqlite3_context* context, int count, sqlite3_value** values)
+{
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    for (int index = 0; index < count; ++index) {
+        const int type = sqlite3_value_type(values[index]);
+        const char tag = static_cast<char>(type);
+        hash.addData(QByteArrayView(&tag, 1));
+        QByteArray bytes;
+        if (type == SQLITE_INTEGER) {
+            const qint64 value = sqlite3_value_int64(values[index]);
+            bytes = QByteArray::number(value);
+        } else if (type == SQLITE_FLOAT) {
+            bytes = QByteArray::number(sqlite3_value_double(values[index]), 'g', 17);
+        } else if (type == SQLITE_TEXT) {
+            const auto* data = reinterpret_cast<const char*>(sqlite3_value_text(values[index]));
+            bytes = QByteArray(data, sqlite3_value_bytes(values[index]));
+        } else if (type == SQLITE_BLOB) {
+            const auto* data = static_cast<const char*>(sqlite3_value_blob(values[index]));
+            bytes = QByteArray(data, sqlite3_value_bytes(values[index]));
+        }
+        const quint64 size = qToLittleEndian<quint64>(static_cast<quint64>(bytes.size()));
+        hash.addData(QByteArrayView(reinterpret_cast<const char*>(&size), static_cast<qsizetype>(sizeof(size))));
+        hash.addData(bytes);
+    }
+    const QByteArray digest = hash.result();
+    sqlite3_result_blob(context, digest.constData(), static_cast<int>(digest.size()), SQLITE_TRANSIENT);
+}
+
 QVariant readValue(sqlite3_stmt *statement, int column, qint64 &bytes)
 {
     switch (sqlite3_column_type(statement, column))
@@ -77,6 +108,28 @@ QVariant readValue(sqlite3_stmt *statement, int column, qint64 &bytes)
 }
 } // namespace
 
+QString configureExternalSqliteConnection(sqlite3* database)
+{
+    if (!database) return QStringLiteral("SQLite connection is unavailable.");
+    int enabled = 0;
+    int status = sqlite3_db_config(database, SQLITE_DBCONFIG_DEFENSIVE, 1, &enabled);
+    if (status != SQLITE_OK || enabled != 1)
+        return QStringLiteral("Could not enable SQLite defensive mode: %1").arg(QString::fromUtf8(sqlite3_errmsg(database)));
+    enabled = 1;
+    status = sqlite3_db_config(database, SQLITE_DBCONFIG_TRUSTED_SCHEMA, 0, &enabled);
+    if (status != SQLITE_OK || enabled != 0)
+        return QStringLiteral("Could not disable trusted SQLite schemas: %1").arg(QString::fromUtf8(sqlite3_errmsg(database)));
+    return {};
+}
+
+QString registerRowFingerprintFunction(sqlite3* database)
+{
+    if (!database) return QStringLiteral("SQLite connection is unavailable.");
+    const int status = sqlite3_create_function_v2(database, "devhub_row_fingerprint", -1,
+        SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_DIRECTONLY, nullptr, rowFingerprint, nullptr, nullptr, nullptr);
+    return status == SQLITE_OK ? QString{} : QString::fromUtf8(sqlite3_errmsg(database));
+}
+
 NativeSqliteQueryExecutor::NativeSqliteQueryExecutor(std::shared_ptr<SqliteQueryControl> control)
     : m_control(std::move(control))
 {
@@ -100,6 +153,10 @@ QString NativeSqliteQueryExecutor::open(const QString &path, DatabaseOpenMode mo
         return message;
     }
     sqlite3_busy_timeout(m_database, 2500);
+    const QString defensiveError = configureExternalSqliteConnection(m_database);
+    if (!defensiveError.isEmpty()) { close(); return defensiveError; }
+    const QString fingerprintError = registerRowFingerprintFunction(m_database);
+    if (!fingerprintError.isEmpty()) { close(); return fingerprintError; }
     const int configured = sqlite3_exec(m_database,
                                         mode == DatabaseOpenMode::ReadOnly
                                             ? "PRAGMA foreign_keys=ON; PRAGMA query_only=ON"
@@ -178,7 +235,7 @@ DatabaseQueryResult NativeSqliteQueryExecutor::run(const QStringList &statements
             result.message = QString::fromUtf8(sqlite3_errmsg(m_database));
             break;
         }
-        const int count = std::min(sqlite3_column_count(raw), 256);
+        const int count = std::min(sqlite3_column_count(raw), 257);
         result.columns.clear();
         result.rows.clear();
         result.truncated = sqlite3_column_count(raw) > count;

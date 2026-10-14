@@ -6,10 +6,12 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QSqlError>
+#include <QSqlDriver>
 #include <QSqlQuery>
 #include <QSqlRecord>
 #include <QThread>
 #include <QUuid>
+#include <sqlite3.h>
 
 #include <algorithm>
 
@@ -23,33 +25,52 @@ QString quoteIdentifier(const QString& value)
     return QLatin1Char('"') + escaped + QLatin1Char('"');
 }
 
-QStringList splitSqlStatements(const QString& source)
+QStringList splitSqlStatements(sqlite3* database, const QString& source, QString* error)
 {
     QStringList statements;
-    QString current;
-    bool single = false, doubleQuote = false, backtick = false, bracket = false;
-    bool lineComment = false, blockComment = false;
-    for (qsizetype i = 0; i < source.size(); ++i) {
-        const QChar ch = source.at(i);
-        const QChar next = i + 1 < source.size() ? source.at(i + 1) : QChar();
-        if (lineComment) { if (ch == QLatin1Char('\n')) { lineComment = false; current.append(ch); } continue; }
-        if (blockComment) { if (ch == QLatin1Char('*') && next == QLatin1Char('/')) { blockComment = false; ++i; } continue; }
-        if (!single && !doubleQuote && !backtick && !bracket) {
-            if (ch == QLatin1Char('-') && next == QLatin1Char('-')) { lineComment = true; ++i; continue; }
-            if (ch == QLatin1Char('/') && next == QLatin1Char('*')) { blockComment = true; ++i; continue; }
-            if (ch == QLatin1Char(';')) { if (!current.trimmed().isEmpty()) statements.append(current.trimmed()); current.clear(); continue; }
+    const QByteArray bytes = source.toUtf8();
+    qsizetype statementStart = 0;
+    auto appendStatement = [&](qsizetype end) {
+        const QByteArray statementBytes = bytes.mid(statementStart, end - statementStart);
+        if (statementBytes.trimmed().isEmpty()) return true;
+        sqlite3_stmt* statement = nullptr;
+        const int status = sqlite3_prepare_v3(database, statementBytes.constData(),
+            static_cast<int>(statementBytes.size()), 0, &statement, nullptr);
+        bool unresolvedTable = false;
+        if (status != SQLITE_OK) {
+            const QString message = QString::fromUtf8(sqlite3_errmsg(database));
+            // SQLite resolves a trigger's target table while preparing it. Allow
+            // unresolved schema names here so scripts can create that table first;
+            // the sequential executor reports genuine missing-table errors.
+            if (!message.startsWith(QStringLiteral("no such table:"), Qt::CaseInsensitive)) {
+                if (error) *error = message;
+                sqlite3_finalize(statement);
+                return false;
+            }
+            unresolvedTable = true;
         }
-        if (ch == QLatin1Char('\'') && !doubleQuote && !backtick && !bracket) {
-            if (single && next == QLatin1Char('\'')) { current.append(ch); current.append(next); ++i; continue; }
-            single = !single;
-        } else if (ch == QLatin1Char('"') && !single && !backtick && !bracket) doubleQuote = !doubleQuote;
-        else if (ch == QLatin1Char('`') && !single && !doubleQuote && !bracket) backtick = !backtick;
-        else if (ch == QLatin1Char('[') && !single && !doubleQuote && !backtick) bracket = true;
-        else if (ch == QLatin1Char(']') && bracket) bracket = false;
-        current.append(ch);
+        if (statement || unresolvedTable) {
+            statements.append(QString::fromUtf8(statementBytes));
+        }
+        if (statement) sqlite3_finalize(statement);
+        return true;
+    };
+    for (qsizetype index = 0; index < bytes.size(); ++index) {
+        if (bytes.at(index) != ';') continue;
+        const QByteArray prefix = bytes.mid(statementStart, index - statementStart + 1);
+        if (!sqlite3_complete(prefix.constData())) continue;
+        if (!appendStatement(index + 1)) return {};
+        statementStart = index + 1;
     }
-    if (!current.trimmed().isEmpty()) statements.append(current.trimmed());
+    if (statementStart < bytes.size() && !appendStatement(bytes.size())) return {};
     return statements;
+}
+
+QString rowFingerprintSql(const QVector<DatabaseColumn>& columns)
+{
+    QStringList expressions;
+    for (const auto& column : columns) expressions.append(quoteIdentifier(column.name));
+    return QStringLiteral("devhub_row_fingerprint(%1)").arg(expressions.join(QLatin1Char(',')));
 }
 
 QString sqlError(const QSqlQuery& query) { return query.lastError().text(); }
@@ -89,6 +110,22 @@ void QtSqlDatabaseWorker::open(QString path, DatabaseOpenMode mode)
         QSqlDatabase::removeDatabase(m_connectionName);
         m_registered = false;
         emit openFinished(false, message, mode);
+        return;
+    }
+    const QVariant handle = m_database.driver()->handle();
+    sqlite3* qtSqlite = nullptr;
+    if (handle.isValid() && QByteArray(handle.typeName()) == QByteArrayLiteral("sqlite3*"))
+        qtSqlite = *static_cast<sqlite3* const*>(handle.constData());
+    const QString defensiveError = configureExternalSqliteConnection(qtSqlite);
+    if (!defensiveError.isEmpty()) {
+        close();
+        emit openFinished(false, defensiveError, mode);
+        return;
+    }
+    const QString fingerprintError = registerRowFingerprintFunction(qtSqlite);
+    if (!fingerprintError.isEmpty()) {
+        close();
+        emit openFinished(false, fingerprintError, mode);
         return;
     }
     QSqlQuery configure(m_database);
@@ -190,7 +227,9 @@ void QtSqlDatabaseWorker::loadPage(QString tableName, int offset, int pageSize, 
     std::sort(primaryKeys.begin(), primaryKeys.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     for (const auto& key : primaryKeys) page.primaryKeyColumns.append(key.second);
 
-    QString sql = QStringLiteral("SELECT %1 FROM %2").arg(selectExpressions.join(QLatin1Char(',')), quoteIdentifier(tableName));
+    QStringList selected = selectExpressions;
+    selected.append(rowFingerprintSql(columns));
+    QString sql = QStringLiteral("SELECT %1 FROM %2").arg(selected.join(QLatin1Char(',')), quoteIdentifier(tableName));
     QStringList order;
     if (!sortColumn.isEmpty() && page.columns.contains(sortColumn)) order.append(quoteIdentifier(sortColumn) + (ascending ? QStringLiteral(" ASC") : QStringLiteral(" DESC")));
     else if (!page.primaryKeyColumns.isEmpty()) for (const int key : page.primaryKeyColumns) order.append(quoteIdentifier(page.columns.at(key)) + QStringLiteral(" ASC"));
@@ -199,10 +238,13 @@ void QtSqlDatabaseWorker::loadPage(QString tableName, int offset, int pageSize, 
     sql += QStringLiteral(" LIMIT ? OFFSET ?");
     auto result = m_queryExecutor.run({sql}, generation, {pageSize + 1, page.offset}, pageSize + 1);
     if (!result.message.isEmpty()) { emit operationFailed(result.message); return; }
-    if (result.columns.size() != page.columns.size()) {
+    if (result.columns.size() != page.columns.size() + 1) {
         emit operationFailed(QStringLiteral("This table exceeds the 256-column preview limit.")); return;
     }
     page.rows = std::move(result.rows);
+    for (auto& row : page.rows) {
+        page.rowFingerprints.append(row.takeLast().toByteArray());
+    }
     page.hasMore = result.truncated;
     if (page.rows.size() > pageSize) { page.rows.removeLast(); page.hasMore = true; }
     emit pageReady(std::move(tableName), std::move(page));
@@ -218,7 +260,9 @@ void QtSqlDatabaseWorker::countRows(QString tableName, quint64 generation)
 void QtSqlDatabaseWorker::executeQuery(QString sql, bool allowScript, quint64 generation)
 {
     DatabaseQueryResult result;
-    const QStringList statements = splitSqlStatements(sql);
+    QString parseError;
+    const QStringList statements = splitSqlStatements(m_queryExecutor.databaseHandle(), sql, &parseError);
+    if (!parseError.isEmpty()) { result.message = parseError; emit queryReady(std::move(result)); return; }
     if (statements.isEmpty()) { result.message = QStringLiteral("Enter a SQL statement first."); emit queryReady(std::move(result)); return; }
     if (!allowScript && statements.size() > 1) { result.message = QStringLiteral("This contains multiple statements. Use Run Script and review its warning."); emit queryReady(std::move(result)); return; }
     result = m_queryExecutor.run(statements, generation);
@@ -254,9 +298,13 @@ void QtSqlDatabaseWorker::commit(PendingChanges changes)
     for (const auto& column : columns) if (column.primaryKeyOrder > 0) keys.append({column.primaryKeyOrder, column.name});
     std::sort(keys.begin(), keys.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     if (keys.isEmpty()) { emit commitFinished(false, QStringLiteral("This table has no declared primary key. Grid edits are refused.")); return; }
-    if (!m_database.transaction()) { emit commitFinished(false, m_database.lastError().text()); return; }
+    QSqlQuery begin(m_database);
+    if (!begin.exec(QStringLiteral("BEGIN IMMEDIATE"))) { emit commitFinished(false, begin.lastError().text()); return; }
     const QString table = quoteIdentifier(changes.tableName);
-    auto fail = [this](const QString& message) { m_database.rollback(); emit commitFinished(false, message); };
+    auto fail = [this](const QString& message) {
+        QSqlQuery rollback(m_database); rollback.exec(QStringLiteral("ROLLBACK"));
+        emit commitFinished(false, message);
+    };
 
     for (const auto& edit : changes.cellEdits) {
         if (!changes.tableName.isEmpty() && edit.primaryKey.size() == keys.size()
@@ -284,14 +332,19 @@ void QtSqlDatabaseWorker::commit(PendingChanges changes)
         if (!query.exec() || query.numRowsAffected() != 1) { fail(query.lastError().isValid() ? query.lastError().text() : QStringLiteral("The inserted row was rejected.")); return; }
     }
     for (const auto& deletion : changes.deletes) {
-        if (deletion.primaryKey.size() != keys.size()) { fail(QStringLiteral("A delete did not contain a valid stable row identity.")); return; }
+        if (deletion.primaryKey.size() != keys.size() || deletion.originalFingerprint.size() != 32) {
+            fail(QStringLiteral("A delete did not contain a valid stable row snapshot.")); return;
+        }
         QStringList predicate; for (const auto& key : keys) predicate.append(quoteIdentifier(key.second) + QStringLiteral(" IS ?"));
+        predicate.append(rowFingerprintSql(columns) + QStringLiteral(" = ?"));
         QSqlQuery query(m_database); query.prepare(QStringLiteral("DELETE FROM %1 WHERE %2").arg(table, predicate.join(QStringLiteral(" AND "))));
         for (const auto& value : deletion.primaryKey) query.addBindValue(value);
+        query.addBindValue(deletion.originalFingerprint);
         if (!query.exec() || query.numRowsAffected() != 1) { fail(query.lastError().isValid() ? query.lastError().text()
             : QStringLiteral("The row changed or disappeared outside DevHub. No changes were committed.")); return; }
     }
-    if (!m_database.commit()) { const QString message = m_database.lastError().text(); m_database.rollback(); emit commitFinished(false, message); return; }
+    QSqlQuery commit(m_database);
+    if (!commit.exec(QStringLiteral("COMMIT"))) { const QString message = commit.lastError().text(); fail(message); return; }
     emit commitFinished(true, QStringLiteral("Changes committed."));
 }
 

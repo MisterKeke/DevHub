@@ -5,11 +5,11 @@
 
 ## Context
 
-DevHub is a Windows desktop tool with dense tables, trees, keyboard workflows, and native desktop accessibility needs. The master plan selects Qt 6.8 and requires a Qt Community-compatible dependency set.
+DevHub is a Windows desktop tool with dense tables, trees, keyboard workflows, and native desktop accessibility needs. The initial master plan selected Qt 6.8 and required a Qt Community-compatible dependency set.
 
 ## Decision
 
-Build the UI with Qt Widgets and target the Qt 6.8 API baseline. Require Qt 6.8.3 or newer for local development so newer Qt Creator kits remain usable; CI stays pinned to Qt 6.8.3. Use the open-source Qt release and modules Core, Gui, Widgets, Sql, Concurrent, and Test as needed. Do not add Qt WebEngine.
+Build the UI with Qt Widgets and target the Qt 6.11 API baseline. Require Qt 6.11.0 or newer for local development; CI stays pinned to Qt 6.11.2. Use the open-source Qt release and modules Core, Gui, Widgets, Sql, Concurrent, and Test as needed. Do not add Qt WebEngine. The baseline moved after the Qt 6.8.0–6.8.3 Markdown importer advisory (CVE-2025-3512); later advisories remain subject to API-level applicability review.
 
 ## Consequences
 

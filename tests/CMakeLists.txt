@@ -211,7 +211,7 @@ qt_add_executable(devhub_feature_tests
     ../src/application/settings/SettingsService.cpp
     ../src/application/support/SupportBundleBuilder.cpp
 )
-target_link_libraries(devhub_feature_tests PRIVATE devhub_services devhub_database
+target_link_libraries(devhub_feature_tests PRIVATE devhub_services devhub_database devhub_assistant
     Qt6::Core Qt6::Widgets Qt6::Sql Qt6::Test project_options project_warnings)
 add_test(NAME devhub.feature-regressions COMMAND devhub_feature_tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/feature-regressions-tests.txt,txt")

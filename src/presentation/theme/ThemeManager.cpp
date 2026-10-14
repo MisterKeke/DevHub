@@ -70,6 +70,36 @@ void ThemeManager::applyPalette()
         "QFrame#overviewCard QPushButton#overviewAction { background: %8; border: 1px solid %4;"
         " border-radius: 6px; padding: 7px 12px; }"
         "QFrame#overviewCard QPushButton#overviewAction:hover { background: %7; border-color: %5; }"
+        "QWidget#settingsSidebar { background: %10; border-right: 1px solid %4; }"
+        "QListWidget#settingsNavigation { background: transparent; border: none; outline: none; }"
+        "QListWidget#settingsNavigation::item { min-height: 22px; border-radius: 7px; padding: 8px 10px; margin: 2px 0; }"
+        "QListWidget#settingsNavigation::item:hover { background: %7; }"
+        "QListWidget#settingsNavigation::item:selected { color: %9; background: %11; border: 1px solid %5; }"
+        "QFrame#settingsPanel { background: %3; border: 1px solid %4; border-radius: 10px; }"
+        "QLabel#settingsPanelTitle { font-size: 11pt; font-weight: 600; }"
+        "QLabel#settingsPageTitle { font-size: 18pt; font-weight: 600; }"
+        "QLabel#settingsPageDescription { color: %12; }"
+        "QLabel#settingsFieldDescription { color: %12; font-size: 9pt; }"
+        "QLabel#settingsValueState { color: %12; font-size: 8pt; }"
+        "QWidget#settingsFooter { background: %2; border-top: 1px solid %4; }"
+        "QLabel#settingsDirtyState { color: %12; }"
+        "QPushButton#saveSettingsButton { color: %9; background: %5; border-color: %5; font-weight: 600; }"
+        "QPushButton#saveSettingsButton:hover { background: %6; border-color: %6; }"
+        "QWidget#assistantMessageAssistant { background: %3; border: 1px solid %4; border-left: 3px solid %5; border-radius: 9px; }"
+        "QWidget#assistantMessageUser { background: %8; border: 1px solid %5; border-radius: 9px; }"
+        "QLabel#assistantMessageRoleAssistant { color: %5; font-weight: 600; }"
+        "QLabel#assistantMessageRoleUser { color: %9; font-weight: 600; }"
+        "QLabel#assistantMessageTimestamp, QLabel#assistantMessageStatus { color: %12; font-size: 9pt; }"
+        "QWidget#assistantContextCard, QWidget#assistantConnectionCard { background: %3; border: 1px solid %4; border-radius: 8px; }"
+        "QWidget#assistantComposerPanel { background: %8; border: 1px solid %5; border-radius: 10px; }"
+        "QPlainTextEdit#assistantComposer { background: %3; border: 1px solid %4; border-radius: 9px; padding: 10px 12px; }"
+        "QPlainTextEdit#assistantComposer:focus { border: 2px solid %5; }"
+        "QLabel#assistantToolActivity { color: %5; }"
+        "QLabel#assistantError { color: %13; }"
+        "QPushButton#assistantSend { color: %9; background: %5; border-color: %5; font-weight: 600; min-width: 86px; }"
+        "QPushButton#assistantSend:hover { background: %6; border-color: %6; }"
+        "QPushButton#assistantStop { border-color: %13; }"
+        "QWidget#assistantApprovalCard { background: %3; border: 1px solid %14; border-radius: 9px; }"
         "QListWidget { background: transparent; border: none; outline: none; }"
         "QListWidget::item { border-radius: 5px; padding: 8px 7px; margin: 1px 0; }"
         "QListWidget::item:hover { background: %7; }"
@@ -78,6 +108,8 @@ void ThemeManager::applyPalette()
         " border-radius: 6px; padding: 7px 9px; selection-background-color: %5; }"
         "QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus { border: 2px solid %6; }"
         "QPushButton { background: %3; border: 1px solid %4; border-radius: 6px; padding: 7px 12px; }"
+        "QPushButton:pressed, QToolButton:pressed { background: %11; }"
+        "QPushButton:disabled, QToolButton:disabled { color: %12; }"
         "QPushButton#accentButton { color: %9; }"
         "QPushButton:hover, QToolButton:hover { background: %7; }"
         "QToolButton { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 6px; }"
@@ -89,7 +121,7 @@ void ThemeManager::applyPalette()
         "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
         "QSplitter::handle { background: %4; width: 1px; }"
         "QToolTip { background: %8; border: 1px solid %4; padding: 4px; }");
-    const std::array<QString, 12> colors{color(ColorToken::TextPrimary),
+    const std::array<QString, 14> colors{color(ColorToken::TextPrimary),
                                          color(ColorToken::WindowBackground),
                                          color(ColorToken::PanelSurface),
                                          color(ColorToken::BorderSubtle),
@@ -100,8 +132,10 @@ void ThemeManager::applyPalette()
                                          color(ColorToken::TextPrimary),
                                          color(ColorToken::SidebarSurface),
                                          color(ColorToken::AccentSoft),
-                                         color(ColorToken::TextSecondary)};
-    for (int index = 12; index > 0; --index) {
+                                         color(ColorToken::TextSecondary),
+                                         color(ColorToken::Error),
+                                         color(ColorToken::Warning)};
+    for (int index = 14; index > 0; --index) {
         sheet.replace(QStringLiteral("%") + QString::number(index), colors.at(static_cast<size_t>(index - 1)));
     }
     m_application.setStyleSheet(sheet);
@@ -121,7 +155,10 @@ QColor ThemeManager::borderStrong() const { return ThemePalette::color(ColorToke
 QColor ThemeManager::textPrimary() const { return ThemePalette::color(ColorToken::TextPrimary); }
 QColor ThemeManager::textSecondary() const { return ThemePalette::color(ColorToken::TextSecondary); }
 QColor ThemeManager::textMuted() const { return ThemePalette::color(ColorToken::TextMuted); }
+QColor ThemeManager::success() const { return ThemePalette::color(ColorToken::Success); }
+QColor ThemeManager::warning() const { return ThemePalette::color(ColorToken::Warning); }
 QColor ThemeManager::error() const { return ThemePalette::color(ColorToken::Error); }
+QColor ThemeManager::info() const { return ThemePalette::color(ColorToken::Info); }
 
 void ThemeManager::setVariant(ThemeVariant variant)
 {
