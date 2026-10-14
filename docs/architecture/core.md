@@ -32,3 +32,14 @@ Lock swaps the main shell for an opaque unlock page in the same stack, preservin
 page while keeping it hidden. The application session is cleared on exit.
 
 `ApplicationLifecycle` enforces valid lifecycle transitions. `ShutdownCoordinator` rejects new scheduler work, requests cooperative cancellation, and records orderly shutdown as Qt exits. Long-running work must check its token; widgets and models must only be changed on the GUI thread.
+
+The shell runs Notes/Database transition guards and the service-stop confirmation
+before requesting shutdown. The coordinator then gives asynchronous participants
+a bounded event-loop window to finish. Once all participants complete or the
+deadline expires, it calls `QCoreApplication::exit(0)` on the GUI thread. A new
+`quit()` request at that point would dispatch another close event, which the
+shell deliberately rejects while shutdown is in progress. Direct event-loop
+exit preserves `aboutToQuit` and normal owner destruction without repeating the
+already accepted transition guards. The `devhub.shutdown` subprocess tests cover
+immediate/delayed completion, the deadline, repeated closes, and a cancelled
+initial close with an actual `QApplication` event loop.

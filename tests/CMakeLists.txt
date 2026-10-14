@@ -6,6 +6,19 @@ set_tests_properties(devhub.smoke PROPERTIES
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
 )
 
+qt_add_executable(devhub_window_shutdown_driver helpers/shutdown_window_driver.cpp)
+target_link_libraries(devhub_window_shutdown_driver PRIVATE devhub_core Qt6::Widgets project_warnings)
+qt_add_executable(devhub_shutdown_tests shutdown_test.cpp)
+target_link_libraries(devhub_shutdown_tests PRIVATE Qt6::Core Qt6::Test project_options project_warnings)
+target_compile_definitions(devhub_shutdown_tests PRIVATE
+    DEVHUB_WINDOW_SHUTDOWN_DRIVER="$<TARGET_FILE:devhub_window_shutdown_driver>")
+add_dependencies(devhub_shutdown_tests devhub_window_shutdown_driver)
+add_test(NAME devhub.shutdown COMMAND devhub_shutdown_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/shutdown-tests.txt,txt")
+set_tests_properties(devhub.shutdown PROPERTIES TIMEOUT 30
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
 qt_add_executable(devhub_fake_codex helpers/fake_codex_app_server.cpp)
 target_link_libraries(devhub_fake_codex PRIVATE Qt6::Core project_options project_warnings)
 qt_add_executable(devhub_assistant_native_probe helpers/assistant_native_probe.cpp)

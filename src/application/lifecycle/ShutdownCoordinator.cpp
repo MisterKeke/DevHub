@@ -112,7 +112,12 @@ void ShutdownCoordinator::finishShutdown()
         Q_UNUSED(stopped);
     }
     emit shutdownFinished();
-    m_application.quit();
+    // The shell has already accepted its save/service guards and deliberately
+    // rejects further close events while participants drain. QApplication::quit
+    // sends another close request which that guard can veto, leaving an already
+    // finalized application running. Exit the event loop directly at this point;
+    // aboutToQuit and normal owner destruction still perform their cleanup.
+    m_application.exit(0);
 }
 
 void ShutdownCoordinator::emergencyShutdown()

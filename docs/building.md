@@ -12,6 +12,14 @@ inference. The Qt 6.11.2 Windows CI job also runs chat/settings checks at
 100/125/150/200% scaling with `tools/verify-assistant-ui.ps1` and retains snapshots.
 See [Assistant setup](architecture/assistant-settings.md) for the boundaries.
 
+Windows CI pins `aqtinstall` to upstream commit
+`8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b` through the Qt action's `aqtsource`
+input. The action's default `aqtinstall 3.3.0` uses the old Windows repository
+layout and cannot install Qt 6.11.2. The pinned commit contains
+[upstream fix #1000](https://github.com/miurahr/aqtinstall/pull/1000).
+Replace this source override with a pinned released installer version once a
+release containing that fix has been verified with the selected Windows kit.
+
 ## Prerequisites
 
 - Windows 11 x64.
