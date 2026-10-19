@@ -287,6 +287,7 @@ add_executable(devhub WIN32
     src/presentation/theme/ThemePalette.cpp
     src/presentation/theme/ThemeProxyStyle.cpp
     src/presentation/theme/ThemeTokens.cpp
+    src/presentation/cursor/CustomCursorController.cpp
     src/presentation/icons/IconLoader.cpp
     src/presentation/widgets/ReusableWidgets.cpp
     src/presentation/widgets/SafeMarkdownBrowser.cpp
@@ -327,6 +328,7 @@ add_executable(devhub WIN32
     src/presentation/authentication/AuthenticationWidgets.cpp
     src/presentation/authentication/AuthenticationWindow.cpp
     src/presentation/authentication/ChangePasswordDialog.cpp
+    resources/cursors.qrc
     resources/devhub.qrc
     resources/database_migrations.qrc
 )

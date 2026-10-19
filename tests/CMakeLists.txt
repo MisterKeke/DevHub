@@ -6,6 +6,20 @@ set_tests_properties(devhub.smoke PROPERTIES
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
 )
 
+qt_add_executable(devhub_custom_cursor_tests custom_cursor_test.cpp
+    ../src/presentation/cursor/CustomCursorController.cpp
+    ../src/presentation/theme/ThemeTokens.cpp
+    ../src/presentation/theme/ThemeManager.cpp
+    ../src/presentation/theme/ThemePalette.cpp
+    ../src/presentation/theme/ThemeProxyStyle.cpp
+    ../resources/cursors.qrc)
+target_include_directories(devhub_custom_cursor_tests PRIVATE ../src)
+target_link_libraries(devhub_custom_cursor_tests PRIVATE Qt6::Widgets Qt6::Test project_options project_warnings)
+add_test(NAME devhub.custom-cursor COMMAND devhub_custom_cursor_tests)
+set_tests_properties(devhub.custom-cursor PROPERTIES TIMEOUT 30
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
 qt_add_executable(devhub_window_shutdown_driver helpers/shutdown_window_driver.cpp)
 target_link_libraries(devhub_window_shutdown_driver PRIVATE devhub_core Qt6::Widgets project_warnings)
 qt_add_executable(devhub_shutdown_tests shutdown_test.cpp)

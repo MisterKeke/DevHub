@@ -53,6 +53,7 @@
 #include "../presentation/assistant/AssistantPage.h"
 #include "../presentation/theme/ThemeManager.h"
 #include "../presentation/theme/ThemePalette.h"
+#include "../presentation/cursor/CustomCursorController.h"
 #include "../shared/security/RedactionService.h"
 #include "../application/assistant/AssistantController.h"
 #include "../application/assistant/AssistantToolRuntime.h"
@@ -232,6 +233,8 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
             ? presentation::theme::ThemeVariant::DarkBlue : presentation::theme::ThemeVariant::DarkRose);
     auto* themeManager = new presentation::theme::ThemeManager(m_application);
     themeManager->setReducedMotion(settingsService.value(QStringLiteral("appearance/reducedMotion")).toBool());
+    presentation::cursor::CustomCursorController cursorController(*themeManager);
+    Q_UNUSED(cursorController);
 
     application::events::ApplicationEventHub eventHub;
     application::lifecycle::ApplicationLifecycle lifecycle(eventHub);

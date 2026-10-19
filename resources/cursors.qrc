@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/cursors">
+        <file alias="cursor-dark-blue.png">cursors/cursor-dark-blue.png</file>
+        <file alias="cursor-dark-rose.png">cursors/cursor-dark-rose.png</file>
+    </qresource>
+</RCC>
