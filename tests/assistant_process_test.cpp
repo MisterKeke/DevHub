@@ -1,9 +1,11 @@
 #include "infrastructure/codex/CodexProcess.h"
 #include "infrastructure/codex/CodexExecutableLocator.h"
+#include "infrastructure/codex/CodexSchemaSurface.h"
 #include <QDir>
 #include <QFile>
 #include <QLibraryInfo>
 #include <QSignalSpy>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -219,13 +221,13 @@ private slots:
         QCOMPARE(qvariant_cast<CodexExecutable>(found.back().at(0)).version, QStringLiteral("0.162.0-alpha.17.2"));
         const auto unsupported = scratch.filePath(QStringLiteral("codex-unsupported.exe"));
         QVERIFY(QFile::copy(QStringLiteral(DEVHUB_FAKE_CODEX), unsupported));
-        locator.locate(unsupported, 112); QTRY_COMPARE(failed.size(), 1);
-        QVERIFY(qvariant_cast<devhub::domain::errors::AppError>(failed.back().at(0)).userMessage
-            .contains(QStringLiteral("0.163.0")));
-        locator.locate(scratch.filePath("missing.exe"), 12); QCOMPARE(failed.size(), 2);
-        locator.locate(scratch.path(), 13); QCOMPARE(failed.size(), 3);
+        locator.locate(unsupported, 112); QTRY_COMPARE(found.size(), 3);
+        QCOMPARE(qvariant_cast<CodexExecutable>(found.back().at(0)).version, QStringLiteral("0.163.0"));
+        QVERIFY(qvariant_cast<CodexExecutable>(found.back().at(0)).compatibility.protocolCompatible);
+        locator.locate(scratch.filePath("missing.exe"), 12); QTRY_COMPARE(failed.size(), 1);
+        locator.locate(scratch.path(), 13); QTRY_COMPARE(failed.size(), 2);
         const auto wrapper = scratch.filePath("codex.cmd"); QVERIFY(QFile::copy(QStringLiteral(DEVHUB_FAKE_CODEX), wrapper));
-        locator.locate(wrapper, 14); QCOMPARE(failed.size(), 4);
+        locator.locate(wrapper, 14); QTRY_COMPARE(failed.size(), 3);
         // qputenv's byte API cannot represent İ on an English Windows code
         // page. Keep Unicode coverage in the explicit override above and use
         // an ASCII directory with spaces for this independent PATH fixture.
@@ -236,19 +238,95 @@ private slots:
         QVERIFY(qputenv("PATH", QDir::toNativeSeparators(pathDirectory).toLocal8Bit() + ';' + previousPath));
         locator.locate({}, 15);
         qputenv("PATH", previousPath); // findExecutable has already resolved it synchronously.
-        QTRY_VERIFY(found.size() == 3 || failed.size() > 4);
-        const auto pathError = failed.size() <= 4 ? QString{} : qvariant_cast<devhub::domain::errors::AppError>(failed.back().at(0)).userMessage;
-        QVERIFY2(failed.size() == 4, qPrintable(pathError));
-        QTRY_COMPARE(found.size(), 3);
+        QTRY_VERIFY(found.size() == 4 || failed.size() > 3);
+        const auto pathError = failed.size() <= 3 ? QString{} : qvariant_cast<devhub::domain::errors::AppError>(failed.back().at(0)).userMessage;
+        QVERIFY2(failed.size() == 3, qPrintable(pathError));
+        QTRY_COMPARE(found.size(), 4);
     }
     void locatorFaults_data()
     {
         QTest::addColumn<QString>("name"); QTest::addColumn<bool>("cancel");
-        QTest::newRow("unrecognized version") << QStringLiteral("unknown") << false;
+        QTest::newRow("unrecognized protocol") << QStringLiteral("unknown") << false;
         QTest::newRow("malformed version") << QStringLiteral("badversion") << false;
         QTest::newRow("oversized version") << QStringLiteral("oversize") << false;
         QTest::newRow("timeout") << QStringLiteral("hang") << false;
         QTest::newRow("cancel") << QStringLiteral("hang") << true;
+    }
+    void schemaFailuresHaveStableReasons_data() {
+        QTest::addColumn<QString>("name"); QTest::addColumn<CodexCompatibilityReason>("reason");
+        QTest::newRow("truncated") << QString("schema-malformed") << CodexCompatibilityReason::SchemaMalformed;
+        QTest::newRow("output limit") << QString("schema-limit") << CodexCompatibilityReason::SchemaLimit;
+        QTest::newRow("unsupported command") << QString("schema-unsupported") << CodexCompatibilityReason::SchemaCommandUnsupported;
+    }
+    void schemaFailuresHaveStableReasons() {
+        QFETCH(QString, name); QFETCH(CodexCompatibilityReason, reason);
+        QTemporaryDir scratch; const auto executable = scratch.filePath(name + ".exe");
+        QVERIFY(QFile::copy(QStringLiteral(DEVHUB_FAKE_CODEX), executable));
+        devhub::infrastructure::codex::CodexSchemaInspector inspector;
+        QSignalSpy completed(&inspector, &devhub::infrastructure::codex::CodexSchemaInspector::completed);
+        inspector.inspect(executable, "0.163.0"); QTRY_COMPARE(completed.size(), 1);
+        const auto report = qvariant_cast<CodexCompatibilityReport>(completed.first().first());
+        QCOMPARE(report.reason, reason); QVERIFY(!report.protocolCompatible);
+    }
+    void schemaCancellationStopsBeforeReplacementInspection() {
+        QTemporaryDir scratch; const auto executable = scratch.filePath("schema-hang.exe");
+        QVERIFY(QFile::copy(QStringLiteral(DEVHUB_FAKE_CODEX), executable));
+        devhub::infrastructure::codex::CodexSchemaInspector inspector;
+        QSignalSpy completed(&inspector, &devhub::infrastructure::codex::CodexSchemaInspector::completed);
+        inspector.inspect(executable, "0.163.0"); inspector.cancel(); QTRY_COMPARE(completed.size(), 1);
+        QCOMPARE(qvariant_cast<CodexCompatibilityReport>(completed.first().first()).reason, CodexCompatibilityReason::Cancelled);
+        inspector.inspect(QStringLiteral(DEVHUB_FAKE_CODEX), "0.160.1"); QTRY_COMPARE(completed.size(), 2);
+        QVERIFY(qvariant_cast<CodexCompatibilityReport>(completed.last().first()).protocolCompatible);
+    }
+    void schemaDeadlineRequiresVerification() {
+        QTemporaryDir scratch; const auto executable = scratch.filePath("schema-hang.exe");
+        QVERIFY(QFile::copy(QStringLiteral(DEVHUB_FAKE_CODEX), executable));
+        devhub::infrastructure::codex::CodexSchemaInspector inspector(nullptr, 100);
+        QSignalSpy completed(&inspector, &devhub::infrastructure::codex::CodexSchemaInspector::completed);
+        inspector.inspect(executable, "0.163.0"); QTRY_COMPARE(completed.size(), 1);
+        const auto report = qvariant_cast<CodexCompatibilityReport>(completed.first().first());
+        QCOMPARE(report.reason, CodexCompatibilityReason::SchemaDeadline);
+        QCOMPARE(report.state, CodexCompatibilityState::VerificationRequired);
+        QVERIFY(!devhub::infrastructure::codex::CodexSchemaInspector::evidence({executable, "0.163.0", report}));
+    }
+    void locatorKeepsEventLoopResponsiveDuringInspection() {
+        QTemporaryDir scratch; const auto path = scratch.filePath("schema-hang.exe");
+        QVERIFY(QFile::copy(QStringLiteral(DEVHUB_FAKE_CODEX), path));
+        CodexExecutableLocator locator;
+        QSignalSpy found(&locator, &ICodexExecutableProbe::executableFound), failed(&locator, &ICodexExecutableProbe::probeFailed);
+        int ticks = 0; QTimer heartbeat;
+        connect(&heartbeat, &QTimer::timeout, this, [&] { ++ticks; }); heartbeat.start(10);
+        locator.locate(path, 71);
+        QTRY_VERIFY(ticks >= 10);
+        QVERIFY(locator.isProbing()); QVERIFY(found.isEmpty()); QVERIFY(failed.isEmpty());
+        locator.cancel(); locator.locate(QStringLiteral(DEVHUB_FAKE_CODEX), 72);
+        QTRY_COMPARE(found.size(), 1);
+        QCOMPARE(found.first().at(1).toULongLong(), quint64(72));
+        QCOMPARE(failed.size(), 1); // no late cancellation may replace the new state
+    }
+    void schemaGeneratesExperimentalSurfaceDirectly() {
+        QTemporaryDir scratch; const auto path = scratch.filePath("schema-experimental.exe");
+        QVERIFY(QFile::copy(QStringLiteral(DEVHUB_FAKE_CODEX), path));
+        CodexExecutableLocator locator;
+        QSignalSpy found(&locator, &ICodexExecutableProbe::executableFound), failed(&locator, &ICodexExecutableProbe::probeFailed);
+        locator.locate(path, 73); QTRY_VERIFY(!found.isEmpty() || !failed.isEmpty());
+        QVERIFY(failed.isEmpty()); QCOMPARE(found.size(), 1);
+    }
+    void corruptCacheCannotGrantOrPreventCompatibility() {
+        using devhub::infrastructure::codex::CodexSchemaSurface;
+        QStandardPaths::setTestModeEnabled(true);
+        CodexExecutableLocator locator; QSignalSpy found(&locator, &ICodexExecutableProbe::executableFound);
+        locator.locate(QStringLiteral(DEVHUB_FAKE_CODEX), 1); QTRY_COMPARE(found.size(), 1);
+        const auto report = qvariant_cast<CodexExecutable>(found.first().first()).compatibility;
+        const auto key = CodexSchemaSurface::identity(QJsonObject{{"binary", report.binaryIdentity},
+            {"adapterRevision", "surface-v1"}, {"schema", report.schemaIdentity}});
+        const auto path = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/codex-compatibility-v1/" + key + ".json";
+        QFile cache(path); QVERIFY(cache.open(QIODevice::WriteOnly | QIODevice::Truncate)); cache.write("{corrupt-cache"); cache.close();
+        locator.locate(QStringLiteral(DEVHUB_FAKE_CODEX), 2); QTRY_COMPARE(found.size(), 2);
+        const auto fresh = qvariant_cast<CodexExecutable>(found.last().first()).compatibility;
+        QVERIFY(fresh.protocolCompatible); QVERIFY(fresh.evidence.contains("corrupt-cache-discarded"));
+        QVERIFY(!fresh.runtimePolicyVerified);
+        QStandardPaths::setTestModeEnabled(false);
     }
     void locatorReplacementWaitsForCancelledChild()
     {

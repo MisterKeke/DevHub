@@ -8,11 +8,10 @@ namespace devhub::infrastructure::codex {
 
 class CodexVersionSupport final {
 public:
-    [[nodiscard]] static QStringList supportedVersions();
+    // Diagnostic fixture releases only; compatibility is established separately.
+    [[nodiscard]] static QStringList fixtureVersions();
     [[nodiscard]] static bool isValidVersion(const QString& version);
     [[nodiscard]] static std::optional<QString> parseVersionResponse(const QString& response);
-    [[nodiscard]] static bool isSupported(const QString& version);
-    [[nodiscard]] static QString unsupportedMessage(const QString& detectedVersion);
 };
 
 } // namespace devhub::infrastructure::codex

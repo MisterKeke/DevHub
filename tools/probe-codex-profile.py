@@ -27,6 +27,8 @@ OVERRIDES = (
     "features.browser_use=false", "features.computer_use=false",
     "features.multi_agent=false", "features.js_repl=false",
     "features.apply_patch_freeform=false", "features.shell_snapshot=false",
+    "features.goals=false", "features.image_generation=false",
+    "desktop.ambient-suggestions-enabled=false",
 )
 
 
@@ -36,7 +38,7 @@ class Probe:
         env = {k: v for k, v in os.environ.items() if k.casefold() in allow}
         # Test-only state selector. No auth files are read or copied.
         env["CODEX_HOME"] = str(codex_home)
-        version = subprocess.run([str(executable), "--version"], env=env, cwd=cwd,
+        version = subprocess.run([str(executable), "--version"], env=env, cwd=cwd, stdin=subprocess.DEVNULL,
                                  capture_output=True, timeout=5, check=True)
         if version.stdout.strip() != ("codex-cli " + expected_version).encode():
             raise RuntimeError("candidate-version-mismatch")

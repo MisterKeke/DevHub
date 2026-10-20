@@ -34,6 +34,7 @@ set_tests_properties(devhub.shutdown PROPERTIES TIMEOUT 30
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(devhub_fake_codex helpers/fake_codex_app_server.cpp)
+target_compile_definitions(devhub_fake_codex PRIVATE DEVHUB_CODEX_FIXTURE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/codex")
 target_link_libraries(devhub_fake_codex PRIVATE Qt6::Core project_options project_warnings)
 qt_add_executable(devhub_assistant_native_probe helpers/assistant_native_probe.cpp)
 target_link_libraries(devhub_assistant_native_probe PRIVATE devhub_assistant project_warnings)
@@ -45,6 +46,14 @@ target_compile_definitions(devhub_assistant_shutdown_driver PRIVATE
 add_dependencies(devhub_assistant_shutdown_driver devhub_fake_codex)
 
 qt_add_executable(devhub_assistant_protocol_tests assistant_protocol_test.cpp)
+qt_add_executable(devhub_assistant_compatibility_tests assistant_compatibility_test.cpp)
+target_link_libraries(devhub_assistant_compatibility_tests PRIVATE devhub_assistant Qt6::Test project_warnings)
+add_test(NAME devhub.assistant-compatibility COMMAND devhub_assistant_compatibility_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-compatibility-tests.txt,txt"
+    -o "-,txt")
+set_tests_properties(devhub.assistant-compatibility PROPERTIES TIMEOUT 45
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 target_link_libraries(devhub_assistant_protocol_tests PRIVATE devhub_assistant Qt6::Test project_warnings)
 add_test(NAME devhub.assistant-protocol COMMAND devhub_assistant_protocol_tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-protocol-tests.txt,txt")

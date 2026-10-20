@@ -1,0 +1,8 @@
+<RCC>
+  <qresource prefix="/codex-verification">
+    <file alias="probe-codex-profile.py">../tools/probe-codex-profile.py</file>
+    <file alias="verify-codex-capabilities.py">../tools/verify-codex-capabilities.py</file>
+    <file alias="verify-codex-read-tools.py">../tools/verify-codex-read-tools.py</file>
+    <file alias="codex-inventory-identity.py">../tools/codex-inventory-identity.py</file>
+  </qresource>
+</RCC>

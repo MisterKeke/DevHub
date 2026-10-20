@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 import queue
 import tempfile
-import hashlib
 
 
 def module(name, filename):
@@ -21,6 +20,7 @@ def module(name, filename):
 
 capabilities = module("capability_checks", "verify-codex-capabilities.py")
 profile = capabilities.profile_probe
+inventory_identity = module("inventory_identity", "codex-inventory-identity.py")
 
 
 class ToolProbe(profile.Probe):
@@ -47,7 +47,7 @@ class ToolProbe(profile.Probe):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", type=Path, required=True)
-    parser.add_argument("--version", choices=("0.160.1", "0.162.0-alpha.17.2"), required=True)
+    parser.add_argument("--version", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--specifications", type=Path, help="Inventory exported by assistant_native_probe --tool-specs; validates all tagged specs.")
     args = parser.parse_args()
@@ -98,7 +98,8 @@ def main():
         "fixtureScopePassed": bool(checks) and all(checks.values())}
     if args.specifications:
         evidence["toolInventory"] = [item["name"] for item in specs]
-        evidence["inventorySha256"] = hashlib.sha256(args.specifications.read_bytes()).hexdigest()
+        evidence["inventoryHashAlgorithm"] = "sha256-canonical-json-v1"
+        evidence["inventorySha256"] = inventory_identity.inventory_sha256(specs)
     args.output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(evidence, sort_keys=True))
     return int(not evidence["fixtureScopePassed"])

@@ -1,4 +1,5 @@
 #include "CodexProcess.h"
+#include "CodexSchemaInspector.h"
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>
@@ -92,6 +93,8 @@ void CodexProcess::launch(const application::assistant::CodexLaunchSpec& spec)
     const QFileInfo executable(spec.executable.path);
     const QFileInfo directory(spec.scratchDirectory);
     if (!executable.isAbsolute() || !executable.isFile()
+        || (!spec.executable.compatibility.binaryIdentity.isEmpty()
+            && !CodexSchemaInspector::matchesBinaryIdentity(spec.executable.path, spec.executable.compatibility.binaryIdentity))
         || !directory.isAbsolute() || !directory.isDir()
         || spec.environment.inheritsFromParent()) {
         reportFailure(processError(domain::errors::ErrorCode::InvalidArgument,

@@ -1,12 +1,15 @@
 #include "CodexClient.h"
 #include "CodexRuntimeProfile.h"
 #include "CodexVersionSupport.h"
+#include "CodexSchemaInspector.h"
+#include "CodexSchemaSurface.h"
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSet>
+#include <algorithm>
 #include <cmath>
 
 namespace devhub::infrastructure::codex {
@@ -33,6 +36,10 @@ QByteArray idKey(const QJsonValue& id) { return QJsonDocument(QJsonArray{id}).to
 bool stringId(const QString& id) { return !id.isEmpty() && id.size() <= 512; }
 bool terminal(CodexTurnStatus status) { return status != CodexTurnStatus::InProgress; }
 bool safeTextItem(const QString& type) { return type == "agentMessage" || type == "userMessage" || type == "reasoning" || type == "plan" || type == "contextCompaction"; }
+QString behaviorEvidenceKey(const CodexCompatibilityReport& report)
+{
+    return CodexBehaviorVerifier::evidenceIdentity(report);
+}
 }
 QString CodexClient::method(Operation operation)
 {
@@ -44,6 +51,10 @@ QString CodexClient::method(Operation operation)
     case Operation::Models: return QStringLiteral("model/list");
     case Operation::Config: return QStringLiteral("config/read");
     case Operation::Requirements: return QStringLiteral("configRequirements/read");
+    case Operation::Features: return QStringLiteral("experimentalFeature/list");
+    case Operation::Hooks: return QStringLiteral("hooks/list");
+    case Operation::Mcp: return QStringLiteral("mcpServerStatus/list");
+    case Operation::Plugins: return QStringLiteral("plugin/list");
     case Operation::ThreadStart: return QStringLiteral("thread/start");
     case Operation::ThreadResume: return QStringLiteral("thread/resume");
     case Operation::ThreadRead: return QStringLiteral("thread/read");
@@ -62,6 +73,10 @@ QString CodexClient::responseContract(Operation operation)
     case Operation::Models: return QStringLiteral("Response:ModelListResponse");
     case Operation::Config: return QStringLiteral("Response:ConfigReadResponse");
     case Operation::Requirements: return QStringLiteral("Response:ConfigRequirementsReadResponse");
+    case Operation::Features: return QStringLiteral("Response:ExperimentalFeatureListResponse");
+    case Operation::Hooks: return QStringLiteral("Response:HooksListResponse");
+    case Operation::Mcp: return QStringLiteral("Response:ListMcpServerStatusResponse");
+    case Operation::Plugins: return QStringLiteral("Response:PluginListResponse");
     case Operation::ThreadStart: return QStringLiteral("Response:ThreadStartResponse");
     case Operation::ThreadResume: return QStringLiteral("Response:ThreadResumeResponse");
     case Operation::ThreadRead: return QStringLiteral("Response:ThreadReadResponse");
@@ -74,6 +89,41 @@ CodexClient::CodexClient(ICodexTransport& transport, QObject* parent, CodexClien
     : ICodexClient(parent), m_transport(&transport), m_limits(limits)
 {
     m_clock.start(); m_deadlineTimer.setInterval(10); m_loginTimer.setSingleShot(true);
+    connect(&m_executableWatcher, &QFileSystemWatcher::fileChanged, this, [this] {
+        if (!m_active || m_compatibility.binaryIdentity.isEmpty()) return;
+        invalidateCompatibility(CodexCompatibilityReason::ExecutableChanged,
+            "The selected executable changed. Reconnect to inspect and verify its replacement.");
+    });
+    const auto configurationChanged = [this](const QString& path) {
+        if (m_active && (m_configurationPaths.contains(path) || configurationStamp() != m_configurationStamp))
+            invalidateCompatibility(CodexCompatibilityReason::ConfigurationChanged,
+                "Codex configuration changed. Reconnect to verify the effective restrictions.");
+    };
+    connect(&m_configurationWatcher, &QFileSystemWatcher::fileChanged, this, configurationChanged);
+    connect(&m_configurationWatcher, &QFileSystemWatcher::directoryChanged, this, configurationChanged);
+    connect(&m_behaviorVerifier, &CodexBehaviorVerifier::completed, this, [this](bool accepted, const QString& reason) {
+        if (m_behaviorVerificationGeneration != m_generation) return;
+        m_compatibility.verificationInProgress = false;
+        if (!m_active || !m_initialized || !m_profileVerified) return;
+        if (configurationStamp() != m_configurationStamp) {
+            invalidateCompatibility(CodexCompatibilityReason::ConfigurationChanged,
+                "Codex configuration changed during verification. Reconnect before sending."); return;
+        }
+        m_compatibility.runtimePolicyVerified = accepted;
+        m_compatibility.state = accepted ? CodexCompatibilityState::Compatible : CodexCompatibilityState::VerificationRequired;
+        m_compatibility.reason = accepted ? CodexCompatibilityReason::None : CodexCompatibilityReason::RuntimeVerificationRequired;
+        m_compatibility.explanation = reason;
+        if (accepted) m_compatibility.evidence << "fresh-isolated-behavior-v1";
+        if (accepted) {
+            if (m_sessionBehaviorEvidence.size() >= 8) m_sessionBehaviorEvidence.clear();
+            m_sessionBehaviorEvidence.insert(behaviorEvidenceKey(m_compatibility));
+            if (m_transport && m_transport->kind() == CodexTransportKind::NativeProcess
+                && !CodexBehaviorVerifier::rememberVerifiedEvidence(m_compatibility))
+                m_compatibility.explanation += " Verification passed for this session, but protected storage was unavailable.";
+        }
+        else CodexBehaviorVerifier::forgetCachedEvidence(m_compatibility);
+        emit compatibilityChanged(m_compatibility);
+    });
     connect(&m_deadlineTimer, &QTimer::timeout, this, &CodexClient::deadlines);
     connect(&m_loginTimer, &QTimer::timeout, this, [this] {
         if (!m_login) return;
@@ -85,7 +135,7 @@ CodexClient::CodexClient(ICodexTransport& transport, QObject* parent, CodexClien
         m_initializeSent = true;
         const auto sent = request(Operation::Initialize, QJsonObject{{"clientInfo", QJsonObject{
             {"name", "devhub"}, {"title", "DevHub"}, {"version", DEVHUB_VERSION}}},
-            {"capabilities", QJsonObject{{"experimentalApi", m_dynamicToolsEnabled}}}});
+            {"capabilities", QJsonObject{{"experimentalApi", m_wire.profile().experimentalApi}}}});
         if (!sent) fatal(QStringLiteral("The initialize request could not be sent."), generation);
     });
     connect(&transport, &ICodexTransport::objectReceived, this, &CodexClient::receive);
@@ -122,8 +172,8 @@ bool CodexClient::configureDynamicTools(QJsonArray specifications)
     }
     // Every admitted version has an independently pinned tagged-tool contract.
     // Validate the inventory against all supported profiles before storing it.
-    for (const auto& version : CodexVersionSupport::supportedVersions()) {
-        const CodexWireContract wire(version);
+    for (const auto& profile : CodexProtocolProfile::profiles()) {
+        const CodexWireContract wire(profile.snapshotVersion);
         if (!wire.contains(QStringLiteral("ServerRequest:item/tool/call"))
             || !wire.contains(QStringLiteral("Response:DynamicToolCallResponse"))) return false;
         for (const auto& value : specifications)
@@ -139,21 +189,59 @@ bool CodexClient::configureDynamicTools(QJsonArray specifications)
 }
 Result<void> CodexClient::launch(const CodexLaunchSpec& spec)
 {
+    const bool memory = m_transport && m_transport->kind() == CodexTransportKind::InMemoryTest;
+    auto evidence = memory ? std::optional<CodexCompatibilityReport>{} : CodexSchemaInspector::evidence(spec.executable);
+    if (!memory && !evidence && !m_active && !m_transportBusy) {
+        m_compatibility = spec.executable.compatibility;
+        m_compatibility.protocolCompatible = false; m_compatibility.runtimePolicyVerified = false;
+        m_compatibility.state = CodexCompatibilityState::VerificationRequired;
+        m_compatibility.reason = CodexCompatibilityReason::EvidenceMissing;
+        m_compatibility.explanation = "Fresh executable-specific compatibility evidence is missing or stale. Recheck the executable.";
+        emit compatibilityChanged(m_compatibility);
+        return Result<void>::failure(error(ErrorCode::StartupFailed, m_compatibility.explanation));
+    }
+    const auto adapter = memory ? (spec.executable.compatibility.protocolCompatible
+            ? spec.executable.compatibility.adapter : CodexProtocolProfile::fixture(spec.executable.version).id)
+        : evidence ? evidence->adapter : QString{};
     if (!m_transport || m_active || m_transportBusy || spec.processGeneration <= m_generation
-        || !CodexVersionSupport::isSupported(spec.executable.version) || !m_wire.setVersion(spec.executable.version)
+        || !CodexVersionSupport::isValidVersion(spec.executable.version) || !m_wire.setProfile(adapter, spec.executable.version)
         || !QFileInfo(spec.scratchDirectory).isAbsolute() || !QFileInfo(spec.scratchDirectory).isDir()
         || !CodexRuntimeProfile::acceptsEnvironment(spec.environment) || !CodexRuntimeProfile::acceptsLaunch(spec.arguments)) return Result<void>::failure(denied());
+    m_compatibility = evidence.value_or(CodexCompatibilityReport{});
+    if (memory) {
+        m_compatibility.adapter = adapter; m_compatibility.reportedVersion = spec.executable.version;
+        m_compatibility.protocolCompatible = true; m_compatibility.evidence = {"in-memory-fixture-only"};
+    }
+    m_runtimeInventoriesVerified = memory; m_inventoryReplies.clear(); m_inventoryFailure.clear(); m_mcpInventory.reset();
     m_generation = spec.processGeneration; m_active = true; m_initialized = false; m_profileVerified = false;
+    const auto oldConfigurationWatches = m_configurationWatcher.files() + m_configurationWatcher.directories();
+    if (!oldConfigurationWatches.isEmpty()) m_configurationWatcher.removePaths(oldConfigurationWatches);
+    m_configurationPaths.clear(); m_configurationStamp.clear();
+    if (!m_executableWatcher.files().isEmpty()) m_executableWatcher.removePaths(m_executableWatcher.files());
+    if (!memory && !m_executableWatcher.addPath(m_compatibility.canonicalExecutable)) {
+        m_active = false;
+        m_compatibility.reason = CodexCompatibilityReason::RuntimeVerificationRequired;
+        m_compatibility.explanation = "Changes to the selected executable could not be monitored. Reconnect to retry verification.";
+        emit compatibilityChanged(m_compatibility);
+        return Result<void>::failure(error(ErrorCode::StartupFailed, m_compatibility.explanation));
+    }
     m_transportBusy = true; m_initializeSent = false;
     m_uncertain = false; m_interruptAccepted = false; m_scratch = QFileInfo(spec.scratchDirectory).canonicalFilePath();
-    m_dynamicToolsEnabled = !m_dynamicToolSpecifications.isEmpty()
+    m_dynamicToolsEnabled = m_wire.profile().dynamicTools && !m_dynamicToolSpecifications.isEmpty()
         && !m_dynamicToolFingerprint.isEmpty();
-    m_profileFingerprint = CodexRuntimeProfile::fingerprint(spec.executable.version, spec.arguments);
+    m_profileFingerprint = CodexRuntimeProfile::fingerprint(m_wire.profile().bindingSemantics, spec.arguments);
+    QJsonObject environmentIdentity;
+    for (const auto& key : spec.environment.keys()) environmentIdentity.insert(key.toCaseFolded(), spec.environment.value(key));
+    m_environmentIdentity = CodexSchemaSurface::identity(environmentIdentity);
     m_launchArguments = spec.arguments;
     if (m_dynamicToolsEnabled) {
         const auto profileBytes = (m_profileFingerprint + QLatin1Char('|') + m_dynamicToolFingerprint).toUtf8();
         m_profileFingerprint = QString::fromLatin1(QCryptographicHash::hash(profileBytes, QCryptographicHash::Sha256).toHex());
     }
+    m_profileFingerprint.prepend("semantic-v2:");
+    m_legacyProfileFingerprints.clear();
+    for (const auto& profile : CodexProtocolProfile::profiles())
+        m_legacyProfileFingerprints << CodexRuntimeProfile::legacyFingerprint(profile.snapshotVersion, spec.arguments, m_dynamicToolFingerprint);
     m_expectedHome.clear();
     for (const auto& key : spec.environment.keys()) if (key.compare("CODEX_HOME", Qt::CaseInsensitive) == 0)
         m_expectedHome = QFileInfo(spec.environment.value(key)).canonicalFilePath();
@@ -163,14 +251,38 @@ Result<void> CodexClient::launch(const CodexLaunchSpec& spec)
     m_items.clear(); m_itemOrder.clear(); m_earlyTurns.clear(); m_earlyLogins.clear(); m_earlyBytes = 0; m_earlyLoginBytes = 0; m_serverRequests.clear(); m_resolvedServerRequests.clear();
     m_config.reset(); m_requirements.reset(); ++m_accountEpoch;
     m_accountDeferred.clear(); m_accountDeferredBytes = 0; m_accountRefreshPending = false;
+    emit compatibilityChanged(m_compatibility);
     m_deadlineTimer.start(); m_transport->launch(spec);
     return Result<void>::success();
 }
 void CodexClient::stop()
 {
+    m_behaviorVerifier.cancel();
     const auto generation = m_generation;
     if (m_active) disconnectClient(error(ErrorCode::OperationCancelled, QStringLiteral("The Codex connection is stopping.")));
     if (m_transport && m_transportBusy && m_generation == generation) m_transport->stop();
+}
+bool CodexClient::verifyCompatibility()
+{
+    if (!m_active || !m_initialized || !m_profileVerified || m_behaviorVerifier.active() || !m_transport
+        || m_transport->kind() != CodexTransportKind::NativeProcess || !m_turnId.isEmpty()
+        || !m_pending.isEmpty() || m_login || m_accountRefreshPending) return false;
+    m_sessionBehaviorEvidence.remove(behaviorEvidenceKey(m_compatibility));
+    CodexBehaviorVerifier::forgetCachedEvidence(m_compatibility);
+    m_compatibility.runtimePolicyVerified = false;
+    m_behaviorVerificationGeneration = m_generation;
+    m_compatibility.state = CodexCompatibilityState::VerificationRequired;
+    m_compatibility.reason = CodexCompatibilityReason::RuntimeVerificationRequired;
+    m_compatibility.verificationInProgress = true;
+    m_compatibility.explanation = "Verifying restrictions with isolated synthetic local checks…";
+    emit compatibilityChanged(m_compatibility);
+    const bool started = m_behaviorVerifier.start(m_compatibility, m_dynamicToolSpecifications);
+    if (!started) {
+        m_compatibility.verificationInProgress = false;
+        m_compatibility.explanation = "Offline verification requires native Python 3 on PATH and an unchanged inspected executable.";
+        emit compatibilityChanged(m_compatibility);
+    }
+    return started;
 }
 bool CodexClient::hasPending(Operation operation) const
 {
@@ -181,6 +293,10 @@ Result<qint64> CodexClient::request(Operation operation, QJsonValue params, QStr
 {
     if (!m_active || !m_transport || (operation != Operation::Initialize && !m_initialized)
         || hasPending(operation) || m_pending.size() >= m_limits.pendingRequests || m_nextId > 9007199254740991LL)
+        return Result<qint64>::failure(denied());
+    const bool scopedOperation = operation == Operation::ThreadStart || operation == Operation::ThreadResume
+        || operation == Operation::ThreadRead || operation == Operation::TurnStart;
+    if (scopedOperation && m_transport->kind() != CodexTransportKind::InMemoryTest && !liveInferenceGateOpen(true))
         return Result<qint64>::failure(denied());
     const qint64 id = m_nextId++;
     const auto name = method(operation);
@@ -203,7 +319,7 @@ Result<qint64> CodexClient::readAccount(bool refreshToken)
 }
 Result<qint64> CodexClient::startLogin(CodexLoginMode mode)
 {
-    if (m_login || hasPending(Operation::LoginStart) || hasPending(Operation::LoginCancel) || !m_turnId.isEmpty()
+    if (m_behaviorVerifier.active() || m_login || hasPending(Operation::LoginStart) || hasPending(Operation::LoginCancel) || !m_turnId.isEmpty()
         || hasPending(Operation::TurnStart) || hasPending(Operation::ThreadStart) || hasPending(Operation::ThreadResume)) return Result<qint64>::failure(denied());
     m_earlyLogins.clear(); m_earlyLoginBytes = 0;
     const QString type = mode == CodexLoginMode::Browser ? QStringLiteral("chatgpt") : QStringLiteral("chatgptDeviceCode");
@@ -226,13 +342,25 @@ Result<qint64> CodexClient::listModels(const QString& cursor)
 }
 Result<void> CodexClient::verifyRuntime()
 {
-    if (!m_initialized || hasPending(Operation::Config) || hasPending(Operation::Requirements) || !m_turnId.isEmpty()
+    if (!m_initialized || m_behaviorVerifier.active() || hasPending(Operation::Config) || hasPending(Operation::Requirements) || !m_turnId.isEmpty()
         || hasPending(Operation::TurnStart) || hasPending(Operation::ThreadStart) || hasPending(Operation::ThreadResume)) return Result<void>::failure(denied());
-    m_profileVerified = false; m_config.reset(); m_requirements.reset();
+    m_profileVerified = false; m_config.reset(); m_requirements.reset(); m_mcpInventory.reset();
+    m_compatibility.runtimePolicyVerified = false;
+    m_compatibility.state = CodexCompatibilityState::VerificationRequired;
+    if (m_transport->kind() != CodexTransportKind::InMemoryTest) {
+        m_runtimeInventoriesVerified = false; m_inventoryReplies.clear(); m_inventoryFailure.clear();
+    }
     const auto config = request(Operation::Config, QJsonObject{{"includeLayers", true}, {"cwd", m_scratch}});
     if (!config) return Result<void>::failure(config.error());
     const auto requirements = request(Operation::Requirements, QJsonValue(QJsonValue::Null));
     if (!requirements) return Result<void>::failure(requirements.error());
+    if (m_transport->kind() != CodexTransportKind::InMemoryTest) {
+        const auto features = request(Operation::Features, QJsonObject{{"limit", 200}});
+        const auto hooks = request(Operation::Hooks, QJsonObject{{"cwds", QJsonArray{m_scratch}}});
+        const auto mcp = request(Operation::Mcp, QJsonObject{{"limit", 100}});
+        const auto plugins = request(Operation::Plugins, QJsonObject{{"cwds", QJsonArray{m_scratch}}});
+        if (!features || !hooks || !mcp || !plugins) return Result<void>::failure(denied());
+    }
     return Result<void>::success();
 }
 bool CodexClient::bindingMatches(const CodexThreadBinding& binding) const
@@ -242,7 +370,8 @@ bool CodexClient::bindingMatches(const CodexThreadBinding& binding) const
         && m_account.requiresOpenaiAuth && !m_account.identityFingerprint.isEmpty()
         && binding.accountFingerprint == m_account.identityFingerprint
         && (binding.codexHome == m_initializeInfo.codexHome || (!binding.codexHomeKey.isEmpty() && binding.codexHomeKey == homeKey))
-        && binding.scratchDirectory == m_scratch && binding.profileFingerprint == m_profileFingerprint;
+        && binding.scratchDirectory == m_scratch
+        && (binding.profileFingerprint == m_profileFingerprint || m_legacyProfileFingerprints.contains(binding.profileFingerprint));
 }
 Result<qint64> CodexClient::startThread(const QString& model)
 {
@@ -267,7 +396,7 @@ Result<qint64> CodexClient::resumeThread(const CodexThreadBinding& binding)
     // through one beyond our cap so truncated history cannot appear complete.
     QJsonObject params{{"threadId", binding.threadId}, {"cwd", m_scratch},
         {"sandbox", "read-only"}, {"approvalPolicy", "on-request"}, {"runtimeWorkspaceRoots", QJsonArray{}}};
-    if (m_wire.version() == QStringLiteral("0.162.0-alpha.17.2"))
+    if (m_wire.profile().initialTurnsPage)
         params.insert("initialTurnsPage", QJsonObject{{"itemsView", "full"}, {"limit", m_limits.historyTurns + 1}, {"sortDirection", "asc"}});
     return request(Operation::ThreadResume, params, binding.threadId);
 }
@@ -294,9 +423,15 @@ bool CodexClient::canStartConversation() const
         && !m_login && !hasPending(Operation::LoginStart) && m_transport
         && (m_transport->kind() == CodexTransportKind::InMemoryTest || liveInferenceGateOpen());
 }
-bool CodexClient::liveInferenceGateOpen() const
+bool CodexClient::liveInferenceGateOpen(bool revalidateFiles) const
 {
-    return CodexRuntimeProfile::productionChatEnabled(m_wire.version()) || m_developmentLiveValidationAuthorized;
+    return (CodexRuntimeProfile::productionChatEnabled(m_compatibility) || m_developmentLiveValidationAuthorized)
+        && !m_compatibility.binaryIdentity.isEmpty()
+        // View refreshes use verified state and watcher-driven revocation.
+        // Every native chat/history request and tool admission rechecks metadata
+        // before acting, including changes whose watcher event is still queued.
+        && (!revalidateFiles || (configurationStamp() == m_configurationStamp
+            && CodexSchemaInspector::matchesBinaryIdentity(m_compatibility.canonicalExecutable, m_compatibility.binaryIdentity)));
 }
 Result<qint64> CodexClient::startTurn(const QString& text)
 {
@@ -457,6 +592,24 @@ bool CodexClient::decodeResult(qint64, const Pending& pending, const QJsonObject
     }
     case Operation::Config: m_config = result; finishProfileCheck(); return true;
     case Operation::Requirements: m_requirements = result; finishProfileCheck(); return true;
+    case Operation::Features:
+    case Operation::Hooks:
+    case Operation::Mcp:
+    case Operation::Plugins: {
+        // MCP entries need the effective config to distinguish disabled entries
+        // from active servers. Replies can arrive in either order.
+        if (pending.operation == Operation::Mcp) m_mcpInventory = result;
+        const auto reasons = pending.operation == Operation::Mcp ? QStringList{}
+            : CodexRuntimeProfile::inventoryRejectionReasons(method(pending.operation), result);
+        if (!reasons.isEmpty()) {
+            auto failures = m_inventoryFailure.split(';', Qt::SkipEmptyParts);
+            failures.append(reasons); failures.removeDuplicates();
+            m_inventoryFailure = failures.join(';');
+        }
+        m_inventoryReplies.insert(method(pending.operation));
+        m_runtimeInventoriesVerified = m_inventoryReplies.size() == 4 && m_inventoryFailure.isEmpty();
+        finishProfileCheck(); return true;
+    }
     case Operation::ThreadStart:
     case Operation::ThreadResume:
     case Operation::ThreadRead: {
@@ -464,7 +617,7 @@ bool CodexClient::decodeResult(qint64, const Pending& pending, const QJsonObject
         CodexThread thread;
         auto threadValue = result.value("thread").toObject();
         const bool paginatedResume = pending.operation == Operation::ThreadResume
-            && m_wire.version() == QStringLiteral("0.162.0-alpha.17.2")
+            && m_wire.profile().initialTurnsPage
             && (threadValue.value("historyMode") == "paginated" || result.value("initialTurnsPage").isObject());
         if (paginatedResume) {
             if (threadValue.value("historyMode") != "legacy" && threadValue.value("historyMode") != "paginated") return false;
@@ -476,7 +629,8 @@ bool CodexClient::decodeResult(qint64, const Pending& pending, const QJsonObject
             threadValue.insert("turns", page.toObject().value("data"));
             threadValue.insert("historyMode", "legacy");
         }
-        if (!decodeThread(threadValue, thread, pending.operation != Operation::ThreadStart, paginatedResume)) return false;
+        if (!decodeThread(threadValue, thread, pending.operation != Operation::ThreadStart,
+                paginatedResume && m_wire.profile().scratchEnvironmentOnResume)) return false;
         if (!pending.expectedThread.isEmpty() && thread.binding.threadId != pending.expectedThread) return false;
         if (pending.operation != Operation::ThreadRead) {
             if (!matchesScratchDirectory(result.value("cwd").toString()) || result.value("modelProvider") != "openai"
@@ -516,18 +670,96 @@ bool CodexClient::decodeResult(qint64, const Pending& pending, const QJsonObject
 void CodexClient::finishProfileCheck()
 {
     if (!m_config || !m_requirements) return;
-    const auto reasons = CodexRuntimeProfile::rejectionReasons(*m_config, *m_requirements);
+    auto reasons = CodexRuntimeProfile::rejectionReasons(*m_config, *m_requirements);
+    // Config conflicts (including the bounded inherited-MCP relaunch) are
+    // actionable immediately. Success waits for all inventories as well.
+    if (reasons.isEmpty() && !m_runtimeInventoriesVerified && m_inventoryReplies.size() < 4) return;
+    if (!m_inventoryFailure.isEmpty()) reasons << m_inventoryFailure.split(';', Qt::SkipEmptyParts);
+    if (m_mcpInventory) reasons << CodexRuntimeProfile::inventoryRejectionReasons("mcpServerStatus/list", *m_mcpInventory, *m_config);
     QStringList restrictedArguments;
     // Discover names through the supported RPC, never by reading config/auth
     // files. Do not create a thread until the relaunched effective config passes.
-    if (reasons == QStringList{QStringLiteral("inherited-mcp-enabled")}) {
+    const bool onlyInheritedMcp = reasons.contains("inherited-mcp-enabled")
+        && std::all_of(reasons.cbegin(), reasons.cend(), [](const QString& reason) {
+            return reason == "inherited-mcp-enabled" || reason == "inherited-mcp-active";
+        });
+    if (onlyInheritedMcp) {
         const auto servers = m_config->value("config").toObject().value("mcp_servers").toObject();
         const auto arguments = CodexRuntimeProfile::launchArguments(servers.keys());
         if (arguments && arguments.value() != m_launchArguments) restrictedArguments = arguments.value();
     }
-    m_config.reset(); m_requirements.reset(); m_profileVerified = reasons.isEmpty();
+    const auto configurationIdentity = CodexSchemaSurface::identity(QJsonObject{{"config", *m_config}, {"requirements", *m_requirements},
+        {"processEnvironment", m_environmentIdentity}});
+    m_compatibility.configurationIdentity = configurationIdentity;
+    m_compatibility.policyIdentity = m_profileFingerprint;
+    if (reasons.isEmpty() && m_transport->kind() != CodexTransportKind::InMemoryTest && !watchConfiguration(*m_config))
+        reasons << "configuration-watch-unavailable";
+    m_config.reset(); m_requirements.reset(); m_profileVerified = reasons.isEmpty() && m_runtimeInventoriesVerified;
+    if (!m_profileVerified) {
+        m_sessionBehaviorEvidence.clear();
+        CodexBehaviorVerifier::forgetCachedEvidence(m_compatibility);
+    }
+    // Historical fixtures did not bind their verdicts to a binary digest. They
+    // define our verification cases but cannot authorize an installed binary.
+    const bool restored = m_profileVerified && m_transport->kind() == CodexTransportKind::NativeProcess
+        && CodexBehaviorVerifier::cachedEvidenceMatches(m_compatibility);
+    const bool behavioral = restored || m_sessionBehaviorEvidence.contains(behaviorEvidenceKey(m_compatibility));
+    m_compatibility.runtimePolicyVerified = m_profileVerified && behavioral;
+    m_compatibility.state = !reasons.isEmpty() ? CodexCompatibilityState::Incompatible
+        : behavioral ? CodexCompatibilityState::Compatible : CodexCompatibilityState::VerificationRequired;
+    m_compatibility.reason = !reasons.isEmpty() ? CodexCompatibilityReason::RuntimeRestrictionFailed
+        : behavioral ? CodexCompatibilityReason::None : CodexCompatibilityReason::RuntimeVerificationRequired;
+    m_compatibility.explanation = !reasons.isEmpty() ? QStringLiteral("Runtime restrictions failed: %1.").arg(reasons.join("; "))
+        : behavioral ? QStringLiteral("Protocol and effective runtime restrictions are verified for this profile.")
+        : QStringLiteral("Protocol compatible; this release needs behavioral verification of disabled native tools before sending.");
+    if (m_compatibility.runtimePolicyVerified) m_compatibility.evidence << "session-behavior-evidence-match";
+    if (restored) m_compatibility.evidence << "protected-behavior-cache-match-v1";
+    emit compatibilityChanged(m_compatibility);
     emit profileChecked(m_profileVerified, reasons);
     if (!restrictedArguments.isEmpty()) emit restrictedLaunchRequired(restrictedArguments, m_generation);
+}
+QString CodexClient::configurationStamp() const
+{
+    QJsonObject values;
+    // Observe metadata only. Authentication/configuration contents remain owned
+    // by Codex and are obtained only through the validated config/read RPC.
+    for (const auto& path : m_configurationPaths) {
+        const QFileInfo info(path);
+        values.insert(path, QJsonArray{info.exists(), info.size(), info.lastModified().toMSecsSinceEpoch(), info.canonicalFilePath()});
+    }
+    return CodexSchemaSurface::identity(values);
+}
+bool CodexClient::watchConfiguration(const QJsonObject& configResult)
+{
+    m_configurationPaths = {QDir(m_initializeInfo.codexHome).filePath("config.toml"),
+        QDir(m_initializeInfo.codexHome).filePath("requirements.toml"), QDir(m_scratch).filePath(".codex/config.toml")};
+    for (const auto& value : configResult.value("layers").toArray()) {
+        const auto source = value.toObject().value("name").toObject();
+        auto path = source.value("file").toString();
+        if (source.value("type") == "project") path = QDir(source.value("dotCodexFolder").toString()).filePath("config.toml");
+        if (QFileInfo(path).isAbsolute() && path.size() <= 4096) m_configurationPaths.insert(QDir::cleanPath(path));
+    }
+    QSet<QString> watches;
+    for (const auto& path : m_configurationPaths) {
+        if (QFileInfo::exists(path)) watches.insert(path);
+        auto parent = QFileInfo(path).absoluteDir();
+        while (!parent.exists() && parent.cdUp()) {}
+        if (parent.exists()) watches.insert(parent.absolutePath());
+    }
+    const auto oldWatches = m_configurationWatcher.files() + m_configurationWatcher.directories();
+    if (!oldWatches.isEmpty()) m_configurationWatcher.removePaths(oldWatches);
+    m_configurationStamp = configurationStamp();
+    return m_configurationWatcher.addPaths(watches.values()).isEmpty();
+}
+void CodexClient::invalidateCompatibility(CodexCompatibilityReason reason, const QString& explanation)
+{
+    CodexBehaviorVerifier::forgetCachedEvidence(m_compatibility);
+    auto report = m_compatibility; m_sessionBehaviorEvidence.clear(); stop();
+    report.runtimePolicyVerified = false; report.verificationInProgress = false;
+    report.state = reason == CodexCompatibilityReason::ExecutableChanged
+        ? CodexCompatibilityState::Incompatible : CodexCompatibilityState::VerificationRequired;
+    report.reason = reason; report.explanation = explanation;
+    m_compatibility = report; emit compatibilityChanged(m_compatibility);
 }
 bool CodexClient::decodeItem(const QJsonObject& value, const QString& threadId, const QString& turnId, CodexItem& item) const
 {
@@ -559,10 +791,10 @@ bool CodexClient::decodeTurn(const QJsonObject& value, const QString& threadId, 
     // Alpha starts omit items; successful completion includes only the final
     // agent message. Merge that summary into the retained item stream. Stored
     // history still requires full items.
-    const bool unloadedLive = live && m_wire.version() == QStringLiteral("0.162.0-alpha.17.2")
+    const bool unloadedLive = live && m_wire.profile().summarizedLiveItems
         && view == "notLoaded" && value.value("items").isArray() && value.value("items").toArray().isEmpty();
     const auto items = value.value("items").toArray();
-    const bool summaryLive = live && m_wire.version() == QStringLiteral("0.162.0-alpha.17.2")
+    const bool summaryLive = live && m_wire.profile().summarizedLiveItems
         && view == "summary" && value.value("status") == "completed"
         && items.size() == 1 && items.first().toObject().value("type") == "agentMessage";
     if (!stringId(turn.id) || (view != "full" && !unloadedLive && !summaryLive)) return false;
@@ -766,6 +998,7 @@ void CodexClient::serverRequest(const QJsonObject& object)
             return;
         }
         if (!m_dynamicToolsEnabled || !m_initialized || !m_profileVerified || !bindingMatches(m_thread)
+            || (m_transport->kind() != CodexTransportKind::InMemoryTest && !liveInferenceGateOpen(true))
             || m_turnId.isEmpty() || params.value(QStringLiteral("threadId")).toString() != m_thread.threadId
             || params.value(QStringLiteral("turnId")).toString() != m_turnId
             || params.value(QStringLiteral("callId")).toString().isEmpty()
@@ -790,7 +1023,8 @@ bool CodexClient::resolveDynamicToolCall(const QJsonValue& requestId, const QJso
     const QByteArray key = idKey(requestId);
     if (!m_serverRequests.contains(key) || m_resolvedServerRequests.contains(key)) return false;
     if (!m_wire.accepts(QStringLiteral("Response:DynamicToolCallResponse"), response)) return false;
-    const auto scopedResponse = !m_accountRefreshPending && !bindingMatches(m_thread)
+    const auto scopedResponse = !m_accountRefreshPending && (!bindingMatches(m_thread)
+        || (m_transport->kind() != CodexTransportKind::InMemoryTest && !liveInferenceGateOpen(true)))
         ? dynamicToolFailure(QStringLiteral("scope_denied")) : response;
     const QJsonObject envelope{{QStringLiteral("id"), requestId}, {QStringLiteral("result"), scopedResponse}};
     if (m_accountRefreshPending) {
@@ -827,12 +1061,21 @@ void CodexClient::expireAccount()
 void CodexClient::failPending(qint64 id, const Pending& pending, AppError failure, bool uncertain)
 {
     if (pending.generation != m_generation) { emit requestFailed(id, method(pending.operation), failure); return; }
-    const bool profileFailure = pending.operation == Operation::Config || pending.operation == Operation::Requirements;
+    const bool profileFailure = pending.operation == Operation::Config || pending.operation == Operation::Requirements
+        || pending.operation == Operation::Features || pending.operation == Operation::Hooks
+        || pending.operation == Operation::Mcp || pending.operation == Operation::Plugins;
     const bool loginFailure = pending.operation == Operation::LoginStart;
     const bool accountFailure = pending.operation == Operation::Account && pending.accountEpoch == m_accountEpoch && m_account.mode != CodexAccountMode::Expired;
     const bool refreshFailure = accountFailure && m_accountRefreshPending;
     if (profileFailure) {
+        CodexBehaviorVerifier::forgetCachedEvidence(m_compatibility);
         m_profileVerified = false; m_config.reset(); m_requirements.reset();
+        m_sessionBehaviorEvidence.clear();
+        m_compatibility.runtimePolicyVerified = false;
+        m_compatibility.state = CodexCompatibilityState::VerificationRequired;
+        m_compatibility.reason = CodexCompatibilityReason::RuntimeVerificationRequired;
+        m_compatibility.explanation = "A required runtime restriction check did not complete. Reconnect to retry.";
+        emit compatibilityChanged(m_compatibility);
     }
     if (loginFailure) { m_loginTimer.stop(); m_login.reset(); m_earlyLogins.clear(); m_earlyLoginBytes = 0; }
     if (accountFailure) m_account = {};
@@ -851,6 +1094,11 @@ void CodexClient::disconnectClient(AppError failure)
 {
     const auto generation = m_generation;
     m_active = false; m_initialized = false; m_profileVerified = false;
+    m_behaviorVerifier.cancel();
+    m_compatibility.runtimePolicyVerified = false;
+    m_compatibility.state = CodexCompatibilityState::VerificationRequired;
+    m_compatibility.reason = CodexCompatibilityReason::EvidenceMissing;
+    m_compatibility.explanation = "Reconnect to revalidate runtime restrictions.";
     m_developmentLiveValidationAuthorized = false; m_deadlineTimer.stop();
     const auto pending = std::exchange(m_pending, {});
     m_config.reset(); m_requirements.reset(); m_earlyTurns.clear(); m_earlyBytes = 0;
@@ -864,7 +1112,7 @@ void CodexClient::disconnectClient(AppError failure)
         m_lastTurnId = m_turnId; m_turnId.clear(); m_interruptAccepted = false;
     }
     // Complete all state changes before callbacks can reconnect this client.
-    emit loginCleared(); emit accountChanged(CodexAccount{});
+    emit compatibilityChanged(m_compatibility); emit loginCleared(); emit accountChanged(CodexAccount{});
     for (auto it = pending.begin(); it != pending.end(); ++it) emit requestFailed(it.key(), method(it->operation), failure);
     if (interrupted) emit turnFinished(*interrupted);
     emit connectionClosed(generation);

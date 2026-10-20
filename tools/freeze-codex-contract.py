@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from pathlib import PurePosixPath
 
 
 CLIENT_METHODS = (
@@ -68,9 +69,106 @@ def references(value):
             yield from references(child)
 
 
+def normalize_bundle(schemas):
+    """Normalize local $defs and file references; never fetch external schemas.
+
+    Named definitions retain their old names when unambiguous, preserving the
+    existing fixture format. Conflicting definitions and unsupported references
+    fail explicitly rather than feeding new constructs to the limited validator.
+    """
+    definitions = {}
+    active = set()
+    budget = 200000
+
+    def pointer(filename, fragment):
+        value = schemas[filename]
+        if fragment and not fragment.startswith("/"):
+            raise ValueError("Schema anchors are unsupported: " + fragment)
+        for part in fragment.split("/")[1:]:
+            value = value[part.replace("~1", "/").replace("~0", "~")]
+        return value
+
+    def normalize(value, filename, depth=0):
+        nonlocal budget
+        budget -= 1
+        if budget < 0 or depth > 96:
+            raise ValueError("Schema normalization limit exceeded")
+        if isinstance(value, list):
+            return [normalize(child, filename, depth + 1) for child in value]
+        if not isinstance(value, dict):
+            return value
+        result = {}
+        for key, child in value.items():
+            if key in ("definitions", "$defs"):
+                continue
+            if key in ("description", "title", "$schema", "$id", "default", "examples"):
+                if key in ("default", "examples"):
+                    result[key] = child
+                continue
+            if key == "$ref":
+                if not isinstance(child, str) or ":" in child or "\\" in child:
+                    raise ValueError("External or invalid reference: " + str(child))
+                relative, separator, fragment = child.partition("#")
+                target = str(PurePosixPath(filename).parent / relative) if relative else filename
+                # Resolve . and .. without touching the filesystem.
+                parts = []
+                for part in target.split("/"):
+                    if part in ("", "."):
+                        continue
+                    if part == "..":
+                        if not parts:
+                            raise ValueError("Reference escapes schema bundle")
+                        parts.pop()
+                    else:
+                        parts.append(part)
+                target = "/".join(parts)
+                if child.startswith("/") or target not in schemas:
+                    raise ValueError("Missing local schema reference: " + child)
+                if fragment.startswith(("/definitions/", "/$defs/")) and fragment.count("/") == 2:
+                    name = fragment.rsplit("/", 1)[-1].replace("~1", "/").replace("~0", "~")
+                elif not fragment:
+                    name = PurePosixPath(target).stem
+                else:
+                    raise ValueError("Unsupported reference target: " + child)
+                if "/" in name or "~" in name:
+                    raise ValueError("Unsupported definition name: " + name)
+                identity = (target, fragment)
+                if identity not in active:
+                    active.add(identity)
+                    definition = normalize(pointer(target, fragment), target, depth + 1)
+                    active.remove(identity)
+                    if name in definitions and definitions[name] != definition:
+                        raise ValueError("Conflicting schema definition: " + name)
+                    definitions[name] = definition
+                result["$ref"] = "#/definitions/" + name
+            elif key == "properties":
+                result[key] = {name: normalize(shape, filename, depth + 1) for name, shape in child.items()}
+            elif key in ("enum", "const"):
+                if key == "const":
+                    result["enum"] = [child]
+                else:
+                    result[key] = child
+            else:
+                result[key] = normalize(child, filename, depth + 1)
+        return result
+
+    normalized = {filename: normalize(schema, filename) for filename, schema in schemas.items()}
+    # Aggregate layouts can name roots within $defs/definitions.
+    for filename, schema in schemas.items():
+        for container in ("definitions", "$defs"):
+            for name, shape in schema.get(container, {}).items():
+                exported = name + ".json"
+                if exported not in normalized and name in (*RESPONSE_NAMES, "RequestId", "JSONRPCResponse", "JSONRPCError",
+                                                          "ClientRequest", "ServerRequest", "ServerNotification", "ClientNotification"):
+                    normalized[exported] = normalize(shape, filename)
+    return {filename: {**schema, "definitions": definitions} for filename, schema in normalized.items()}
+
+
 def snapshot(root, version):
     schemas = {path.relative_to(root).as_posix(): json.loads(path.read_text(encoding="utf-8"))
                for path in sorted(root.rglob("*.json"))}
+    hashes = {path: hashlib.sha256(canonical(schema)).hexdigest() for path, schema in schemas.items()}
+    schemas = normalize_bundle(schemas)
     selected = {}
     needed_definitions = {}
 
@@ -95,7 +193,9 @@ def snapshot(root, version):
                               ("ServerRequest.json", None),
                               ("ClientNotification.json", ("initialized",))):
         schema = schemas[filename]
-        for variant in schema["oneOf"]:
+        for variant in schema.get("oneOf", schema.get("anyOf", [])):
+            if "$ref" in variant:
+                variant = schema["definitions"][variant["$ref"].removeprefix("#/definitions/")]
             method = variant["properties"]["method"]["enum"][0]
             if methods is None or method in methods:
                 add(filename.removesuffix(".json") + ":" + method,
@@ -111,9 +211,7 @@ def snapshot(root, version):
             schema.get("definitions", {}))
 
     return {"format": 1, "codexVersion": version, "definitions": needed_definitions,
-            "contracts": selected}, {
-                path: hashlib.sha256(canonical(schema)).hexdigest()
-                for path, schema in schemas.items()}
+            "contracts": selected}, hashes
 
 
 def main():

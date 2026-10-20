@@ -1,12 +1,15 @@
 #include "CodexVersionSupport.h"
+#include "CodexProtocolProfile.h"
 
 #include <QRegularExpression>
 
 namespace devhub::infrastructure::codex {
 
-QStringList CodexVersionSupport::supportedVersions()
+QStringList CodexVersionSupport::fixtureVersions()
 {
-    return {QStringLiteral("0.160.1"), QStringLiteral("0.162.0-alpha.17.2")};
+    QStringList versions;
+    for (const auto& profile : CodexProtocolProfile::profiles()) versions << profile.snapshotVersion;
+    return versions;
 }
 
 bool CodexVersionSupport::isValidVersion(const QString& version)
@@ -29,17 +32,6 @@ std::optional<QString> CodexVersionSupport::parseVersionResponse(const QString& 
     const auto match = output.match(response);
     if (!match.hasMatch() || !isValidVersion(match.captured(1))) return std::nullopt;
     return match.captured(1);
-}
-
-bool CodexVersionSupport::isSupported(const QString& version)
-{
-    return isValidVersion(version) && supportedVersions().contains(version);
-}
-
-QString CodexVersionSupport::unsupportedMessage(const QString& detectedVersion)
-{
-    return QStringLiteral("Codex version %1 has not been tested by DevHub. Supported versions: %2.")
-        .arg(detectedVersion, supportedVersions().join(QStringLiteral(", ")));
 }
 
 } // namespace devhub::infrastructure::codex

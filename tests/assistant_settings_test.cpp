@@ -121,6 +121,18 @@ private slots:
         QVERIFY(panel.findChild<QLabel*>("assistantProbeStatus")->text().contains("0.160.1"));
         QCOMPARE(h.transport.sent.size(), 0); QCOMPARE(h.controller.configuration().executablePath, QString{});
     }
+    void statusRefreshPreservesModelCatalogAndDraftSelection() {
+        Harness h; QVERIFY(h.readyController()); SetupProbe probe;
+        AssistantSettingsPanel panel(h.controller, probe, {});
+        auto* model = panel.modelControl();
+        const auto index = model->findData("fixture-model"); QVERIFY(index >= 0);
+        model->setCurrentIndex(index);
+        QSignalSpy removed(model->model(), &QAbstractItemModel::rowsRemoved);
+        QSignalSpy inserted(model->model(), &QAbstractItemModel::rowsInserted);
+        for (int i = 0; i < 20; ++i) emit h.controller.stateChanged();
+        QCOMPARE(removed.size(), 0); QCOMPARE(inserted.size(), 0);
+        QCOMPARE(model->currentData().toString(), QString("fixture-model"));
+    }
     void invalidStoredOverrideDoesNotBecomePathDiscovery() {
         SettingsRepository repository; repository.values.insert("assistant/executable", "C:/codex.cmd");
         SettingsService settings(repository); QVERIFY(!settings.value("assistant/executable").toString().isEmpty());

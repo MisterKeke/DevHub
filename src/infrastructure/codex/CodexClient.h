@@ -2,7 +2,9 @@
 #include "application/assistant/ICodexTransport.h"
 #include "application/assistant/ICodexClient.h"
 #include "CodexWireContract.h"
+#include "CodexBehaviorVerifier.h"
 #include <QElapsedTimer>
+#include <QFileSystemWatcher>
 #include <QHash>
 #include <QPointer>
 #include <QSet>
@@ -29,6 +31,9 @@ public:
     [[nodiscard]] shared::common::Result<qint64> interruptTurn() override;
     [[nodiscard]] bool isInitialized() const override { return m_initialized; }
     [[nodiscard]] bool profileVerified() const override { return m_profileVerified; }
+    [[nodiscard]] application::assistant::CodexCompatibilityReport compatibilityReport() const override { return m_compatibility; }
+    bool verifyCompatibility() override;
+    void cancelCompatibilityVerification() override { m_behaviorVerifier.cancel(); }
     [[nodiscard]] bool canSend() const override;
     [[nodiscard]] bool canStartConversation() const override;
     [[nodiscard]] int pendingRequestCount() const { return static_cast<int>(m_pending.size()); }
@@ -42,7 +47,7 @@ public:
     [[nodiscard]] bool configureDynamicTools(QJsonArray specifications) override;
     [[nodiscard]] bool resolveDynamicToolCall(const QJsonValue& requestId, const QJsonObject& response) override;
 private:
-    enum class Operation { Initialize, Account, LoginStart, LoginCancel, Models, Config, Requirements,
+    enum class Operation { Initialize, Account, LoginStart, LoginCancel, Models, Config, Requirements, Features, Hooks, Mcp, Plugins,
         ThreadStart, ThreadResume, ThreadRead, TurnStart, TurnInterrupt };
     struct Pending {
         Operation operation;
@@ -57,7 +62,7 @@ private:
     [[nodiscard]] bool hasPending(Operation operation) const;
     [[nodiscard]] bool bindingMatches(const application::assistant::CodexThreadBinding& binding) const;
     [[nodiscard]] bool matchesScratchDirectory(const QString& path) const;
-    [[nodiscard]] bool liveInferenceGateOpen() const;
+    [[nodiscard]] bool liveInferenceGateOpen(bool revalidateFiles = false) const;
     void receive(const QJsonObject& object, quint64 generation);
     [[nodiscard]] bool scopeMessage(const QJsonObject& object) const;
     void response(const QJsonObject& object);
@@ -81,11 +86,21 @@ private:
     void loginCompleted(const QJsonObject& params);
     void expireAccount();
     void finishProfileCheck();
+    bool watchConfiguration(const QJsonObject& configResult);
+    [[nodiscard]] QString configurationStamp() const;
+    void invalidateCompatibility(application::assistant::CodexCompatibilityReason reason, const QString& explanation);
     static QString method(Operation operation);
     static QString responseContract(Operation operation);
     QPointer<application::assistant::ICodexTransport> m_transport;
     application::assistant::CodexClientLimits m_limits;
     CodexWireContract m_wire;
+    CodexBehaviorVerifier m_behaviorVerifier;
+    QFileSystemWatcher m_executableWatcher;
+    QFileSystemWatcher m_configurationWatcher;
+    QSet<QString> m_configurationPaths;
+    QString m_configurationStamp;
+    QSet<QString> m_sessionBehaviorEvidence;
+    quint64 m_behaviorVerificationGeneration = 0;
     QHash<qint64, Pending> m_pending;
     QHash<QByteArray, QByteArray> m_serverRequests;
     QSet<QByteArray> m_resolvedServerRequests;
@@ -121,8 +136,15 @@ private:
     QString m_scratch;
     QString m_expectedHome;
     QString m_profileFingerprint;
+    QString m_environmentIdentity;
+    QStringList m_legacyProfileFingerprints;
     QStringList m_launchArguments;
     application::assistant::CodexInitializeInfo m_initializeInfo;
+    application::assistant::CodexCompatibilityReport m_compatibility;
+    bool m_runtimeInventoriesVerified = false;
+    QSet<QString> m_inventoryReplies;
+    QString m_inventoryFailure;
+    std::optional<QJsonObject> m_mcpInventory;
     application::assistant::CodexAccount m_account;
     application::assistant::CodexThreadBinding m_thread;
     QString m_turnId;

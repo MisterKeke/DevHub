@@ -43,6 +43,7 @@ namespace devhub::presentation::authentication {
 class UnlockWidget;
 }
 namespace devhub::presentation::workspaces { class WorkspaceListModel; }
+namespace devhub::presentation::widgets { class CurrentPageStack; }
 namespace devhub::presentation::notes { class NotesPage; }
 namespace devhub::presentation::assistant { class AssistantPage; }
 namespace devhub::application::assistant { class AssistantController; class ICodexExecutableProbe; }
@@ -145,7 +146,7 @@ private:
 
     QLabel* m_workspaceTitle = nullptr;
     QLabel* m_workspacePath = nullptr;
-    QStackedWidget* m_pageHost = nullptr;
+    devhub::presentation::widgets::CurrentPageStack* m_pageHost = nullptr;
     QToolButton* m_terminalButton = nullptr;
     QToolButton* m_restartButton = nullptr;
     QToolButton* m_folderButton = nullptr;

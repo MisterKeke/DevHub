@@ -49,7 +49,10 @@ private slots:
     void exactOptInExecutableVersionHomeAndSentinelAreRequired()
     {
         QVERIFY(CodexRuntimeProfile::developmentLiveValidationBuild());
-        QVERIFY(!CodexRuntimeProfile::productionChatEnabled("0.162.0-alpha.17.2"));
+        devhub::application::assistant::CodexCompatibilityReport report;
+        report.protocolCompatible = true; report.runtimePolicyVerified = true;
+        report.state = devhub::application::assistant::CodexCompatibilityState::Compatible;
+        QVERIFY(!CodexRuntimeProfile::productionChatEnabled(report));
 
         QTemporaryDir home(QDir::current().filePath(QStringLiteral("out/live-validation-home-XXXXXX")));
         QVERIFY(home.isValid());

@@ -11,7 +11,8 @@
   "codexVersion": "0.162.0-alpha.17.2",
   "fixtureScopePassed": true,
   "format": 1,
-  "inventorySha256": "3cca759e7617cb5822e25edff6d9e4ba5deed0aa599cfefafb327da5d8aa88ec",
+  "inventoryHashAlgorithm": "sha256-canonical-json-v1",
+  "inventorySha256": "85f22ee5b9faa879237ee6e529849a07c92787ea393af0e2b1ff0159958fa97b",
   "realInference": false,
   "releaseEligible": false,
   "toolInventory": [

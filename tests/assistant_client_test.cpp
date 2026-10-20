@@ -2,13 +2,19 @@
 #include "infrastructure/codex/CodexRuntimeProfile.h"
 #include "infrastructure/codex/CodexProcess.h"
 #include "infrastructure/codex/CodexVersionSupport.h"
+#include "infrastructure/codex/CodexExecutableLocator.h"
+#include "infrastructure/codex/CodexSchemaInspector.h"
 #include "application/assistant/AssistantToolRuntime.h"
 #include "support/MemoryCodexTransport.h"
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QDir>
+#include <QFileInfo>
 #include <QProcess>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QStandardPaths>
+#include <QScopeGuard>
 #include <QTest>
 
 using namespace devhub::application::assistant;
@@ -44,6 +50,94 @@ private:
 class AssistantClientTest final : public QObject {
     Q_OBJECT
 private slots:
+    void nativeOfflineProtectedEvidenceRead() {
+        const auto metadata = qEnvironmentVariable("DEVHUB_TEST_BEHAVIOR_BINDING");
+        const auto executable = qEnvironmentVariable("DEVHUB_OFFLINE_CODEX_EXE");
+        if (metadata.isEmpty() || executable.isEmpty()) QSKIP("Child-process protected-cache check requires explicit offline bindings.");
+        QFile file(metadata); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto binding = QJsonDocument::fromJson(file.readAll()).object();
+        CodexCompatibilityReport report; report.protocolCompatible = true;
+        report.canonicalExecutable = binding.value("path").toString(); report.reportedVersion = binding.value("version").toString();
+        report.binaryIdentity = binding.value("binary").toString(); report.adapter = binding.value("adapter").toString();
+        report.schemaIdentity = binding.value("schema").toString(); report.configurationIdentity = binding.value("configuration").toString();
+        report.policyIdentity = binding.value("policy").toString();
+        QCOMPARE(report.canonicalExecutable, QFileInfo(executable).canonicalFilePath());
+        QCOMPARE(CodexSchemaInspector::binaryIdentity(report.canonicalExecutable), report.binaryIdentity);
+        QCOMPARE(CodexBehaviorVerifier::cachedEvidenceMatches(report), qEnvironmentVariable("DEVHUB_TEST_BEHAVIOR_EXPECTED") == "verified");
+        // Reading a record does not mark a value report as verified. Production
+        // admission still belongs to the client after all fresh runtime checks.
+        QVERIFY(!CodexRuntimeProfile::productionChatEnabled(report));
+    }
+    void nativeOfflineEmbeddedBehaviorVerification() {
+        const auto executable = qEnvironmentVariable("DEVHUB_OFFLINE_CODEX_EXE");
+        if (executable.isEmpty()) QSKIP("Explicit native executable required; disposable profile and loopback inference only.");
+        QTemporaryDir home; QTemporaryDir scratch; QVERIFY(home.isValid() && scratch.isValid());
+        auto environment = codexBaseEnvironment(QProcessEnvironment::systemEnvironment());
+        environment.insert("CODEX_HOME", home.path());
+        CodexProcess process; CodexClient client(process); CodexExecutableLocator locator;
+        QVERIFY(client.configureDynamicTools(AssistantToolRuntime::experimentalToolSpecifications()));
+        QSignalSpy found(&locator, &ICodexExecutableProbe::executableFound);
+        locator.locate(executable, 1); QTRY_COMPARE_WITH_TIMEOUT(found.size(), 1, 60000);
+        const auto inspected = qvariant_cast<CodexExecutable>(found.first().first());
+        QSignalSpy checked(&client, &ICodexClient::profileChecked), stopped(&client, &ICodexClient::backendStopped);
+        QVERIFY(client.launch({inspected, CodexRuntimeProfile::launchArguments().value(), scratch.path(), environment, 1}));
+        QTRY_VERIFY_WITH_TIMEOUT(!checked.isEmpty(), 15000);
+        QVERIFY2(client.profileVerified(), qPrintable(checked.first().at(1).toStringList().join(',')));
+        QTRY_COMPARE_WITH_TIMEOUT(client.pendingRequestCount(), 0, 10000);
+        QCOMPARE(client.account().mode, CodexAccountMode::SignedOut);
+        QVERIFY(!client.compatibilityReport().runtimePolicyVerified);
+        QVERIFY(client.verifyCompatibility());
+        QTRY_VERIFY_WITH_TIMEOUT(!client.compatibilityReport().verificationInProgress, 200000);
+        const auto report = client.compatibilityReport();
+        QVERIFY2(report.runtimePolicyVerified, qPrintable(report.explanation));
+        QVERIFY(CodexRuntimeProfile::productionChatEnabled(report));
+        QVERIFY2(CodexBehaviorVerifier::cachedEvidenceMatches(report), qPrintable(report.explanation));
+        const auto cleanupEvidence = qScopeGuard([&] { CodexBehaviorVerifier::forgetCachedEvidence(report); });
+        QVERIFY(!client.canStartConversation()); // Verification cannot bypass authentication.
+        client.stop(); QTRY_COMPARE_WITH_TIMEOUT(stopped.size(), 1, 10000);
+
+        QFile metadata(home.filePath("behavior-binding.json")); QVERIFY(metadata.open(QIODevice::WriteOnly));
+        const QJsonObject binding{{"path", report.canonicalExecutable}, {"version", report.reportedVersion},
+            {"binary", report.binaryIdentity}, {"adapter", report.adapter}, {"schema", report.schemaIdentity},
+            {"configuration", report.configurationIdentity}, {"policy", report.policyIdentity}};
+        metadata.write(QJsonDocument(binding).toJson()); metadata.close();
+
+        // A new client has no session evidence. It must recheck the runtime and
+        // recover the protected record, without running the harness again.
+        for (const bool corrupt : {false, true}) {
+            if (corrupt) {
+                const auto key = CodexBehaviorVerifier::evidenceIdentity(report);
+                QFile cache(QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
+                    .filePath("codex-compatibility/behavior-v1/" + key + ".bin"));
+                QVERIFY(cache.open(QIODevice::ReadOnly)); auto bytes = cache.readAll(); cache.close();
+                QVERIFY(!bytes.isEmpty()); bytes[bytes.size() / 2] = static_cast<char>(bytes.at(bytes.size() / 2) ^ 0x55);
+                QVERIFY(cache.open(QIODevice::WriteOnly | QIODevice::Truncate)); QCOMPARE(cache.write(bytes), bytes.size()); cache.close();
+                QVERIFY(!CodexBehaviorVerifier::cachedEvidenceMatches(report));
+            }
+            // Prove that another DevHub process can decrypt the record, not
+            // merely another object with access to process-local state.
+            QProcess reader; auto readerEnvironment = QProcessEnvironment::systemEnvironment();
+            readerEnvironment.insert("DEVHUB_TEST_BEHAVIOR_BINDING", metadata.fileName());
+            readerEnvironment.insert("DEVHUB_TEST_BEHAVIOR_EXPECTED", corrupt ? "unverified" : "verified");
+            reader.setProcessEnvironment(readerEnvironment); reader.setProgram(QCoreApplication::applicationFilePath());
+            const auto log = home.filePath(corrupt ? "corrupt-cache-read.txt" : "protected-cache-read.txt");
+            reader.setArguments({"nativeOfflineProtectedEvidenceRead", "-o", log + ",txt"}); reader.start(); reader.closeWriteChannel();
+            QTRY_VERIFY_WITH_TIMEOUT(reader.state() == QProcess::NotRunning, 30000);
+            QFile childLog(log); QVERIFY(childLog.open(QIODevice::ReadOnly)); const auto childResult = childLog.readAll();
+            QCOMPARE(reader.exitStatus(), QProcess::NormalExit);
+            QVERIFY2(reader.exitCode() == 0, childResult.constData());
+            CodexProcess nextProcess; CodexClient nextClient(nextProcess);
+            QVERIFY(nextClient.configureDynamicTools(AssistantToolRuntime::experimentalToolSpecifications()));
+            QSignalSpy nextChecked(&nextClient, &ICodexClient::profileChecked), nextStopped(&nextClient, &ICodexClient::backendStopped);
+            QVERIFY(nextClient.launch({inspected, CodexRuntimeProfile::launchArguments().value(), scratch.path(), environment, 1}));
+            QTRY_VERIFY_WITH_TIMEOUT(!nextChecked.isEmpty(), 15000);
+            QVERIFY(nextClient.profileVerified());
+            QCOMPARE(nextClient.compatibilityReport().runtimePolicyVerified, !corrupt);
+            QCOMPARE(nextClient.compatibilityReport().evidence.contains("protected-behavior-cache-match-v1"), !corrupt);
+            QVERIFY(!nextClient.compatibilityReport().verificationInProgress);
+            nextClient.stop(); QTRY_COMPARE_WITH_TIMEOUT(nextStopped.size(), 1, 10000);
+        }
+    }
     void nativeAlphaOfflineInheritedProfile() {
         const auto executable = qEnvironmentVariable("DEVHUB_OFFLINE_CODEX_EXE");
         if (executable.isEmpty()) QSKIP("Explicit native executable required; no inference or authentication.");
@@ -57,14 +151,19 @@ private slots:
             "[mcp_servers.\"native İ\"]\ncommand=\"nonexistent-mcp-command\"\n").toUtf8()); config.close();
         auto environment = codexBaseEnvironment(QProcessEnvironment::systemEnvironment()); environment.insert("CODEX_HOME", home.path());
         CodexProcess process; CodexClient client(process);
+        CodexExecutableLocator locator; QSignalSpy found(&locator, &ICodexExecutableProbe::executableFound);
+        locator.locate(executable, 1); QTRY_COMPARE_WITH_TIMEOUT(found.size(), 1, 30000);
+        const auto inspected = qvariant_cast<CodexExecutable>(found.first().first());
         QVERIFY(client.configureDynamicTools(AssistantToolRuntime::experimentalToolSpecifications()));
         QSignalSpy checked(&client, &ICodexClient::profileChecked), retry(&client, &ICodexClient::restrictedLaunchRequired), stopped(&client, &ICodexClient::backendStopped);
-        QVERIFY(client.launch({{executable, "0.162.0-alpha.17.2"}, CodexRuntimeProfile::launchArguments().value(), scratch.path(), environment, 1}));
+        QVERIFY(client.launch({inspected, CodexRuntimeProfile::launchArguments().value(), scratch.path(), environment, 1}));
         QTRY_COMPARE_WITH_TIMEOUT(retry.size(), 1, 15000); QVERIFY(!client.profileVerified());
-        QCOMPARE(checked.first().at(1).toStringList(), QStringList{"inherited-mcp-enabled"});
+        const auto inheritedReasons = checked.first().at(1).toStringList();
+        QVERIFY(inheritedReasons.contains("inherited-mcp-enabled"));
+        for (const auto& reason : inheritedReasons) QVERIFY(reason == "inherited-mcp-enabled" || reason == "inherited-mcp-active");
         const auto arguments = retry.first().first().toStringList(); QVERIFY(CodexRuntimeProfile::acceptsLaunch(arguments));
         client.stop(); QTRY_COMPARE_WITH_TIMEOUT(stopped.size(), 1, 10000); checked.clear();
-        QVERIFY(client.launch({{executable, "0.162.0-alpha.17.2"}, arguments, scratch.path(), environment, 2}));
+        QVERIFY(client.launch({inspected, arguments, scratch.path(), environment, 2}));
         QTRY_VERIFY_WITH_TIMEOUT(!checked.isEmpty(), 15000);
         QVERIFY2(client.profileVerified(), qPrintable(checked.first().at(1).toStringList().join(',')));
         QVERIFY(!client.canStartConversation()); // Disposable profile is signed out.
@@ -88,6 +187,9 @@ private slots:
         QCOMPARE(CodexVersionSupport::parseVersionResponse(QString::fromUtf8(versionProbe.readAllStandardOutput())).value_or(QString{}),
             QStringLiteral("0.162.0-alpha.17.2"));
         CodexProcess process; CodexClient client(process);
+        CodexExecutableLocator locator; QSignalSpy found(&locator, &ICodexExecutableProbe::executableFound);
+        locator.locate(executable, 1); QTRY_COMPARE_WITH_TIMEOUT(found.size(), 1, 30000);
+        const auto inspected = qvariant_cast<CodexExecutable>(found.first().first());
         connect(&process, &ICodexTransport::objectReceived, &client, [](const QJsonObject& message, quint64) {
             const auto result = message.value("result").toObject();
             if (result.contains("config")) {
@@ -105,7 +207,7 @@ private slots:
         QVERIFY(client.configureDynamicTools(AssistantToolRuntime::experimentalToolSpecifications()));
         QSignalSpy checked(&client, &ICodexClient::profileChecked);
         QSignalSpy stopped(&client, &ICodexClient::backendStopped);
-        QVERIFY(client.launch({{executable, QStringLiteral("0.162.0-alpha.17.2")},
+        QVERIFY(client.launch({inspected,
             CodexRuntimeProfile::launchArguments().value(), scratch.path(), environment, 1}));
         QTRY_VERIFY_WITH_TIMEOUT(!checked.isEmpty(), 15000);
         const auto reasons = checked.first().at(1).toStringList();
@@ -122,7 +224,7 @@ private slots:
         const auto initialize = s.transport.lastRequest("initialize");
         QCOMPARE(initialize.value("params").toObject().value("clientInfo").toObject(),
             (QJsonObject{{"name", "devhub"}, {"title", "DevHub"}, {"version", DEVHUB_VERSION}}));
-        QVERIFY(!initialize.value("params").toObject().value("capabilities").toObject().value("experimentalApi").toBool());
+        QVERIFY(initialize.value("params").toObject().value("capabilities").toObject().value("experimentalApi").toBool());
         QCOMPARE(s.transport.sent.size(), 1); QVERIFY(!s.client.isInitialized()); QVERIFY(!s.client.startThread("fixture-model"));
         emit s.transport.started(s.transport.generation); QCOMPARE(s.transport.sent.size(), 1);
         s.reply("initialize", {{"codexHome", s.scratch.path()}, {"userAgent", "fixture"}, {"platformFamily", "windows"}, {"platformOs", "windows"}});
@@ -133,7 +235,7 @@ private slots:
         QVERIFY(s.transport.lastRequest("configRequirements/read").value("params").isNull());
         s.transport.reply(initialize.value("id").toInteger(), {}); QCOMPARE(initialized.size(), 1);
     }
-    void alphaContractsAndVersionScopedConversationBinding()
+    void alphaContractsAndSemanticConversationBinding()
     {
         constexpr auto alpha = "0.162.0-alpha.17.2";
         Session s;
@@ -157,8 +259,7 @@ private slots:
         const auto start = s.transport.lastRequest("thread/start");
         QVERIFY(!start.isEmpty());
         s.reply("thread/start", s.threadResult());
-        QVERIFY(s.client.threadBinding().profileFingerprint !=
-            CodexRuntimeProfile::fingerprint(QString::fromLatin1(alpha), CodexRuntimeProfile::launchArguments().value()));
+        QVERIFY(s.client.threadBinding().profileFingerprint.startsWith("semantic-v2:"));
         QVERIFY(s.client.threadBinding().profileFingerprint != previousVersionBinding.profileFingerprint);
         QCOMPARE(s.transport.lastRequest(QStringLiteral("thread/start")).value(QStringLiteral("params")).toObject()
             .value(QStringLiteral("dynamicTools")).toArray(), AssistantToolRuntime::experimentalToolSpecifications());
@@ -207,7 +308,7 @@ private slots:
         QVERIFY(!s.client.startThread("fixture-model")); s.reply("config/read", safeConfig()); QVERIFY(!s.client.profileVerified());
         s.reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)}}); QVERIFY(s.client.profileVerified()); QVERIFY(s.openThread());
         QVERIFY(s.client.canSend()); s.transport.native = true; QVERIFY(!s.client.canSend()); QVERIFY(!s.client.startTurn("hello"));
-        QVERIFY(!CodexRuntimeProfile::productionChatEnabled("0.160.1"));
+        QVERIFY(!CodexRuntimeProfile::productionChatEnabled(s.client.compatibilityReport()));
     }
     void productionBuildCannotEnableLiveValidationFromEnvironmentOrSettings()
     {
@@ -221,7 +322,7 @@ private slots:
         disposableAck.set("I_CREATED_THIS_DISPOSABLE_PROFILE");
 
         QVERIFY(!CodexRuntimeProfile::developmentLiveValidationBuild());
-        QVERIFY(!CodexRuntimeProfile::productionChatEnabled("0.160.1"));
+        QVERIFY(!CodexRuntimeProfile::productionChatEnabled(CodexCompatibilityReport{}));
         QVERIFY(!CodexRuntimeProfile::developmentLiveInferenceAuthorized(
             QStringLiteral("C:/fixture/codex.exe"), QStringLiteral("0.160.1"), QProcessEnvironment{}));
 
@@ -239,29 +340,17 @@ private slots:
         QTest::addColumn<QString>("variant");
         for (const auto& name : {"shell", "mcp", "notify", "managed", "unknown layer", "missing layers", "attached", "provider", "missing features"}) QTest::newRow(name) << QString::fromLatin1(name);
     }
-    void nativeProductionAdmission_data() {
-        QTest::addColumn<QString>("version"); QTest::addColumn<bool>("enabled");
-        QTest::newRow("legacy-inspection-only") << QString("0.160.1") << false;
-        QTest::newRow("requested-alpha") << QString("0.162.0-alpha.17.2") << true;
-    }
-    void nativeProductionAdmission() {
-        QFETCH(QString, version); QFETCH(bool, enabled);
-        Session s; s.transport.native = true;
-        QVERIFY(s.client.launch(s.spec(1, CodexRuntimeProfile::launchArguments().value(), version)));
-        s.reply("initialize", {{"codexHome", s.scratch.path()}, {"userAgent", "fixture"}, {"platformFamily", "windows"}, {"platformOs", "windows"}});
-        s.reply("account/read", chatGptAccount()); s.reply("config/read", safeConfig());
-        QVERIFY(!s.client.canStartConversation()); // Both profile responses required.
-        s.reply("configRequirements/read", {{"requirements", QJsonValue(QJsonValue::Null)}});
-        QCOMPARE(CodexRuntimeProfile::productionChatEnabled(version), enabled);
-        QCOMPARE(s.client.canStartConversation(), enabled); QVERIFY(!s.client.canSend());
-        QCOMPARE(bool(s.client.startThread("fixture-model")), enabled);
-        if (!enabled) { QVERIFY(!s.client.startTurn("blocked")); return; }
-        s.reply("thread/start", s.threadResult()); QVERIFY(s.client.canSend());
-        QVERIFY(s.beginTurn()); QVERIFY(!s.client.canSend());
-        s.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", turn("turn-1", "completed")}});
-        QVERIFY(s.client.canSend());
-        s.transport.event("account/updated", {{"authMode", QJsonValue(QJsonValue::Null)}});
-        QVERIFY(!s.client.canSend()); QVERIFY(!s.client.canStartConversation());
+    void nativeLaunchCannotUseVersionOrForgedReportAsEvidence() {
+        for (const auto& version : {"0.160.1", "0.162.0-alpha.17.2", "0.163.0"}) {
+            Session s; s.transport.native = true;
+            CodexCompatibilityReport report;
+            report.state = CodexCompatibilityState::Compatible; report.protocolCompatible = true;
+            report.runtimePolicyVerified = true; report.adapter = "paged-resume-v1";
+            QVERIFY(!s.client.launch({{"C:/fixture/codex.exe", version, report},
+                CodexRuntimeProfile::launchArguments().value(), s.scratch.path(), QProcessEnvironment{}, 1}));
+            QVERIFY(!s.client.canStartConversation()); QVERIFY(!s.client.canSend());
+            QVERIFY(s.transport.sent.isEmpty());
+        }
     }
     void desktopPreferencesDoNotAttachCapabilities_data() {
         QTest::addColumn<QJsonObject>("desktop"); QTest::addColumn<bool>("accepted");
@@ -303,6 +392,58 @@ private slots:
             QVERIFY(arguments.contains("mcp_servers={\"name.with.dots\"={enabled=false}}"));
             QCOMPARE(adjustment.first().at(1).toULongLong(), quint64(1));
         }
+    }
+    void mcpInventoryAndConfigReplyOrder_data() {
+        QTest::addColumn<bool>("inventoryFirst"); QTest::addColumn<QString>("variant");
+        for (const bool first : {false, true}) for (const auto* variant : {
+            "disabled-null", "disabled-explicit", "enabled", "connected", "unknown", "unrelated-failure"})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(first ? "inventory-first" : "config-first", variant)))
+                << first << QString::fromLatin1(variant);
+    }
+    void mcpInventoryAndConfigReplyOrder() {
+        QFETCH(bool, inventoryFirst); QFETCH(QString, variant);
+        Session s; QVERIFY(s.start("0.162.0-alpha.17.2"));
+        // Queue native inventory RPCs using the memory transport, then restore
+        // its fixture identity. No native executable/evidence is impersonated.
+        s.reply("config/read", safeConfig()); s.reply("configRequirements/read", {{"requirements", QJsonValue::Null}});
+        s.transport.native = true; const auto refresh = s.client.verifyRuntime(); s.transport.native = false;
+        QVERIFY(refresh); QVERIFY(!s.client.profileVerified());
+        QSignalSpy checked(&s.client, &ICodexClient::profileChecked), retry(&s.client, &ICodexClient::restrictedLaunchRequired);
+        auto config = safeConfig(); auto values = config.value("config").toObject();
+        const bool enabled = variant == "enabled" || variant == "unrelated-failure";
+        values.insert("mcp_servers", QJsonObject{{"name.with.dots", QJsonObject{{"enabled", enabled}}}});
+        if (variant == "unrelated-failure") values.insert("notify", QJsonArray{"private-command"});
+        config.insert("config", values);
+        const auto replyConfig = [&] {
+            s.reply("config/read", config); s.reply("configRequirements/read", {{"requirements", QJsonValue::Null}});
+        };
+        const auto replyInventories = [&] {
+            QJsonArray features;
+            const auto flags = values.value("features").toObject();
+            for (auto it = flags.begin(); it != flags.end(); ++it) features.append(QJsonObject{
+                {"name", it.key()}, {"enabled", false}, {"defaultEnabled", false}, {"stage", "stable"}});
+            s.reply("experimentalFeature/list", {{"data", features}, {"nextCursor", QJsonValue::Null}});
+            s.reply("hooks/list", {{"data", QJsonArray{}}});
+            QJsonObject row{{"name", variant == "unknown" ? "unconfigured" : "name.with.dots"}, {"authStatus", "unsupported"},
+                {"runtimeStatus", QJsonValue::Null}, {"tools", QJsonObject{}}, {"resources", QJsonArray{}}, {"resourceTemplates", QJsonArray{}}};
+            if (variant == "disabled-explicit") row.insert("runtimeStatus", "disabled");
+            if (variant == "connected") row.insert("runtimeStatus", "connected");
+            s.reply("mcpServerStatus/list", {{"data", QJsonArray{row}}, {"nextCursor", QJsonValue::Null}});
+            QVERIFY(!s.client.profileVerified()); // all four inventories are required
+            s.reply("plugin/list", {{"marketplaces", QJsonArray{}}});
+        };
+        if (inventoryFirst) { replyInventories(); QVERIFY(checked.isEmpty()); replyConfig(); }
+        else { replyConfig(); replyInventories(); }
+        QCOMPARE(checked.size(), 1);
+        const bool accepted = variant.startsWith("disabled-");
+        QCOMPARE(s.client.profileVerified(), accepted);
+        QCOMPARE(retry.size(), variant == "enabled" ? 1 : 0);
+        if (variant == "enabled") {
+            QVERIFY(retry.first().first().toStringList().contains("mcp_servers={\"name.with.dots\"={enabled=false}}"));
+            QVERIFY(!s.client.canStartConversation());
+        }
+        if (variant == "unknown") QVERIFY(checked.first().at(1).toStringList().contains("mcp-inventory-unverified"));
+        if (variant == "connected") QVERIFY(checked.first().at(1).toStringList().contains("inherited-mcp-active"));
     }
     void localSystemLayerAndLoginConstraints_data()
     {
@@ -375,7 +516,7 @@ private slots:
     void experimentalDynamicToolCallUsesPinnedSchemaAndTypedRequestIds_data()
     {
         QTest::addColumn<QString>("version");
-        for (const auto& version : CodexVersionSupport::supportedVersions())
+        for (const auto& version : CodexVersionSupport::fixtureVersions())
             QTest::newRow(qPrintable(version)) << version;
     }
     void experimentalDynamicToolCallUsesPinnedSchemaAndTypedRequestIds()
@@ -478,7 +619,7 @@ private slots:
         stale.scratchDirectory = currentRegistry.client.threadBinding().scratchDirectory;
         QVERIFY(!currentRegistry.client.resumeThread(stale));
         QVERIFY(currentRegistry.client.threadBinding().profileFingerprint
-            == CodexRuntimeProfile::fingerprint(QStringList{}));
+            == "semantic-v2:" + CodexRuntimeProfile::fingerprint(QStringList{}));
     }
 
     void dynamicToolCallsFailClosedForUnknownMalformedAndStaleScope()

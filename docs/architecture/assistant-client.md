@@ -1,5 +1,8 @@
 # Assistant typed client and runtime profile
 
+The current adapter, runtime verification and semantic binding rules supersede
+the original version gates below; see [Codex compatibility](codex-compatibility.md).
+
 Phase 2 adds `CodexClient` to the existing Qt Core `devhub_assistant` library.
 Phase 3 now wires a lazily started backend and Assistant controller/page in
 bootstrap; see [the UI report](assistant-ui.md). Native Send is enabled for the

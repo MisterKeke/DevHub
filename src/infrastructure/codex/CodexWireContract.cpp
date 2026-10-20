@@ -31,14 +31,20 @@ CodexWireContract::CodexWireContract(QString version)
 }
 bool CodexWireContract::setVersion(const QString& version)
 {
-    if (!CodexVersionSupport::isSupported(version)) return false;
-    QFile file(QStringLiteral(":/codex/%1/experimental.json").arg(version));
+    return setProfile(CodexProtocolProfile::fixture(version).id, version);
+}
+bool CodexWireContract::setProfile(const QString& adapter, const QString& diagnosticVersion)
+{
+    m_contracts = {}; m_definitions = {}; m_profile = {}; m_version.clear();
+    const auto profile = CodexProtocolProfile::named(adapter);
+    if (profile.id.isEmpty()) return false;
+    QFile file(QStringLiteral(":/codex/%1/experimental.json").arg(profile.snapshotVersion));
     if (!file.open(QIODevice::ReadOnly)) return false;
     const auto snapshot = QJsonDocument::fromJson(file.readAll()).object();
-    if (snapshot.value("codexVersion").toString() != version) return false;
+    if (snapshot.value("codexVersion").toString() != profile.snapshotVersion) return false;
     m_contracts = snapshot.value("contracts").toObject();
     m_definitions = snapshot.value("definitions").toObject();
-    m_version = version;
+    m_version = diagnosticVersion; m_profile = profile;
     return !m_contracts.isEmpty() && !m_definitions.isEmpty();
 }
 bool CodexWireContract::contains(const QString& contract) const { return m_contracts.contains(contract); }
@@ -50,9 +56,13 @@ bool CodexWireContract::acceptsDefinition(const QString& definition, const QJson
 bool CodexWireContract::accepts(const QString& contract, const QJsonValue& value) const
 {
     int budget = 100000;
-    return contains(contract) && validate(m_contracts.value(contract), value, 0, budget);
+    const bool informational = contract.startsWith("ServerNotification:")
+        || (contract.startsWith("Response:") && !contract.contains("ApprovalResponse")
+            && !contract.contains("DynamicToolCallResponse") && !contract.contains("ToolRequestUserInputResponse")
+            && !contract.contains("ElicitationRequestResponse"));
+    return contains(contract) && validate(m_contracts.value(contract), value, 0, budget, informational);
 }
-bool CodexWireContract::validate(const QJsonValue& schema, const QJsonValue& value, int depth, int& budget) const
+bool CodexWireContract::validate(const QJsonValue& schema, const QJsonValue& value, int depth, int& budget, bool informationalExtras) const
 {
     if (depth > 64 || --budget < 0 || value.isUndefined()) return false;
     if (schema.isBool()) return schema.toBool();
@@ -65,13 +75,13 @@ bool CodexWireContract::validate(const QJsonValue& schema, const QJsonValue& val
     if (!ref.isEmpty()) {
         const auto prefix = QStringLiteral("#/definitions/");
         if (!ref.startsWith(prefix) || !m_definitions.contains(ref.mid(prefix.size()))
-            || !validate(m_definitions.value(ref.mid(prefix.size())), value, depth + 1, budget)) return false;
+            || !validate(m_definitions.value(ref.mid(prefix.size())), value, depth + 1, budget, informationalExtras)) return false;
     }
     for (const auto& key : {"anyOf", "oneOf", "allOf"}) {
         if (!node.contains(QLatin1String(key))) continue;
         int matches = 0;
         const auto alternatives = node.value(QLatin1String(key)).toArray();
-        for (const auto& alternative : alternatives) if (validate(alternative, value, depth + 1, budget)) ++matches;
+        for (const auto& alternative : alternatives) if (validate(alternative, value, depth + 1, budget, informationalExtras)) ++matches;
         if ((qstrcmp(key, "anyOf") == 0 && matches == 0)
             || (qstrcmp(key, "oneOf") == 0 && matches != 1)
             || (qstrcmp(key, "allOf") == 0 && matches != alternatives.size())) return false;
@@ -94,13 +104,13 @@ bool CodexWireContract::validate(const QJsonValue& schema, const QJsonValue& val
         const auto additional = node.value("additionalProperties");
         for (auto it = object.begin(); it != object.end(); ++it) {
             if (properties.contains(it.key())) {
-                if (!validate(properties.value(it.key()), it.value(), depth + 1, budget)) return false;
-            } else if ((additional.isBool() && !additional.toBool())
-                || (additional.isObject() && !validate(additional, it.value(), depth + 1, budget))) return false;
+                if (!validate(properties.value(it.key()), it.value(), depth + 1, budget, informationalExtras)) return false;
+            } else if ((additional.isBool() && !additional.toBool() && !informationalExtras)
+                || (additional.isObject() && !validate(additional, it.value(), depth + 1, budget, informationalExtras))) return false;
         }
     }
     if (value.isArray() && node.contains("items"))
-        for (const auto& item : value.toArray()) if (!validate(node.value("items"), item, depth + 1, budget)) return false;
+        for (const auto& item : value.toArray()) if (!validate(node.value("items"), item, depth + 1, budget, informationalExtras)) return false;
     return budget >= 0;
 }
 }

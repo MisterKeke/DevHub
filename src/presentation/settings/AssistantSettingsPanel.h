@@ -37,6 +37,7 @@ private:
     QLineEdit* m_url;
     QLineEdit* m_code;
     QPushButton* m_check;
+    QPushButton* m_verify;
     QPushButton* m_browser;
     QPushButton* m_device;
     QPushButton* m_open;
@@ -45,5 +46,7 @@ private:
     quint64 m_generation = 0;
     bool m_checking = false;
     bool m_ownsLogin = false;
+    bool m_modelCatalogInitialized = false;
+    QStringList m_modelCatalogSignature;
 };
 }

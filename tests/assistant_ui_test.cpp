@@ -10,6 +10,7 @@
 #include "presentation/theme/ThemeManager.h"
 #include <QApplication>
 #include <QClipboard>
+#include <QCryptographicHash>
 #include <QCheckBox>
 #include <QDialog>
 #include <QVBoxLayout>
@@ -35,6 +36,135 @@ class AssistantUiTest final : public QObject {
     QTemporaryDir m_settingsRoot;
     std::unique_ptr<devhub::presentation::theme::ThemeManager> m_theme;
 private slots:
+    void restoredConversationKeepsComposerVisible_data() {
+        QTest::addColumn<QString>("timing"); QTest::addColumn<int>("turnCount");
+        for (const auto* timing : {"before-view", "before-show", "after-show"})
+            for (const int turns : {2, 12})
+                QTest::newRow(qPrintable(QString("%1-%2-turns").arg(timing).arg(turns))) << QString::fromLatin1(timing) << turns;
+    }
+    void restoredConversationKeepsComposerVisible() {
+        QFETCH(QString, timing); QFETCH(int, turnCount);
+        MemoryConversationRepository repository;
+        {
+            Harness original({}, {}, &repository, "0.162.0-alpha.17.2");
+            original.controller.setPersistenceContext("local-account", true); QVERIFY(original.readyController());
+            QVERIFY(original.sendAndAccept("Hello")); original.finish();
+        }
+        Harness h({}, {}, &repository, "0.162.0-alpha.17.2");
+        repository.rows.first().binding.codexHomeKey = QString::fromLatin1(
+            QCryptographicHash::hash(h.scratch.path().toUtf8(), QCryptographicHash::Sha256).toHex());
+        h.controller.setPersistenceContext("local-account", true); QVERIFY(h.readyController());
+        QCOMPARE(h.controller.operation(), AssistantOperation::Restoring);
+        QJsonArray history;
+        for (int i = 0; i < turnCount; ++i) {
+            const auto id = QString::number(i);
+            const QJsonObject user{{"type", "userMessage"}, {"id", "user-" + id}, {"content", QJsonArray{
+                QJsonObject{{"type", "text"}, {"text", i == 0 ? "Hello" : "What can you do inside DevHub?"}}}}};
+            const QString answer = i == 0 ? QString("Hello! What would you like to work on?")
+                : QString("Inside DevHub, I can help with the selected workspace by:\n\n"
+                    "- Finding files and reading their contents\n- Checking Git status, branches, and recent history\n"
+                    "- Reading and searching workspace notes\n- Checking which managed services are running\n\n"
+                    "Some actions need your approval, such as editing a note, starting or stopping a service, or opening another workspace.");
+            history.append(turn("turn-" + id, "completed", QJsonArray{user, agent("agent-" + id, answer)}));
+        }
+        const auto restore = [&] { h.reply("thread/resume", h.threadResult(h.thread("thread-1", history))); };
+        QWidget legacyRoot; legacyRoot.setAttribute(Qt::WA_DontShowOnScreen);
+        auto* legacyLayout = new QVBoxLayout(&legacyRoot);
+        auto* stack = new devhub::presentation::widgets::CurrentPageStack(&legacyRoot); legacyLayout->addWidget(stack);
+        auto* hiddenModule = new QWidget; auto* hiddenLayout = new QVBoxLayout(hiddenModule);
+        auto* hiddenText = new QLabel(QString("Hidden module with wrapped content. ").repeated(500), hiddenModule);
+        hiddenText->setWordWrap(true); hiddenLayout->addWidget(hiddenText); hiddenModule->setMinimumSize(1000, 1800);
+        stack->addWidget(hiddenModule);
+        QDialog window(&legacyRoot); window.setAttribute(Qt::WA_DontShowOnScreen);
+        window.resize(1120, 760); window.setMinimumSize(720, 520);
+        auto* layout = new QVBoxLayout(&window); layout->setContentsMargins(0, 0, 0, 0);
+        if (timing == "before-view") restore();
+        auto* page = new AssistantPage(h.controller, stack); stack->addWidget(page);
+        if (timing == "before-show") restore();
+        layout->addWidget(stack); stack->setCurrentWidget(page);
+        window.show(); QTest::qWait(60);
+        if (timing == "after-show") restore();
+        QTest::qWait(100); QCOMPARE(h.controller.messages().size(), turnCount * 2);
+        // Parent layouts ask the QWidgetItem, which can bypass widget virtuals
+        // and query the installed stack layout directly.
+        QCOMPARE(layout->itemAt(0)->heightForWidth(window.width()), page->heightForWidth(window.width()));
+        QVERIFY2(page->sizeHint().height() <= 760, qPrintable(QString("Restored history requests a %1-pixel page, exceeding the default 760-pixel window")
+            .arg(page->sizeHint().height())));
+        auto* composer = page->findChild<QPlainTextEdit*>("assistantComposer");
+        const auto checkComposer = [&] {
+            const QRect bounds(composer->mapTo(&window, QPoint{}), composer->size());
+            QVERIFY2(window.rect().contains(bounds), qPrintable(QString("Composer bottom %1 exceeds window height %2; page height %3, minimum %4, height-for-width %5")
+                .arg(bounds.bottom()).arg(window.height()).arg(page->height()).arg(page->minimumSizeHint().height()).arg(page->heightForWidth(page->width()))));
+            QCOMPARE(window.size(), QSize(1120, 760));
+            auto* scroll = page->findChild<QScrollArea*>("assistantTranscript");
+            QVERIFY(scroll->verticalScrollBar()->maximum() > 0);
+            QCOMPARE(scroll->horizontalScrollBar()->maximum(), 0);
+        };
+        const auto snapshot = qEnvironmentVariable("DEVHUB_ASSISTANT_RESTORE_SNAPSHOT");
+        if (!snapshot.isEmpty() && timing == "before-show") QVERIFY(window.grab().save(snapshot + QString("-%1.png").arg(turnCount)));
+        checkComposer(); window.hide(); QTest::qWait(30); window.show(); QTest::qWait(60); checkComposer();
+        composer->setFocus(); QTest::keyClicks(composer, "A follow-up after restarting");
+        QCOMPARE(composer->toPlainText(), QString("A follow-up after restarting"));
+        QVERIFY(page->findChild<QPushButton*>("assistantSend")->isEnabled());
+        page->findChild<QPushButton*>("assistantSend")->click();
+        h.reply("turn/start", {{"turn", turn("live-turn")}});
+        h.transport.event("item/agentMessage/delta", {{"threadId", "thread-1"}, {"turnId", "live-turn"},
+            {"itemId", "live-answer"}, {"delta", "A new answer following the restored conversation.\n\nMore details are available."}});
+        QTest::qWait(80);
+        h.transport.event("turn/completed", {{"threadId", "thread-1"}, {"turn", turn("live-turn", "completed")}});
+        QTest::qWait(80); checkComposer();
+    }
+    void messageLayoutKeepsComposerVisible_data() {
+        QTest::addColumn<QSize>("windowSize"); QTest::addColumn<bool>("longAnswer");
+        for (const auto& size : {QSize(720, 520), QSize(900, 700), QSize(1484, 900)})
+            for (const bool longAnswer : {false, true})
+                QTest::newRow(qPrintable(QString("%1x%2-%3").arg(size.width()).arg(size.height()).arg(longAnswer ? "long" : "short")))
+                    << size << longAnswer;
+    }
+    void messageLayoutKeepsComposerVisible() {
+        QFETCH(QSize, windowSize); QFETCH(bool, longAnswer);
+        Harness h; QVERIFY(h.readyController());
+        QDialog window; auto* layout = new QVBoxLayout(&window); layout->setContentsMargins(0, 0, 0, 0);
+        auto* stack = new devhub::presentation::widgets::CurrentPageStack(&window); layout->addWidget(stack);
+        auto* hiddenModule = new QWidget; auto* hiddenLayout = new QVBoxLayout(hiddenModule);
+        auto* wrapped = new QLabel(QString("Hidden module text that must not determine the Assistant window height. ").repeated(500), hiddenModule);
+        wrapped->setWordWrap(true); hiddenLayout->addWidget(wrapped); stack->addWidget(hiddenModule);
+        auto* page = new AssistantPage(h.controller); stack->addWidget(page);
+        stack->setCurrentWidget(page);
+        QCOMPARE(stack->hasHeightForWidth(), page->hasHeightForWidth());
+        QCOMPARE(stack->heightForWidth(windowSize.width()), page->heightForWidth(windowSize.width()));
+        window.resize(windowSize); window.show(); QTest::qWait(40);
+        QVERIFY(h.sendAndAccept("Hello"));
+        QTest::qWait(40);
+        const QString answer = longAnswer ? QString("A paragraph that wraps onto several lines in a narrow window.\n\n").repeated(120)
+            : QString("Hello! What would you like to work on?");
+        h.delta(answer); QTest::qWait(80); h.finish(); QTest::qWait(80);
+        QCOMPARE(window.size(), windowSize);
+        const auto snapshot = qEnvironmentVariable("DEVHUB_ASSISTANT_CHAT_SNAPSHOT");
+        if (!snapshot.isEmpty() && windowSize == QSize(900, 700))
+            QVERIFY(window.grab().save(snapshot + (longAnswer ? "-long.png" : "-short.png")));
+        for (const auto* name : {"assistantComposer", "assistantSend"}) {
+            auto* control = page->findChild<QWidget*>(name); QVERIFY(control);
+            QVERIFY(window.rect().contains(QRect(control->mapTo(&window, QPoint{}), control->size())));
+        }
+        auto* user = page->findChild<QWidget*>("assistantMessageUser"); QVERIFY(user);
+        QVERIFY2(user->height() < 150, qPrintable(QString("Short user bubble is %1 pixels tall (minimum hint %2)")
+            .arg(user->height()).arg(user->minimumSizeHint().height())));
+        auto* transcript = page->findChild<QScrollArea*>("assistantTranscript");
+        QCOMPARE(transcript->horizontalScrollBar()->maximum(), 0);
+        if (!longAnswer) {
+            auto* reply = page->findChild<QWidget*>("assistantMessageAssistant"); QVERIFY(reply);
+            QVERIFY2(reply->height() < 150, qPrintable(QString("Short reply bubble is %1 pixels tall").arg(reply->height())));
+        } else {
+            QVERIFY(transcript->verticalScrollBar()->maximum() > 0);
+        }
+        auto* composer = page->findChild<QPlainTextEdit*>("assistantComposer");
+        composer->setFocus(); QTest::keyClicks(composer, "Follow-up message");
+        QCOMPARE(composer->toPlainText(), QString("Follow-up message"));
+        QVERIFY(page->findChild<QPushButton*>("assistantSend")->isEnabled());
+        window.resize(720, 520); QTest::qWait(40); QCOMPARE(window.size(), QSize(720, 520));
+        QVERIFY(window.rect().contains(QRect(composer->mapTo(&window, QPoint{}), composer->size())));
+    }
     void reconnectReplacesUncertainMessageCardsWithoutDuplicates() {
         Harness h({}, {}, nullptr, "0.162.0-alpha.17.2"); QVERIFY(h.readyController());
         AssistantPage page(h.controller); page.resize(850, 520); page.show();
@@ -94,8 +224,9 @@ private slots:
         bool stopped = false; controller.beginShutdown([&] { stopped = true; });
         QTRY_VERIFY_WITH_TIMEOUT(stopped, 10000);
     }
-    void nativeAlphaReadyEnablesSend() {
-        Harness h({}, {}, nullptr, "0.162.0-alpha.17.2"); h.transport.native = true; QVERIFY(h.readyController());
+    void alphaFixtureReadyEnablesSend() {
+        // This is a UI fixture, not measured evidence for a native executable.
+        Harness h({}, {}, nullptr, "0.162.0-alpha.17.2"); QVERIFY(h.readyController());
         AssistantPage page(h.controller); page.resize(850, 520); page.show();
         auto* composer = page.findChild<QPlainTextEdit*>("assistantComposer");
         auto* send = page.findChild<QPushButton*>("assistantSend"); QVERIFY(!send->isEnabled());

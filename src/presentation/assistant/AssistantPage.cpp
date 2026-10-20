@@ -83,7 +83,11 @@ AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) :
     m_approvalScroll->hide(); root->addWidget(m_approvalScroll, 1);
     connect(&controller, &AssistantController::approvalCoordinatorChanged, this, &AssistantPage::refreshApprovals);
     m_scroll = new QScrollArea(this); m_scroll->setObjectName(QStringLiteral("assistantTranscript")); m_scroll->setWidgetResizable(true); m_scroll->setFrameShape(QFrame::NoFrame);
+    // The transcript gets the remaining space and scrolls internally; message
+    // size hints must never raise the containing window's minimum height.
+    m_scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     auto* content = new QWidget(m_scroll); m_messages = new QVBoxLayout(content); m_messages->setContentsMargins(0, 0, 0, 0); m_messages->setSpacing(12); m_messages->addStretch();
+    m_messages->setSizeConstraint(QLayout::SetMinimumSize);
     m_scroll->setWidget(content); root->addWidget(m_scroll, 3);
     connect(m_scroll->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int value) {
         if (!m_rendering && !m_adjustingScroll) { ++m_scrollRevision; m_followLatest = m_scroll->verticalScrollBar()->maximum() - value <= 24; }
@@ -93,9 +97,10 @@ AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) :
     });
     m_latest = new QPushButton(tr("Jump to latest"), this); m_latest->setObjectName(QStringLiteral("assistantLatest")); m_latest->hide(); root->addWidget(m_latest, 0, Qt::AlignRight);
     auto* composerPanel = new QWidget(this); composerPanel->setObjectName(QStringLiteral("assistantComposerPanel"));
+    composerPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto* composerLayout = new QVBoxLayout(composerPanel); composerLayout->setContentsMargins(10, 10, 10, 8); composerLayout->setSpacing(6);
     m_composer = new QPlainTextEdit(composerPanel); m_composer->setObjectName(QStringLiteral("assistantComposer")); m_composer->setAccessibleName(tr("Assistant message"));
-    m_composer->setPlaceholderText(tr("Ask anything about your project…  Enter sends; Shift+Enter adds a line.")); m_composer->setMinimumHeight(72); m_composer->setMaximumHeight(150); m_composer->installEventFilter(this); composerLayout->addWidget(m_composer);
+    m_composer->setPlaceholderText(tr("Ask anything about your project…  Enter sends; Shift+Enter adds a line.")); m_composer->setFixedHeight(96); m_composer->installEventFilter(this); composerLayout->addWidget(m_composer);
     m_composer->setTabChangesFocus(true);
     auto* actions = new QHBoxLayout;
     m_error = new QLabel(composerPanel); m_error->setObjectName(QStringLiteral("assistantError")); m_error->setWordWrap(true); m_error->setTextFormat(Qt::PlainText); m_error->hide(); composerLayout->addWidget(m_error);
@@ -253,7 +258,10 @@ void AssistantPage::addMessage(const QUuid& id)
     card->setObjectName(userMessage ? QStringLiteral("assistantMessageUser") : QStringLiteral("assistantMessageAssistant"));
     card->setAttribute(Qt::WA_StyledBackground, true);
     card->setMaximumWidth(userMessage ? 840 : 1120);
-    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    // A card's height follows its document, never the spare viewport height.
+    // Keeping the vertical policy fixed also prevents detached-window layout
+    // negotiations from stretching the header around a one-line body.
+    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto* layout = new QVBoxLayout(card); layout->setContentsMargins(14, 11, 14, 11); layout->setSpacing(6);
     auto* heading = new QHBoxLayout;
     auto* role = new QLabel(userMessage ? tr("You") : tr("Assistant"), card); role->setTextFormat(Qt::PlainText);
@@ -263,7 +271,7 @@ void AssistantPage::addMessage(const QUuid& id)
     heading->addWidget(role); heading->addWidget(timestamp); heading->addStretch();
     auto* copy = new QPushButton(tr("Copy"), card); copy->setAccessibleName(tr("Copy message source")); heading->addWidget(copy);
     auto* retry = new QPushButton(tr("Retry"), card); retry->setVisible(value->role == AssistantRole::User); heading->addWidget(retry); layout->addLayout(heading);
-    auto* body = new widgets::SafeMarkdownBrowser(card); body->setAccessibleName(role->text()); body->setObjectName(id.toString(QUuid::WithoutBraces)); body->setFrameShape(QFrame::NoFrame); body->setMinimumHeight(42); body->setMaximumHeight(760); body->setStyleSheet(QStringLiteral("background: transparent;")); layout->addWidget(body);
+    auto* body = new widgets::SafeMarkdownBrowser(card); body->setAccessibleName(role->text()); body->setObjectName(id.toString(QUuid::WithoutBraces)); body->setFrameShape(QFrame::NoFrame); body->setMinimumHeight(42); body->setMaximumHeight(760); body->setStyleSheet(QStringLiteral("background: transparent; border: none; padding: 0;")); layout->addWidget(body);
     body->setFixedHeight(42);
     connect(body->document()->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged, this, [this, body](const QSizeF& size) {
         if (m_rendering) return;
