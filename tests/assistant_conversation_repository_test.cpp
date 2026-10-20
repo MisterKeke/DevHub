@@ -42,7 +42,7 @@ private slots:
         QTemporaryDir temp; QVERIFY(temp.isValid());
         infrastructure::database::InternalDatabaseManager db(temp.filePath(QStringLiteral("db.sqlite")), temp.filePath(QStringLiteral("backups")));
         auto opened = db.open(); QVERIFY2(opened, qPrintable(opened.error().technicalMessage));
-        QVERIFY(db.migrate()); QCOMPARE(db.currentSchemaVersion(), 7);
+        QVERIFY(db.migrate()); QCOMPARE(db.currentSchemaVersion(), db.latestSchemaVersion());
         const auto accountId = createAccount(db); QVERIFY(!accountId.isEmpty());
         const auto parsed = domain::account::AccountId::fromString(accountId); QVERIFY(parsed);
         infrastructure::assistant::SqlConversationRepository repository(db, parsed.value());
