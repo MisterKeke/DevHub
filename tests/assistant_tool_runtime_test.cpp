@@ -83,11 +83,14 @@ class WorkspaceRepo final : public workspaces::IWorkspaceRepository
 public:
     shared::common::Result<QVector<domain::workspace::Workspace>> listForAccount(const domain::account::AccountId&) override
     { ++listCalls; return shared::common::Result<QVector<domain::workspace::Workspace>>::success(rows); }
+    shared::common::Result<QVector<domain::workspace::Workspace>> listArchivedForAccount(const domain::account::AccountId&) override
+    { return shared::common::Result<QVector<domain::workspace::Workspace>>::success({}); }
     shared::common::Result<domain::workspace::Workspace> add(const domain::workspace::Workspace&) override { return shared::common::Result<domain::workspace::Workspace>::failure(failure()); }
     shared::common::Result<void> rename(const domain::workspace::WorkspaceId&, const domain::account::AccountId&, const QString&) override { return shared::common::Result<void>::failure(failure()); }
     shared::common::Result<void> setFavorite(const domain::workspace::WorkspaceId&, const domain::account::AccountId&, bool) override { return shared::common::Result<void>::failure(failure()); }
     shared::common::Result<void> updateLocation(const domain::workspace::WorkspaceId&, const domain::account::AccountId&, const domain::workspace::WorkspacePath&) override { return shared::common::Result<void>::failure(failure()); }
-    shared::common::Result<void> remove(const domain::workspace::WorkspaceId&, const domain::account::AccountId&) override { return shared::common::Result<void>::failure(failure()); }
+    shared::common::Result<void> archive(const domain::workspace::WorkspaceId&, const domain::account::AccountId&) override { return shared::common::Result<void>::failure(failure()); }
+    shared::common::Result<void> restore(const domain::workspace::WorkspaceId&, const domain::account::AccountId&) override { return shared::common::Result<void>::failure(failure()); }
     shared::common::Result<void> recordOpened(const domain::workspace::WorkspaceId&, const domain::account::AccountId&, const QDateTime&) override { ++opened; return shared::common::Result<void>::success(); }
     shared::common::Result<void> setRecentOrder(const domain::account::AccountId&, const QVector<domain::workspace::WorkspaceId>&) override { return shared::common::Result<void>::success(); }
     QVector<domain::workspace::Workspace> rows;

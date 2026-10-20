@@ -101,7 +101,9 @@ qt_add_executable(devhub_assistant_conversation_repository_tests
     ../resources/database_migrations.qrc)
 target_link_libraries(devhub_assistant_conversation_repository_tests PRIVATE
     devhub_assistant devhub_database Qt6::Core Qt6::Sql Qt6::Test project_options project_warnings)
-add_test(NAME devhub.assistant-conversation-repository COMMAND devhub_assistant_conversation_repository_tests)
+add_test(NAME devhub.assistant-conversation-repository COMMAND devhub_assistant_conversation_repository_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-conversation-repository-tests.txt,txt"
+    -o "-,txt")
 set_tests_properties(devhub.assistant-conversation-repository PROPERTIES
     TIMEOUT 45 ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
@@ -183,6 +185,7 @@ qt_add_executable(devhub_database_tests
     ../resources/database_migrations.qrc
 )
 target_link_libraries(devhub_database_tests PRIVATE
+    devhub_workspaces
     devhub_database
     Qt6::Core
     Qt6::Sql

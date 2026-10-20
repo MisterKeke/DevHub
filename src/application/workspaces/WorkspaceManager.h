@@ -16,11 +16,13 @@ public:
         : m_repository(repository), m_validator(validator), m_ids(ids), m_clock(clock),
           m_accountId(std::move(accountId)) {}
     [[nodiscard]] shared::common::Result<QVector<domain::workspace::Workspace>> list();
+    [[nodiscard]] shared::common::Result<QVector<domain::workspace::Workspace>> listArchived();
     [[nodiscard]] shared::common::Result<domain::workspace::Workspace> add(const QString& displayName,
                                                                            const QString& enteredPath);
     [[nodiscard]] shared::common::Result<void> rename(const domain::workspace::WorkspaceId& id, const QString& name);
     [[nodiscard]] shared::common::Result<void> setFavorite(const domain::workspace::WorkspaceId& id, bool favorite);
-    [[nodiscard]] shared::common::Result<void> removeMetadata(const domain::workspace::WorkspaceId& id);
+    [[nodiscard]] shared::common::Result<void> archive(const domain::workspace::WorkspaceId& id);
+    [[nodiscard]] shared::common::Result<void> restore(const domain::workspace::WorkspaceId& id);
     [[nodiscard]] shared::common::Result<domain::workspace::Workspace> activate(const domain::workspace::WorkspaceId& id);
     [[nodiscard]] shared::common::Result<void> reorder(const QVector<domain::workspace::WorkspaceId>& ids);
     [[nodiscard]] const domain::account::AccountId& accountId() const noexcept { return m_accountId; }

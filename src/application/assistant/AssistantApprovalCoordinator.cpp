@@ -34,6 +34,16 @@ void AssistantApprovalCoordinator::revokeCall(const QString& callId) {
     const auto ids = m_pending.keys();
     for (const auto& id : ids) if (m_pending.value(id).value.call.callId == callId) (void)decide(id, false);
 }
+void AssistantApprovalCoordinator::revokeWorkspace(const QString& workspaceId) {
+    const auto ids = m_pending.keys();
+    for (const auto& id : ids) {
+        const auto& pending = m_pending.value(id).value;
+        const bool scopedToWorkspace = pending.workspace == workspaceId
+            || pending.call.scope.workspaceId() == workspaceId;
+        const bool opensWorkspace = pending.call.arguments.value(QStringLiteral("workspaceId")).toString() == workspaceId;
+        if (scopedToWorkspace || opensWorkspace) (void)decide(id, false);
+    }
+}
 void AssistantApprovalCoordinator::expireNow(qint64 now) {
     const auto ids = m_pending.keys();
     for (const auto& id : ids) {

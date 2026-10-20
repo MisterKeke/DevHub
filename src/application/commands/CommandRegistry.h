@@ -46,6 +46,7 @@ public:
     [[nodiscard]] QVector<CommandDescriptor> commands() const;
     [[nodiscard]] bool execute(const QString& id);
     [[nodiscard]] bool contains(const QString& id) const;
+    bool removeCommand(const QString& id);
     [[nodiscard]] QStringList recentCommandIds() const { return m_recent; }
     [[nodiscard]] CommandDescriptor descriptor(const QString& id) const;
 

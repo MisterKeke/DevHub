@@ -94,16 +94,57 @@ Rectangle {
                                 Text { Layout.fillWidth: true; text: path; color: root.muted; font.pixelSize: 10; elide: Text.ElideMiddle }
                             }
                             Text { visible: favorite; text: "★"; color: root.accent; font.pixelSize: 13 }
+                            ToolButton {
+                                text: "⋮"
+                                implicitWidth: 30; implicitHeight: 34
+                                Accessible.name: qsTr("Workspace actions for %1").arg(name)
+                                ToolTip.visible: hovered
+                                ToolTip.text: qsTr("Workspace actions")
+                                background: Rectangle { radius: 7; color: parent.hovered ? root.hoverSurface : "transparent" }
+                                onClicked: shellController.showQuickWorkspaceMenu(workspaceId)
+                            }
                         }
                         HoverHandler { id: hover }
-                        TapHandler { onTapped: shellController.activateQuickWorkspace(workspaceId) }
+                        TapHandler {
+                            acceptedButtons: Qt.LeftButton
+                            onTapped: (eventPoint, button) => {
+                                if (eventPoint.position.x < width - 42)
+                                    shellController.activateQuickWorkspace(workspaceId)
+                            }
+                        }
+                        TapHandler {
+                            acceptedButtons: Qt.RightButton
+                            onTapped: shellController.showQuickWorkspaceMenu(workspaceId)
+                        }
                     }
                     ScrollBar.vertical: ScrollBar { }
                 }
                 ShellButton {
                     Layout.fillWidth: true; text: qsTr("＋   Add Workspace")
                     implicitHeight: 40; primary: true
+                    enabled: !shellController.workspaceRemovalInProgress
                     onClicked: shellController.addQuickWorkspace()
+                }
+                ShellButton {
+                    Layout.fillWidth: true; text: qsTr("Archived Workspaces…")
+                    implicitHeight: 36
+                    enabled: !shellController.workspaceRemovalInProgress
+                    onClicked: shellController.manageArchivedWorkspaces()
+                }
+                Text {
+                    Layout.fillWidth: true
+                    visible: shellController.workspaceActionMessage.length > 0
+                    text: shellController.workspaceActionMessage
+                    color: shellController.workspaceActionTone === "error" ? root.error
+                        : shellController.workspaceActionTone === "success" ? root.success : root.info
+                    font.pixelSize: 10; wrapMode: Text.WordWrap
+                }
+                ShellButton {
+                    Layout.fillWidth: true
+                    visible: shellController.workspaceRemovalInProgress
+                    text: qsTr("Cancel Removal")
+                    implicitHeight: 32
+                    onClicked: shellController.cancelQuickWorkspaceRemoval(shellController.workspaceRemovalWorkspaceId)
                 }
                 Text { text: qsTr("Workspace files stay in place"); color: root.muted; font.pixelSize: 10 }
                 ShellButton {

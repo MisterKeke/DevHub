@@ -11,6 +11,8 @@ public:
     explicit SqlWorkspaceRepository(database::InternalDatabaseManager& database) : m_database(database) {}
     [[nodiscard]] shared::common::Result<QVector<domain::workspace::Workspace>>
     listForAccount(const domain::account::AccountId& accountId) override;
+    [[nodiscard]] shared::common::Result<QVector<domain::workspace::Workspace>>
+    listArchivedForAccount(const domain::account::AccountId& accountId) override;
     [[nodiscard]] shared::common::Result<domain::workspace::Workspace>
     add(const domain::workspace::Workspace& workspace) override;
     [[nodiscard]] shared::common::Result<void> rename(const domain::workspace::WorkspaceId& id,
@@ -19,7 +21,9 @@ public:
         const domain::account::AccountId& accountId, bool favorite) override;
     [[nodiscard]] shared::common::Result<void> updateLocation(const domain::workspace::WorkspaceId& id,
         const domain::account::AccountId& accountId, const domain::workspace::WorkspacePath& path) override;
-    [[nodiscard]] shared::common::Result<void> remove(const domain::workspace::WorkspaceId& id,
+    [[nodiscard]] shared::common::Result<void> archive(const domain::workspace::WorkspaceId& id,
+        const domain::account::AccountId& accountId) override;
+    [[nodiscard]] shared::common::Result<void> restore(const domain::workspace::WorkspaceId& id,
         const domain::account::AccountId& accountId) override;
     [[nodiscard]] shared::common::Result<void> recordOpened(const domain::workspace::WorkspaceId& id,
         const domain::account::AccountId& accountId, const QDateTime& timestampUtc) override;

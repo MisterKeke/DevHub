@@ -1,6 +1,7 @@
 #include "../src/application/notes/NoteFolderExporter.h"
 #include "../src/application/ports/PortMonitorService.h"
 #include "../src/application/security/PasswordTaskService.h"
+#include "../src/application/tasks/TaskScheduler.h"
 #include "../src/infrastructure/database/InternalDatabaseManager.h"
 #include "../src/infrastructure/filesystem/LocalProfileResetter.h"
 #include "../src/presentation/notes/NotesPage.h"
@@ -132,6 +133,49 @@ class ReliabilityTest final : public QObject
 {
     Q_OBJECT
   private slots:
+    void workspaceRemovalCancelsLateTasksAndBlocksNewWork()
+    {
+        shared::identifiers::UuidIdGenerator ids;
+        application::tasks::TaskScheduler scheduler(ids, 1);
+        const QUuid workspaceId(QStringLiteral("c1111111-1111-4111-8111-111111111111"));
+        application::tasks::TaskRequest request;
+        request.moduleKey = QStringLiteral("workspace-removal-regression");
+        request.workspaceId = workspaceId;
+        request.generation = 1;
+        QSemaphore entered;
+        QSemaphore release;
+        bool lateCallback = false;
+        (void)scheduler.submit<int>(request, [&entered, &release](const application::tasks::TaskContext&) {
+            entered.release();
+            release.acquire();
+            return Result<int>::success(1);
+        }, [&lateCallback](auto) { lateCallback = true; });
+        QVERIFY(entered.tryAcquire(1, 1000));
+        scheduler.cancelWorkspace(workspaceId);
+        release.release();
+        QTRY_VERIFY_WITH_TIMEOUT(scheduler.activeTaskCount() == 0, 2000);
+        QVERIFY(!lateCallback);
+
+        bool rejected = false;
+        (void)scheduler.submit<int>(request,
+            [](const application::tasks::TaskContext&) { return Result<int>::success(2); },
+            [&rejected](auto outcome) {
+                rejected = std::holds_alternative<Result<int>>(outcome)
+                    && !std::get<Result<int>>(outcome);
+            });
+        QTRY_VERIFY_WITH_TIMEOUT(rejected, 1000);
+        scheduler.setWorkspaceBlocked(workspaceId, false);
+        request.generation = 2;
+        bool restoredWorkRan = false;
+        (void)scheduler.submit<int>(request,
+            [](const application::tasks::TaskContext&) { return Result<int>::success(3); },
+            [&restoredWorkRan](auto outcome) {
+                restoredWorkRan = std::holds_alternative<Result<int>>(outcome)
+                    && static_cast<bool>(std::get<Result<int>>(outcome));
+            });
+        QTRY_VERIFY_WITH_TIMEOUT(restoredWorkRan, 1000);
+    }
+
     void failedSaveAndRecoveryKeepWorkspaceAndEditor_data()
     {
         QTest::addColumn<bool>("blockJournalFile");

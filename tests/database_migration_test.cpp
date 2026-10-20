@@ -1,5 +1,10 @@
 #include "../src/infrastructure/database/InternalDatabaseManager.h"
+#include "../src/infrastructure/workspace/SqlWorkspaceRepository.h"
+#include "../src/application/workspaces/WorkspaceManager.h"
+#include "../src/shared/identifiers/IdGenerator.h"
+#include "../src/shared/time/ApplicationClock.h"
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QSqlDatabase>
@@ -9,6 +14,9 @@
 
 using devhub::infrastructure::database::InternalDatabaseManager;
 
+// Qt Test discovers non-static slots through the meta-object system. Its assertion
+// macros add branches that inflate cognitive complexity in these linear tests.
+// NOLINTBEGIN(readability-convert-member-functions-to-static,readability-function-cognitive-complexity)
 class DatabaseMigrationTest final : public QObject
 {
     Q_OBJECT
@@ -31,7 +39,170 @@ private slots:
             "'note_nodes', 'note_tags', 'notifications', 'ui_state', 'assistant_conversations')")));
         QVERIFY(query.next());
         QCOMPARE(query.value(0).toInt(), 10);
-        QCOMPARE(manager.currentSchemaVersion(), 7);
+        QCOMPARE(manager.currentSchemaVersion(), 8);
+        QVERIFY(query.exec(QStringLiteral("PRAGMA table_info(workspaces)")));
+        bool hasArchiveTimestamp = false;
+        while (query.next()) {
+            hasArchiveTimestamp |= query.value(1).toString() == QStringLiteral("archived_at_utc");
+        }
+        QVERIFY(hasArchiveTimestamp);
+    }
+
+    void archivingPreservesWorkspaceOwnedDataAndIdentity()
+    {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        InternalDatabaseManager manager(temporaryDirectory.filePath(QStringLiteral("devhub.db")),
+                                        temporaryDirectory.filePath(QStringLiteral("backups")));
+        QVERIFY(manager.open());
+        QVERIFY(manager.migrate());
+        QSqlQuery query(manager.database());
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO accounts(id, username_normalized, display_username, password_hash) VALUES('account-a','user','User','hash')")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO workspaces(id, account_id, display_name, root_path, entered_path, canonical_root_path) VALUES('workspace-a','account-a','Project','C:/Project','C:/Project','C:/Project')")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO workspace_settings(workspace_id, key, value) VALUES('workspace-a','theme','dark')")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO note_nodes(id, workspace_id, title) VALUES('note-a','workspace-a','Note')")));
+        QVERIFY(query.exec(QStringLiteral("UPDATE workspaces SET archived_at_utc=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id='workspace-a' AND account_id='account-a' AND archived_at_utc IS NULL")));
+        QVERIFY(query.exec(QStringLiteral("SELECT id, archived_at_utc FROM workspaces WHERE account_id='account-a' AND archived_at_utc IS NOT NULL")));
+        QVERIFY(query.next());
+        QCOMPARE(query.value(0).toString(), QStringLiteral("workspace-a"));
+        QVERIFY(!query.value(1).toString().isEmpty());
+        QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM workspace_settings WHERE workspace_id='workspace-a'")));
+        QVERIFY(query.next());
+        QCOMPARE(query.value(0).toInt(), 1);
+        QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM note_nodes WHERE workspace_id='workspace-a'")));
+        QVERIFY(query.next());
+        QCOMPARE(query.value(0).toInt(), 1);
+        QVERIFY(query.exec(QStringLiteral("UPDATE workspaces SET archived_at_utc=NULL WHERE id='workspace-a' AND account_id='account-a' AND archived_at_utc IS NOT NULL")));
+        QVERIFY(query.exec(QStringLiteral("SELECT id FROM workspaces WHERE id='workspace-a' AND account_id='account-a' AND archived_at_utc IS NULL")));
+        QVERIFY(query.next());
+        QCOMPARE(query.value(0).toString(), QStringLiteral("workspace-a"));
+    }
+
+    void workspaceRepositoryArchivesAndRestoresWithinAccountScope()
+    {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        InternalDatabaseManager manager(temporaryDirectory.filePath(QStringLiteral("devhub.db")),
+                                        temporaryDirectory.filePath(QStringLiteral("backups")));
+        QVERIFY(manager.open());
+        QVERIFY(manager.migrate());
+        auto account = devhub::domain::account::AccountId::fromString(QStringLiteral("a1111111-1111-4111-8111-111111111111"));
+        auto otherAccount = devhub::domain::account::AccountId::fromString(QStringLiteral("a2222222-2222-4222-8222-222222222222"));
+        auto workspaceId = devhub::domain::workspace::WorkspaceId::fromString(QStringLiteral("b1111111-1111-4111-8111-111111111111"));
+        QVERIFY(account && otherAccount && workspaceId);
+        QSqlQuery query(manager.database());
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO accounts(id, username_normalized, display_username, password_hash) VALUES('a1111111-1111-4111-8111-111111111111','user','User','hash')")));
+        devhub::domain::workspace::Workspace workspace(workspaceId.value(), account.value(), QStringLiteral("Project"),
+            {QStringLiteral("C:/Project"), QStringLiteral("C:/Project")}, devhub::domain::workspace::WorkspaceStatus::Ready,
+            false, 0, QDateTime::currentDateTimeUtc());
+        devhub::infrastructure::workspace::SqlWorkspaceRepository repository(manager);
+        QVERIFY(repository.add(workspace));
+        QVERIFY(!repository.archive(workspaceId.value(), otherAccount.value()));
+        auto active = repository.listForAccount(account.value());
+        QVERIFY(active);
+        QCOMPARE(active.value().size(), 1);
+        QVERIFY(repository.archive(workspaceId.value(), account.value()));
+        active = repository.listForAccount(account.value());
+        QVERIFY(active);
+        QVERIFY(active.value().isEmpty());
+        auto archived = repository.listArchivedForAccount(account.value());
+        QVERIFY(archived);
+        QCOMPARE(archived.value().size(), 1);
+        QCOMPARE(archived.value().front().id(), workspaceId.value());
+        QVERIFY(!repository.restore(workspaceId.value(), otherAccount.value()));
+        QVERIFY(repository.restore(workspaceId.value(), account.value()));
+        active = repository.listForAccount(account.value());
+        QVERIFY(active);
+        QCOMPARE(active.value().size(), 1);
+        QCOMPARE(active.value().front().id(), workspaceId.value());
+    }
+
+    void addingAnArchivedFolderRestoresItsOriginalWorkspace()
+    {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        InternalDatabaseManager database(temporaryDirectory.filePath(QStringLiteral("devhub.db")),
+                                         temporaryDirectory.filePath(QStringLiteral("backups")));
+        QVERIFY(database.open());
+        QVERIFY(database.migrate());
+        auto account = devhub::domain::account::AccountId::fromString(QStringLiteral("a3333333-3333-4333-8333-333333333333"));
+        QVERIFY(account);
+        QSqlQuery query(database.database());
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO accounts(id, username_normalized, display_username, password_hash) VALUES('a3333333-3333-4333-8333-333333333333','user','User','hash')")));
+        devhub::infrastructure::workspace::SqlWorkspaceRepository repository(database);
+        devhub::application::workspaces::WorkspaceValidator validator;
+        devhub::shared::identifiers::UuidIdGenerator ids;
+        devhub::shared::time::SystemApplicationClock clock;
+        devhub::application::workspaces::WorkspaceManager manager(repository, validator, ids, clock, account.value());
+        auto original = manager.add(QStringLiteral("Original name"), temporaryDirectory.path());
+        QVERIFY(original);
+        QVERIFY(manager.archive(original.value().id()));
+        auto readded = manager.add(QStringLiteral("New name"), temporaryDirectory.path());
+        QVERIFY(readded);
+        QCOMPARE(readded.value().id(), original.value().id());
+        QCOMPARE(readded.value().displayName(), QStringLiteral("Original name"));
+        auto active = manager.list();
+        QVERIFY(active);
+        QCOMPARE(active.value().size(), 1);
+        QCOMPARE(active.value().front().id(), original.value().id());
+        auto archived = manager.listArchived();
+        QVERIFY(archived);
+        QVERIFY(archived.value().isEmpty());
+    }
+
+    void existingWorkspaceArchivingMigrationRemainsCompatible()
+    {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        const QString databasePath = temporaryDirectory.filePath(QStringLiteral("devhub.db"));
+        const QString backupsPath = temporaryDirectory.filePath(QStringLiteral("backups"));
+        const QString migrationsPath = temporaryDirectory.filePath(QStringLiteral("migrations"));
+        QVERIFY(QDir().mkpath(migrationsPath));
+
+        // Reproduce the already-shipped migration ledger independently of the
+        // current resource name, so renaming migration 8 cannot break startup.
+        const QDir bundledMigrations(QStringLiteral(":/database/migrations"));
+        const QStringList migrationFiles = bundledMigrations.entryList(
+            {QStringLiteral("*.sql")}, QDir::Files);
+        for (const QString& name : migrationFiles) {
+            if (name.left(4).toInt() >= 8) {
+                continue;
+            }
+            QVERIFY(QFile::copy(bundledMigrations.filePath(name),
+                                QDir(migrationsPath).filePath(name)));
+        }
+        QFile migration(QDir(migrationsPath).filePath(
+            QStringLiteral("0008_workspace_archiving.sql")));
+        QVERIFY(migration.open(QIODevice::WriteOnly | QIODevice::Text));
+        const QByteArray sql = "ALTER TABLE workspaces ADD COLUMN archived_at_utc TEXT;\n"
+                               "CREATE INDEX idx_workspaces_account_archived "
+                               "ON workspaces(account_id, archived_at_utc, display_name COLLATE NOCASE);\n";
+        QCOMPARE(migration.write(sql), static_cast<qint64>(sql.size()));
+        migration.close();
+        {
+            InternalDatabaseManager legacy(databasePath, backupsPath, migrationsPath);
+            QVERIFY(legacy.open());
+            QVERIFY(legacy.migrate());
+            QSqlQuery query(legacy.database());
+            QVERIFY(query.exec(QStringLiteral(
+                "INSERT INTO workspaces(id, display_name, root_path, archived_at_utc) "
+                "VALUES('existing-workspace', 'Existing project', 'C:/Project', '2026-10-20T00:00:00Z')")));
+        }
+
+        InternalDatabaseManager current(databasePath, backupsPath);
+        QVERIFY(current.open());
+        const auto result = current.migrate();
+        QVERIFY2(result.hasValue(), result ? "" : qPrintable(result.error().technicalMessage));
+        QCOMPARE(current.currentSchemaVersion(), current.latestSchemaVersion());
+        QSqlQuery query(current.database());
+        QVERIFY(query.exec(QStringLiteral("SELECT name FROM schema_migrations WHERE version = 8")));
+        QVERIFY(query.next());
+        QCOMPARE(query.value(0).toString(), QStringLiteral("workspace_archiving"));
+        QVERIFY(query.exec(QStringLiteral(
+            "SELECT display_name, archived_at_utc FROM workspaces WHERE id = 'existing-workspace'")));
+        QVERIFY(query.next());
+        QCOMPARE(query.value(0).toString(), QStringLiteral("Existing project"));
+        QCOMPARE(query.value(1).toString(), QStringLiteral("2026-10-20T00:00:00Z"));
     }
 
     void currentDatabaseIsUnchanged()
@@ -129,6 +300,7 @@ private slots:
         QCOMPARE(QFileInfo(databasePath).size(), originalSize);
     }
 };
+// NOLINTEND(readability-convert-member-functions-to-static,readability-function-cognitive-complexity)
 
 QTEST_GUILESS_MAIN(DatabaseMigrationTest)
 #include "database_migration_test.moc"
