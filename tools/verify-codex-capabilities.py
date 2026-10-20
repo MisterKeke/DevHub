@@ -5,6 +5,7 @@ Only synthetic paths are passed to tools. Raw model/protocol bodies stay in memo
 """
 
 import argparse
+from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
@@ -74,7 +75,10 @@ def evaluate_cases(cases):
         "emptyMcpTableDoesNotDisableInheritance": index["empty-mcp-table"]["sentinels"]["mcpStarted"],
         "pluginPositiveAndNegativeControl": index["plugin-enabled-control"]["sentinels"]["pluginMcpStarted"]
             and not index["plugin-disabled"]["sentinels"]["pluginMcpStarted"],
-        "hookCliPositiveAndNegativeControl": index["cli-hook-enabled-control"].get("hookStarted") is True
+        "hookCliPositiveAndNegativeControl": all(index[name].get("exitCode") == 0
+            and index[name].get("modelRequestCount", 0) > 0 and "failure" not in index[name]
+            for name in ("cli-hook-enabled-control", "cli-hook-disabled-control"))
+            and index["cli-hook-enabled-control"].get("hookStarted") is True
             and index["cli-hook-disabled-control"].get("hookStarted") is False,
         "emptyEnvironmentPolicyPersists": index["empty-environments-sticky-followup"].get("followupTools") == ["request_user_input"],
         "hardenedModelSurfaceHasNoIoTools": all(index[name].get("offeredTools") == ["request_user_input"]
@@ -199,14 +203,14 @@ def install_synthetic_plugin(executable, codex_home, root):
     for operation in (["plugin", "marketplace", "add", str(marketplace), "--json"],
                       ["plugin", "add", "devhub-plugin-sentinel@devhub-fixture", "--json"]):
         result = subprocess.run([str(executable), *operation, "-c", "features.remote_plugin=false"],
-            env=env, cwd=root, capture_output=True, timeout=15)
+            env=env, cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
         if result.returncode:
             raise RuntimeError("synthetic-plugin-install-failed")
 
 
 def run_case(executable, output_parent, name, overrides, environments, call=None, seed=False,
              extra_args=(), turn_environments="inherit", cli_hook_control=False,
-             control_sandbox=False, plugin_seed=False, followup=False):
+             control_sandbox=False, plugin_seed=False, followup=False, expected_version="0.160.1"):
     evidence = {"case": name, "realInference": False, "experimentalApi": True}
     with tempfile.TemporaryDirectory(prefix="capability-", dir=output_parent) as temporary:
         root = Path(temporary).resolve()
@@ -241,15 +245,24 @@ def run_case(executable, output_parent, name, overrides, environments, call=None
                 arguments.extend(["-c", override])
             arguments.append("Synthetic hook control.")
             try:
-                result = subprocess.run(arguments, cwd=cwd, env=env, capture_output=True, timeout=15)
+                # Qt launches this verifier with an open stdin pipe. The CLI
+                # reads redirected stdin before handling its explicit prompt;
+                # inheriting that pipe waits forever for EOF in the desktop app.
+                result = subprocess.run(arguments, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                        capture_output=True, timeout=15)
                 evidence["exitCode"] = result.returncode
+            except subprocess.TimeoutExpired:
+                evidence["failure"] = "hook-control-timeout"
+            except OSError:
+                evidence["failure"] = "io-error"
+            finally:
                 evidence["hookStarted"] = (root / "hook-started").exists()
                 evidence["modelRequestCount"] = len(model.requests)
-            finally:
                 model.close()
             return evidence
         probe = profile_probe.Probe(executable, cwd, codex_home,
-                                    overrides=overrides + model.overrides(), extra_args=extra_args)
+                                    overrides=overrides + model.overrides(), extra_args=extra_args,
+                                    expected_version=expected_version)
         try:
             initialized = probe.request("initialize", {"clientInfo": {"name": "devhub_phase0_capabilities",
                                         "version": "0.1.0"}, "capabilities": {"experimentalApi": True}})
@@ -329,9 +342,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--version", default="0.160.1", help="Expected diagnostic version; behavioral checks determine compatibility.")
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     executable = args.executable.resolve(strict=True)
+    run_candidate = partial(run_case, expected_version=args.version)
     cases = []
     for name, overrides, environments, seed, extra_args in (
         ("candidate-empty-environments", profile_probe.OVERRIDES, [], False, ()),
@@ -349,7 +364,7 @@ def main():
         ("empty-mcp-table", profile_probe.OVERRIDES + (
             "mcp_servers={}", "features.goals=false"), [], True, ()),
     ):
-        case = run_case(executable, args.output.parent, name, overrides, environments,
+        case = run_candidate(executable, args.output.parent, name, overrides, environments,
                         seed=seed, extra_args=extra_args)
         cases.append(case)
         print(json.dumps(case, sort_keys=True), flush=True)
@@ -366,19 +381,19 @@ def main():
         ("empty-thread-blocks-image-read", profile_probe.OVERRIDES, [], "view-image", "inherit"),
         ("empty-turn-blocks-image-read", profile_probe.OVERRIDES, None, "view-image", []),
     ):
-        case = run_case(executable, args.output.parent, name, overrides, environments,
+        case = run_candidate(executable, args.output.parent, name, overrides, environments,
                         call=call, turn_environments=turn_environments,
                         control_sandbox=name in ("native-read-enabled-control", "image-read-enabled-control"))
         cases.append(case)
         print(json.dumps(case, sort_keys=True), flush=True)
     for name, enabled in (("cli-hook-enabled-control", True), ("cli-hook-disabled-control", False)):
-        case = run_case(executable, args.output.parent, name,
+        case = run_candidate(executable, args.output.parent, name,
             profile_probe.OVERRIDES + ("features.hooks=" + str(enabled).lower(),), None,
             seed=True, cli_hook_control=True)
         cases.append(case)
         print(json.dumps(case, sort_keys=True), flush=True)
     for name, enabled in (("plugin-enabled-control", True), ("plugin-disabled", False)):
-        case = run_case(executable, args.output.parent, name,
+        case = run_candidate(executable, args.output.parent, name,
             profile_probe.OVERRIDES + ("mcp_servers.devhub_sentinel.enabled=false",
                 "features.plugins=" + str(enabled).lower(), "features.goals=false"), [], plugin_seed=True)
         cases.append(case)
@@ -389,7 +404,7 @@ def main():
         ("browser-computer-enabled-empty", profile_probe.OVERRIDES + (
             "features.browser_use=true", "features.computer_use=true", "features.goals=false"), []),
     ):
-        case = run_case(executable, args.output.parent, name, overrides, environments)
+        case = run_candidate(executable, args.output.parent, name, overrides, environments)
         cases.append(case)
         print(json.dumps(case, sort_keys=True), flush=True)
     hardened = profile_probe.OVERRIDES + (
@@ -400,15 +415,15 @@ def main():
         ("hardened-browser-injection", ("browser_use", {"url": "http://127.0.0.1"})),
         ("hardened-computer-injection", ("computer_use", {"action": "invalid_phase0_action"})),
     ):
-        case = run_case(executable, args.output.parent, name, hardened, [], call=call, seed=True)
+        case = run_candidate(executable, args.output.parent, name, hardened, [], call=call, seed=True)
         cases.append(case)
         print(json.dumps(case, sort_keys=True), flush=True)
-    case = run_case(executable, args.output.parent, "empty-environments-sticky-followup",
+    case = run_candidate(executable, args.output.parent, "empty-environments-sticky-followup",
                     hardened, None, turn_environments=[], followup=True, seed=True)
     cases.append(case)
     print(json.dumps(case, sort_keys=True), flush=True)
     checks = evaluate_cases(cases)
-    evidence = {"format": 1, "codexVersion": "0.160.1", "realInference": False, "cases": cases,
+    evidence = {"format": 1, "codexVersion": args.version, "runtimePolicy": "restricted-tools-v2", "realInference": False, "cases": cases,
                 "checks": checks, "fixtureScopePassed": all(checks.values()), "releaseEligible": False,
                 "excludedProfiles": ["managed-hooks-or-conflicting-requirements", "attached-browser-or-computer-runtime",
                                      "unverified-model-catalog", "authenticated-live-chatgpt"]}

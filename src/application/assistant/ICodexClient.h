@@ -26,6 +26,9 @@ public:
     virtual shared::common::Result<qint64> interruptTurn() = 0;
     virtual bool isInitialized() const = 0;
     virtual bool profileVerified() const = 0;
+    virtual CodexCompatibilityReport compatibilityReport() const { return {}; }
+    virtual bool verifyCompatibility() { return false; }
+    virtual void cancelCompatibilityVerification() {}
     virtual bool canStartConversation() const = 0;
     virtual bool canSend() const = 0;
     virtual CodexAccount account() const = 0;
@@ -35,6 +38,7 @@ public:
     virtual bool configureDynamicTools(QJsonArray specifications) = 0;
     virtual bool resolveDynamicToolCall(const QJsonValue& requestId, const QJsonObject& response) = 0;
 signals:
+    void compatibilityChanged(CodexCompatibilityReport report);
     void initialized(CodexInitializeInfo info);
     void accountChanged(CodexAccount account);
     void loginChallenge(CodexLoginChallenge challenge);

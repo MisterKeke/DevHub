@@ -1,6 +1,7 @@
 #pragma once
 
 #include "domain/errors/AppError.h"
+#include "CodexCompatibility.h"
 
 #include <QProcessEnvironment>
 #include <QStringList>
@@ -139,6 +140,7 @@ struct CodexClientLimits final {
 struct CodexExecutable final {
     const QString path;
     const QString version;
+    const CodexCompatibilityReport compatibility = {};
 };
 
 // Immutable value snapshots. Copy construction is supported; changing a launch

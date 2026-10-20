@@ -7,9 +7,10 @@ The application currently includes workspace management, Git and service pages, 
 The project distribution license has not been selected yet. Qt’s open-source license obligations must be reviewed against that choice before binary distribution.
 
 Assistant now replaces Quick Ask inside DevHub. Its streaming UI, controller and
-safe Markdown rendering are tested offline. Native Send is available only for
-the pinned, verified runtime profile after account, model and restricted-profile
-checks pass; authenticated inference and clean-machine release validation are
+safe Markdown rendering have offline regression coverage. Native Send requires
+an executable-specific protocol match and verified runtime restrictions, plus
+account, workspace and model checks. See [Codex compatibility](docs/architecture/codex-compatibility.md).
+Authenticated inference and clean-machine release validation are
 separate checks. See the
 [Assistant UI report](docs/architecture/assistant-ui.md) for current behavior and
 remaining release checks. Opening the page checks the configured native

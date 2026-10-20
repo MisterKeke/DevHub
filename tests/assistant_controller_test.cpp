@@ -160,7 +160,9 @@ private slots:
         QTest::qWait(60); QCOMPARE(h.transport.stops, 1); QVERIFY(h.controller.canSend());
     }
     void inheritedMcpIsDisabledInBoundedChildRelaunch() {
-        Harness h({}, {}, nullptr, "0.162.0-alpha.17.2"); h.transport.native = true;
+        // The in-memory fixture exercises the same config/relaunch policy. It
+        // cannot impersonate a native executable with measured schema evidence.
+        Harness h({}, {}, nullptr, "0.162.0-alpha.17.2");
         h.controller.open();
         h.reply("initialize", {{"codexHome", h.scratch.path()}, {"userAgent", "fixture"}, {"platformFamily", "windows"}, {"platformOs", "windows"}});
         h.reply("account/read", chatGptAccount());
@@ -212,6 +214,9 @@ private slots:
         QVERIFY(diagnostics.contains("MCP servers")); QVERIFY(!diagnostics.contains("PRIVATE"));
         emit h.client.profileChecked(false, {"PRIVATE_UNKNOWN_REASON"});
         QVERIFY(!h.controller.statusText().contains("PRIVATE"));
+        emit h.client.profileChecked(false, {"mcp-inventory-unverified"});
+        QVERIFY(h.controller.statusText().contains("MCP server restrictions could not be verified"));
+        QVERIFY(!h.controller.statusText().contains("still active"));
         h.controller.reconnect();
         QVERIFY(!h.controller.diagnosticsSnapshot().join('\n').contains("MCP servers"));
     }
@@ -316,6 +321,7 @@ private slots:
         incompatible.rows.front().binding.profileFingerprint += QStringLiteral("-old");
         Harness denied({}, {}, &incompatible); incompatible.rows.front().binding.codexHomeKey = QString::fromLatin1(
             QCryptographicHash::hash(denied.scratch.path().toUtf8(), QCryptographicHash::Sha256).toHex());
+        denied.controller.setContext({"workspace-x", "Renamed workspace", "C:/fixture/workspace"});
         denied.controller.setPersistenceContext(QStringLiteral("local-account"), true); QVERIFY(denied.readyController());
         QVERIFY(denied.transport.lastRequest("thread/resume").isEmpty());
         QVERIFY(denied.controller.messages().isEmpty()); QVERIFY(!denied.controller.errorText().isEmpty());
@@ -323,6 +329,7 @@ private slots:
         MemoryConversationRepository deleted = repository;
         Harness missing({}, {}, &deleted); deleted.rows.front().binding.codexHomeKey = QString::fromLatin1(
             QCryptographicHash::hash(missing.scratch.path().toUtf8(), QCryptographicHash::Sha256).toHex());
+        missing.controller.setContext({"workspace-x", "Renamed workspace", "C:/fixture/workspace"});
         missing.controller.setPersistenceContext(QStringLiteral("local-account"), true); QVERIFY(missing.readyController());
         const auto resumeId = missing.requestId("thread/resume"); QVERIFY(resumeId > 0);
         missing.transport.deliver({{"id", resumeId}, {"error", QJsonObject{{"code", -32603}, {"message", "thread missing"}}}});
@@ -336,12 +343,30 @@ private slots:
         CodexClientLimits tinyHistory; tinyHistory.historyBytes = 64;
         Harness bounded({}, tinyHistory, &oversized); oversized.rows.front().binding.codexHomeKey = QString::fromLatin1(
             QCryptographicHash::hash(bounded.scratch.path().toUtf8(), QCryptographicHash::Sha256).toHex());
+        bounded.controller.setContext({"workspace-x", "Renamed workspace", "C:/fixture/workspace"});
         bounded.controller.setPersistenceContext(QStringLiteral("local-account"), true); QVERIFY(bounded.readyController());
         const auto boundedResumeId = bounded.requestId("thread/resume"); QVERIFY(boundedResumeId > 0);
         bounded.reply("thread/resume", bounded.threadResult(bounded.thread("thread-1", QJsonArray{
             turn("turn-1", "completed", QJsonArray{user, agent("agent-1", "history larger than the cap")})})));
         QVERIFY(bounded.controller.messages().isEmpty());
         QVERIFY(!bounded.controller.errorText().isEmpty());
+    }
+    void savedConversationNeverAttachesToAnotherWorkspace()
+    {
+        MemoryConversationRepository repository;
+        Harness original({}, {}, &repository);
+        original.controller.setContext({"workspace-a", "A", "C:/workspace-a"});
+        original.controller.setPersistenceContext("local-account", true);
+        QVERIFY(original.readyController()); QVERIFY(original.sendAndAccept()); original.finish();
+        QCOMPARE(repository.rows.size(), 1);
+        Harness other({}, {}, &repository);
+        repository.rows.front().binding.codexHomeKey = QString::fromLatin1(
+            QCryptographicHash::hash(other.scratch.path().toUtf8(), QCryptographicHash::Sha256).toHex());
+        other.controller.setContext({"workspace-b", "B", "C:/workspace-b"});
+        other.controller.setPersistenceContext("local-account", true); QVERIFY(other.readyController());
+        QVERIFY(other.transport.lastRequest("thread/resume").isEmpty());
+        QVERIFY(other.controller.errorText().contains("different workspace"));
+        QCOMPARE(repository.rows.front().conversation.context.workspaceId, QString("workspace-a"));
     }
     void partiallyAcceptedSendPersistsUncertaintyWithoutReplay()
     {
@@ -359,9 +384,20 @@ private slots:
     }
     void nativeGateBeforeThreadCreation()
     {
-        Harness h; h.transport.native = true; QVERIFY(h.readyController()); QVERIFY(!h.controller.canSend());
+        Harness h; h.transport.native = true; h.controller.open();
+        QCOMPARE(h.controller.connection(), AssistantConnectionState::Failed);
+        QVERIFY(!h.client.isInitialized()); QVERIFY(h.transport.launches.isEmpty());
+        QCOMPARE(h.client.compatibilityReport().reason, CodexCompatibilityReason::EvidenceMissing);
+        QVERIFY(!h.controller.canSend());
         QVERIFY(!h.controller.send("forbidden")); QVERIFY(h.transport.lastRequest("thread/start").isEmpty());
-        QVERIFY(h.controller.statusText().contains("not enabled for this runtime"));
+        QVERIFY(h.controller.statusText().contains("compatibility evidence"));
+    }
+    void featureInventoryFailureNamesTheFailedRestriction() {
+        Harness h; QVERIFY(h.readyController());
+        emit h.client.profileChecked(false, {"native-feature-enabled:shell_tool", "native-feature-enabled:hooks"});
+        QVERIFY(h.controller.errorText().contains("command execution"));
+        QVERIFY(h.controller.errorText().contains("Codex hooks"));
+        QVERIFY(!h.controller.errorText().contains("native-feature-enabled"));
     }
     void synchronousTransportCompletion()
     {

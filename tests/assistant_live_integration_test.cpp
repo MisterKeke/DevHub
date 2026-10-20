@@ -233,7 +233,7 @@ private slots:
         m_controller->setPersistenceContext(QLatin1String(kTestAccountScope), true);
 
         QSignalSpy toolActivity(m_controller.get(), &AssistantController::toolActivityChanged);
-        if (CodexVersionSupport::isSupported(m_version)) {
+        if (CodexVersionSupport::fixtureVersions().contains(m_version)) {
             const QString git = QStandardPaths::findExecutable(QStringLiteral("git"));
             QVERIFY2(!git.isEmpty(), "The live dynamic-tool check requires Git on PATH for its disposable repository.");
             QVERIFY(m_toolWorkspace.isValid());
@@ -308,7 +308,7 @@ private slots:
 
         // The dedicated library retains explicit development-validation opt-in
         // even though the normal production alpha now admits verified chat.
-        QVERIFY2(!CodexRuntimeProfile::productionChatEnabled("0.162.0-alpha.17.2"),
+        QVERIFY2(!CodexRuntimeProfile::productionChatEnabled(m_client->compatibilityReport()),
             "Developer validation must retain its disposable-profile opt-in.");
         QVERIFY2(m_client->canStartConversation(),
             "Live inference requires the explicit build, executable, capability, account, and disposable-home gates.");

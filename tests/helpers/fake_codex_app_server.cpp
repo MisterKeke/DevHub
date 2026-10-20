@@ -1,6 +1,7 @@
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
+#include <QDir>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
@@ -35,13 +36,34 @@ int main(int argc, char** argv)
     const auto args = app.arguments();
     if (args.contains(QStringLiteral("--version"))) {
         const auto name = QFileInfo(app.applicationFilePath()).baseName();
-        if (name.contains(QStringLiteral("hang"))) return app.exec();
+        if (name.contains(QStringLiteral("hang")) && !name.contains("schema-")) return app.exec();
         if (name.contains(QStringLiteral("oversize"))) output(QByteArray(8192, 'v'));
         else if (name.contains(QStringLiteral("unknown"))) output("codex-cli 9.9.9\n");
         else if (name.contains(QStringLiteral("badversion"))) output("not codex\n");
         else if (name.contains(QStringLiteral("alpha"))) output("codex-cli 0.162.0-alpha.17.2\r\n");
-        else if (name.contains(QStringLiteral("unsupported"))) output("codex-cli 0.163.0\r\n");
+        else if (name.contains(QStringLiteral("unsupported")) || name.contains(QStringLiteral("future"))) output("codex-cli 0.163.0\r\n");
         else output("codex-cli 0.160.1\r\n");
+        return 0;
+    }
+    if (args.contains("generate-json-schema")) {
+        const auto name = QFileInfo(app.applicationFilePath()).baseName();
+        if (name.contains("schema-experimental") && !args.contains("--experimental")) return 2;
+        if (name.contains("schema-hang")) return app.exec();
+        if (name.contains("schema-unsupported")) return 2;
+        const auto directory = args.value(args.indexOf("--out") + 1);
+        if (directory.isEmpty() || !QDir().mkpath(directory)) return 3;
+        QFile outputFile(QDir(directory).filePath("projection.json"));
+        if (!outputFile.open(QIODevice::WriteOnly)) return 3;
+        if (name.contains("schema-malformed")) outputFile.write("{truncated");
+        else if (name.contains("schema-limit")) outputFile.write(QByteArray(4 * 1024 * 1024 + 1, 'x'));
+        else if (name.contains("unknown")) outputFile.write("{}");
+        else {
+            const auto version = name.contains("alpha") || name.contains("future") || name.contains("unsupported")
+                ? "0.162.0-alpha.17.2" : "0.160.1";
+            QFile fixture(QStringLiteral(DEVHUB_CODEX_FIXTURE_ROOT) + '/' + version + "/experimental.json");
+            if (!fixture.open(QIODevice::ReadOnly)) return 3;
+            outputFile.write(fixture.readAll());
+        }
         return 0;
     }
     const QString scenario = args.value(1, QStringLiteral("echo"));

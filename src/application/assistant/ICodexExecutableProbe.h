@@ -10,6 +10,7 @@ public:
     virtual void cancel() = 0;
     virtual bool isProbing() const = 0;
 signals:
+    void compatibilityChecked(CodexCompatibilityReport report, quint64 generation);
     void executableFound(CodexExecutable executable, quint64 generation);
     void probeFailed(domain::errors::AppError error, quint64 generation);
 };

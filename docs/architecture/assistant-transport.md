@@ -1,5 +1,8 @@
 # Assistant process and transport prototype
 
+For current discovery, schema inspection, evidence and failure handling, see
+[Codex compatibility](codex-compatibility.md). The phase report below is historical.
+
 Phase 1 implements `devhub_assistant` as a Qt Core static library. It contains
 application launch/probe values and the replaceable QObject `ICodexTransport` seam,
 plus the native executable locator, JSONL codec and `CodexProcess`. The executable

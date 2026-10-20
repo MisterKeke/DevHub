@@ -102,6 +102,7 @@ set(DEVHUB_ASSISTANT_SOURCES
     src/application/assistant/AssistantController.h
     src/application/assistant/AssistantController.cpp
     src/application/assistant/AssistantTypes.h
+    src/application/assistant/CodexCompatibility.h
     src/application/assistant/AssistantToolRegistry.h
     src/application/assistant/AssistantToolRegistry.cpp
     src/application/assistant/AssistantToolHandlers.h
@@ -127,12 +128,23 @@ set(DEVHUB_ASSISTANT_SOURCES
     src/infrastructure/codex/CodexRuntimeProfile.cpp
     src/infrastructure/codex/CodexWireContract.h
     src/infrastructure/codex/CodexWireContract.cpp
+    src/infrastructure/codex/CodexProtocolProfile.h
+    src/infrastructure/codex/CodexProtocolProfile.cpp
+    src/infrastructure/codex/CodexSchemaSurface.h
+    src/infrastructure/codex/CodexSchemaSurface.cpp
+    src/infrastructure/codex/CodexSchemaInspector.h
+    src/infrastructure/codex/CodexSchemaInspector.cpp
+    src/infrastructure/codex/CodexBehaviorVerifier.h
+    src/infrastructure/codex/CodexBehaviorVerifier.cpp
+    src/infrastructure/codex/CodexProcessTree.h
+    src/infrastructure/codex/CodexProcessTree.cpp
     src/application/git/GitExecutableLocator.cpp
     src/application/git/GitCommandRunner.cpp
     src/application/git/GitStatusParser.cpp
     src/application/git/GitRepositoryLocator.cpp
     src/application/git/GitService.cpp
     resources/codex_contracts.qrc
+    resources/codex_verification.qrc
 )
 
 add_library(devhub_file_services STATIC

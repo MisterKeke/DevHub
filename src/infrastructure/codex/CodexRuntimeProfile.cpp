@@ -1,5 +1,6 @@
 #include "CodexRuntimeProfile.h"
 #include "CodexVersionSupport.h"
+#include "CodexProtocolProfile.h"
 #include "application/assistant/CodexLoginPolicy.h"
 #include <QCryptographicHash>
 #include <QJsonArray>
@@ -9,6 +10,7 @@
 #include <QFile>
 #include <QProcessEnvironment>
 #include <QSet>
+#include <QHash>
 #include <cmath>
 #include <optional>
 
@@ -161,9 +163,13 @@ QStringList CodexRuntimeProfile::rejectionReasons(const QJsonObject& configResul
     // and enterprise/MDM sources remain outside the bounded profile.
     const auto layers = configResult.value("layers");
     if (!layers.isArray()) reasons << "missing-config-layers";
+    if (layers.toArray().size() > 64) return {QStringLiteral("config-layer-limit")};
     for (const auto& layer : layers.toArray()) {
-        const auto source = layer.toObject().value("name").toObject().value("type").toString();
+        const auto sourceObject = layer.toObject().value("name").toObject();
+        const auto source = sourceObject.value("type").toString();
         if (source != "user" && source != "project" && source != "sessionFlags" && source != "system") reasons << "unverified-config-source";
+        if ((source == "user" || source == "system") && !QFileInfo(sourceObject.value("file").toString()).isAbsolute()) reasons << "invalid-config-source-path";
+        if (source == "project" && !QFileInfo(sourceObject.value("dotCodexFolder").toString()).isAbsolute()) reasons << "invalid-config-source-path";
     }
     const auto required = requirementsResult.value("requirements");
     if (!required.isUndefined() && !required.isNull()) {
@@ -200,13 +206,109 @@ QStringList CodexRuntimeProfile::rejectionReasons(const QJsonObject& configResul
 }
 QString CodexRuntimeProfile::fingerprint(const QStringList& arguments)
 {
-    return fingerprint(QStringLiteral("0.160.1"), arguments);
+    return fingerprint(QStringLiteral("restricted-legacy-history-v2"), arguments);
 }
-QString CodexRuntimeProfile::fingerprint(const QString& version, const QStringList& arguments)
+QString CodexRuntimeProfile::fingerprint(const QString& adapterSemantics, const QStringList& arguments)
 {
-    const auto profile = QJsonDocument(QJsonArray{"devhub-text-only-v1", version, true,
-        QJsonArray::fromStringList(arguments.isEmpty() ? launchArguments().value() : arguments), "environments-empty", "deny-server-tools", "legacy-history"});
+    const auto profile = QJsonDocument(QJsonArray{"devhub-text-only-v2", adapterSemantics, true,
+        QJsonArray::fromStringList(arguments.isEmpty() ? launchArguments().value() : arguments),
+        "filtered-process-environment-v1", "environments-empty", "deny-server-tools", "legacy-history"});
     return QString::fromLatin1(QCryptographicHash::hash(profile.toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex());
+}
+QString CodexRuntimeProfile::legacyFingerprint(const QString& version, const QStringList& arguments, const QString& toolInventory)
+{
+    if (CodexProtocolProfile::fixture(version).id.isEmpty()) return {};
+    const auto bytes = QJsonDocument(QJsonArray{"devhub-text-only-v1", version, true,
+        QJsonArray::fromStringList(arguments.isEmpty() ? launchArguments().value() : arguments),
+        "environments-empty", "deny-server-tools", "legacy-history"}).toJson(QJsonDocument::Compact);
+    auto identity = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex();
+    if (!toolInventory.isEmpty()) identity = QCryptographicHash::hash(identity + '|' + toolInventory.toUtf8(), QCryptographicHash::Sha256).toHex();
+    return QString::fromLatin1(identity);
+}
+QStringList CodexRuntimeProfile::inventoryRejectionReasons(const QString& method, const QJsonObject& result,
+    const QJsonObject& configResult)
+{
+    const auto cursor = result.value("nextCursor");
+    if (!cursor.isUndefined() && !cursor.isNull() && !cursor.isString()) return {"inventory-unverified"};
+    if (!result.value("nextCursor").toString().isEmpty()) return {"inventory-incomplete"};
+    if (method == "plugin/list") {
+        if (!result.value("marketplaces").isArray() || !result.value("marketplaceLoadErrors").toArray().isEmpty()) return {"plugin-inventory-unverified"};
+        for (const auto& value : result.value("marketplaces").toArray()) {
+            const auto marketplace = value.toObject();
+            if (!marketplace.value("plugins").isArray()) return {"plugin-inventory-unverified"};
+            for (const auto& plugin : marketplace.value("plugins").toArray())
+                if (!disabled(plugin.toObject().value("enabled"))) return {"plugin-enabled"};
+        }
+        return {};
+    }
+    if (!result.value("data").isArray()) return {"inventory-unverified"};
+    const auto data = result.value("data").toArray();
+    if (data.size() > 256) return {"inventory-incomplete"};
+    if (method == "mcpServerStatus/list") {
+        const auto configured = configResult.value("config").toObject().value("mcp_servers").toObject();
+        QSet<QString> names;
+        for (const auto& entry : data) {
+            const auto row = entry.toObject();
+            const auto name = row.value("name").toString();
+            if (name.isEmpty() || names.contains(name) || !row.value("tools").isObject()
+                || !row.value("resources").isArray() || !row.value("resourceTemplates").isArray())
+                return {"mcp-inventory-unverified"};
+            names.insert(name);
+            const auto server = configured.value(name);
+            if (!server.isObject() || !server.toObject().value("enabled").isBool())
+                return {"mcp-inventory-unverified"};
+            if (!disabled(server.toObject().value("enabled"))) return {"inherited-mcp-active"};
+            // A process-wide inventory includes disabled configuration entries.
+            // runtimeStatus is optional/nullable outside a thread; corroborate
+            // those entries with this launch's effective config, never presence
+            // alone. Explicit connection states must still say disabled.
+            const auto status = row.value("runtimeStatus");
+            if (!status.isUndefined() && !status.isNull() && status != "disabled")
+                return {"inherited-mcp-active"};
+            if (!row.value("tools").toObject().isEmpty() || !row.value("resources").toArray().isEmpty()
+                || !row.value("resourceTemplates").toArray().isEmpty()) return {"inherited-mcp-active"};
+            const auto toolsError = row.value("toolsError");
+            if (!toolsError.isUndefined() && !toolsError.isNull()) return {"mcp-inventory-unverified"};
+        }
+        return {};
+    }
+    if (method == "hooks/list") {
+        for (const auto& entry : data) {
+            const auto row = entry.toObject();
+            if (!row.value("hooks").isArray() || !row.value("errors").isArray() || !row.value("warnings").isArray()
+                || !row.value("errors").toArray().isEmpty() || !row.value("warnings").toArray().isEmpty()) return {"hooks-inventory-unverified"};
+            for (const auto& hook : row.value("hooks").toArray())
+                if (!disabled(hook.toObject().value("enabled"))) return {"hook-enabled"};
+        }
+        return {};
+    }
+    if (method == "experimentalFeature/list") {
+        QSet<QString> seen;
+        QHash<QString, QJsonObject> features;
+        for (const auto& entry : data) {
+            const auto feature = entry.toObject(); const auto name = feature.value("name").toString();
+            if (name.isEmpty() || seen.contains(name) || !feature.value("enabled").isBool()) return {"feature-inventory-unverified"};
+            seen.insert(name);
+            features.insert(name, feature);
+        }
+        // Effective config checks already require every restricted key. The
+        // inventory must corroborate it rather than silently omit these flags.
+        for (const auto& name : restrictedFeatures()) if (!seen.contains(name)) return {"feature-inventory-incomplete"};
+        QStringList reasons;
+        for (const auto& name : restrictedFeatures()) {
+            const auto feature = features.value(name);
+            if (disabled(feature.value("enabled"))) continue;
+            // Modern stable unified_exec is an always-on backend selector; the
+            // shell_tool master gate controls whether execution tools are offered.
+            // Config still must contain our explicit overrides, and native Send
+            // still needs fresh behavior evidence of an empty native inventory.
+            if (name == "unified_exec" && feature.value("stage") == "stable"
+                && disabled(features.value("shell_tool").value("enabled"))) continue;
+            reasons << "native-feature-enabled:" + name;
+        }
+        return reasons;
+    }
+    return {"inventory-unverified"};
 }
 bool CodexRuntimeProfile::acceptsEnvironment(const QProcessEnvironment& environment)
 {
@@ -230,15 +332,16 @@ bool CodexRuntimeProfile::developmentLiveValidationBuild()
     return false;
 #endif
 }
-bool CodexRuntimeProfile::productionChatEnabled(const QString& version)
+bool CodexRuntimeProfile::productionChatEnabled(const application::assistant::CodexCompatibilityReport& report)
 {
-    return !developmentLiveValidationBuild() && version == QStringLiteral("0.162.0-alpha.17.2");
+    return !developmentLiveValidationBuild() && report.protocolCompatible && report.runtimePolicyVerified
+        && report.state == application::assistant::CodexCompatibilityState::Compatible;
 }
 
 bool CodexRuntimeProfile::developmentLiveInferenceAuthorized(
     const QString& executablePath, const QString& version, const QProcessEnvironment& childEnvironment)
 {
-    if (!developmentLiveValidationBuild() || !CodexVersionSupport::isSupported(version)
+    if (!developmentLiveValidationBuild() || CodexProtocolProfile::fixture(version).id.isEmpty()
         || !acceptsEnvironment(childEnvironment)) return false;
 
     const auto processEnvironment = QProcessEnvironment::systemEnvironment();

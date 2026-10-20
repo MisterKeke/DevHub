@@ -35,15 +35,12 @@ private slots:
         QCOMPARE(CodexVersionSupport::parseVersionResponse(QStringLiteral("codex-cli 0.162.0-alpha.17.2\r\n")),
             std::optional<QString>(alpha));
         QVERIFY(!CodexVersionSupport::parseVersionResponse(QStringLiteral("codex-cli 0.163.0\nextra\n")));
-        QVERIFY(CodexVersionSupport::isSupported(QStringLiteral("0.160.1")));
-        QVERIFY(CodexVersionSupport::isSupported(alpha));
-        QCOMPARE(CodexVersionSupport::supportedVersions().at(1), alpha);
+        QCOMPARE(CodexVersionSupport::fixtureVersions().at(1), alpha);
         for (const auto& malformed : {QString{}, QStringLiteral("0.162"), QStringLiteral("0.162.0-"),
                  QStringLiteral("codex-cli 0.162.0-alpha.17.2"), QStringLiteral("0.162.0..alpha"),
                  QStringLiteral("0.162.0-alpha.017.2"), QStringLiteral("01.162.0")})
             QVERIFY(!CodexVersionSupport::isValidVersion(malformed));
-        QVERIFY(!CodexVersionSupport::isSupported(QStringLiteral("0.163.0")));
-        QVERIFY(CodexVersionSupport::unsupportedMessage(QStringLiteral("0.163.0")).contains(QStringLiteral("0.163.0")));
+        QVERIFY(CodexVersionSupport::isValidVersion(QStringLiteral("0.163.0")));
     }
     void fragmentedUtf8()
     {

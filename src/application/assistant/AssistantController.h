@@ -27,6 +27,10 @@ public:
     [[nodiscard]] std::optional<CodexLoginChallenge> accountChallenge() const { return m_challenge; }
     [[nodiscard]] QString loginStatusText() const { return m_loginStatus; }
     [[nodiscard]] QString runtimeText() const;
+    [[nodiscard]] bool canVerifyCompatibility() const;
+    [[nodiscard]] bool compatibilityVerificationActive() const { return m_client.compatibilityReport().verificationInProgress; }
+    void verifyCompatibility();
+    void cancelCompatibilityVerification() { m_client.cancelCompatibilityVerification(); }
     [[nodiscard]] bool setupAllowed() const { return m_allowed; }
     [[nodiscard]] const QList<CodexModel>& models() const { return m_models; }
     [[nodiscard]] AssistantConfiguration configuration() const { return m_configuration; }

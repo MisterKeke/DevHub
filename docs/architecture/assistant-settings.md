@@ -1,5 +1,8 @@
 # Assistant setup and authentication
 
+Current runtime admission and migration rules are specified in
+[Codex compatibility](codex-compatibility.md).
+
 Phase 4 adds an Assistant tab to both DevHub Settings entry points. The
 controller and typed client own runtime state; widgets display snapshots and
 request explicit actions.
@@ -23,7 +26,7 @@ it as invalid and does not fall back to PATH. Corrupt stored Assistant values
 become an invalid sentinel instead of silently choosing PATH or another model.
 
 Browse selects a native executable. Recheck asynchronously probes the current
-draft using the bounded version check. It does not save, connect or sign in.
+draft using bounded executable identity and schema inspection. It does not save, connect or sign in.
 Its independent locator cannot interrupt the active Assistant backend. Edits and
 dialog closure cancel the owned probe; stale generations cannot replace status.
 Immediate recheck after cancellation waits for the previous child to exit.
@@ -42,9 +45,8 @@ the transcript and composer; it never replays a message. On a new app session,
 Phase 5 resumes only compatible conversations associated by DevHub. An unavailable
 or incompatible association requires New Chat.
 
-The saved runtime profile fingerprint includes the Codex version. Switching
-between supported versions therefore does not silently resume a conversation
-under a different runtime contract.
+The saved profile uses semantic adapter, policy and tool identities. A compatible
+upgrade can resume only after account, home, workspace and runtime revalidation.
 
 ## Status and models
 
@@ -54,16 +56,12 @@ signed out, ChatGPT, unsupported API-key/other accounts and expired sign-in are
 distinct. Raw account identifiers, credential paths, email and server diagnostics
 are not displayed.
 
-DevHub supports the tested native `codex-cli 0.160.1` and
-`codex-cli 0.162.0-alpha.17.2` profiles. Version output accepts semantic
-prerelease/build suffixes and preserves the complete detected version; a valid
-but untested version is rejected with that version shown in the setup error.
-The protocol contracts embedded in DevHub are generated from each supported
-executable's stable and experimental `app-server generate-json-schema` bundles.
-The 0.162.0 alpha schemas retain the requests and responses DevHub uses. Their
-differences are additive optional `supportsIndependentSpeedModes`, `parentTurnId`
-and `rootTurnId` fields; DevHub ignores these additions and continues validating
-its required fields, so no request adaptation was needed.
+The two implemented adapters use 0.160.1 and 0.162.0-alpha.17.2 fixture anchors;
+matching releases can share an adapter. Reported versions preserve semantic
+prerelease/build suffixes but do not grant admission. Compatibility status is
+shown separately from effective configuration restrictions. Verify runtime
+restrictions runs explicit offline synthetic checks using native Python 3 and
+disposable Codex homes. Missing behavioral evidence leaves Send disabled.
 
 Model choices come from the tested `model/list` response's first 100 entries.
 Hidden/non-text entries are omitted; duplicates are collapsed and availability

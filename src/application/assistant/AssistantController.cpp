@@ -22,6 +22,13 @@ bool sameContextBinding(const AssistantContext& left, const AssistantContext& ri
 }
 QStringList profileProblems(const QStringList& reasons)
 {
+    static const QHash<QString, QString> featureLabels{
+        {"shell_tool", QObject::tr("command execution")}, {"unified_exec", QObject::tr("resumable command execution")},
+        {"apps", QObject::tr("Codex apps")}, {"plugins", QObject::tr("Codex plugins")}, {"hooks", QObject::tr("Codex hooks")},
+        {"browser_use", QObject::tr("browser control")}, {"computer_use", QObject::tr("computer control")},
+        {"goals", QObject::tr("background goals")}, {"image_generation", QObject::tr("image generation")},
+        {"multi_agent", QObject::tr("multiple agents")}, {"js_repl", QObject::tr("JavaScript execution")},
+        {"apply_patch_freeform", QObject::tr("native file editing")}, {"shell_snapshot", QObject::tr("shell environment snapshots")}};
     QStringList problems;
     // Explain only known checks; never display raw runtime/configuration values.
     for (const auto& reason : reasons) {
@@ -32,7 +39,18 @@ QStringList profileProblems(const QStringList& reasons)
         else if (reason == "unverified-provider-overrides" || reason == "unsupported-auth-or-provider") problem = QObject::tr("the authentication or model provider settings are unsupported");
         else if (reason == "unverified-config-source") problem = QObject::tr("a configuration source is unverified");
         else if (reason == "unverified-managed-requirements" || reason == "invalid-managed-requirements") problem = QObject::tr("managed requirements are unsupported");
-        else if (reason.startsWith("feature-not-disabled:") || reason == "web-search-not-disabled" || reason == "unsafe-default-policy") problem = QObject::tr("native capabilities or policies do not meet the restrictions");
+        else if (reason.startsWith("feature-not-disabled:") || reason.startsWith("native-feature-enabled:")) {
+            const auto label = featureLabels.value(reason.section(':', 1));
+            problem = label.isEmpty() ? QObject::tr("a native Codex feature could not be verified as disabled")
+                : QObject::tr("%1 is enabled in Codex").arg(label);
+        }
+        else if (reason == "web-search-not-disabled" || reason == "unsafe-default-policy") problem = QObject::tr("native capabilities or policies do not meet the restrictions");
+        else if (reason == "feature-inventory-incomplete" || reason == "feature-inventory-unverified") problem = QObject::tr("Codex did not return a complete, valid feature inventory");
+        else if (reason == "configuration-watch-unavailable") problem = QObject::tr("Codex configuration files could not be monitored for changes");
+        else if (reason == "hook-enabled" || reason == "hooks-inventory-unverified") problem = QObject::tr("Codex hooks are active or could not be verified as disabled");
+        else if (reason == "plugin-enabled" || reason == "plugin-inventory-unverified") problem = QObject::tr("Codex plugins are active or could not be verified as disabled");
+        else if (reason == "inherited-mcp-active") problem = QObject::tr("an inherited MCP server is still active");
+        else if (reason == "mcp-inventory-unverified") problem = QObject::tr("inherited MCP server restrictions could not be verified");
         else if (reason == "unverified-capability-roots") problem = QObject::tr("additional workspace access is configured");
         else problem = QObject::tr("a profile restriction could not be verified");
         if (!problems.contains(problem)) problems.append(problem);
@@ -48,6 +66,10 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
       m_environment(std::move(environment)), m_limits(limits)
 {
     resetConversation();
+    connect(&client, &ICodexClient::compatibilityChanged, this, [this] {
+        if (m_client.compatibilityReport().runtimePolicyVerified) maybeRestoreConversation();
+        emit stateChanged();
+    });
     m_renderTimer.setSingleShot(true); m_renderTimer.setInterval(m_limits.renderMilliseconds);
     m_cancelTimer.setSingleShot(true); m_cancelTimer.setInterval(m_limits.cancellationMilliseconds);
     m_startupTimer.setSingleShot(true); m_startupTimer.setInterval(m_limits.startupMilliseconds);
@@ -96,7 +118,8 @@ AssistantController::AssistantController(ICodexClient& client, shared::time::IAp
     });
     connect(&client, &ICodexClient::profileChecked, this, [this](bool accepted, const QStringList& reasons) {
         m_profileProblems = accepted ? QStringList{} : profileProblems(reasons);
-        if (!accepted) setError(ErrorCode::AssistantPermissionDenied, tr("Review the inherited Codex configuration and reconnect after resolving the listed restrictions."));
+        if (!accepted) setError(ErrorCode::AssistantPermissionDenied,
+            tr("Codex restriction check failed: %1. Reconnect after resolving this check.").arg(m_profileProblems.join(QStringLiteral("; "))));
         else maybeRestoreConversation();
         refreshConnection();
     });
@@ -258,7 +281,7 @@ QString AssistantController::statusText() const
     if (!account.requiresOpenaiAuth || account.identityFingerprint.isEmpty()) return tr("The Codex account routing has not passed verification. Reconnect after checking your ChatGPT sign-in.");
     if (m_model.isEmpty() && !m_configuration.preferredModel.isEmpty()) return tr("The selected model is unavailable. Choose another model in Assistant settings.");
     if (m_model.isEmpty()) return m_modelsRequested ? tr("No text model is available in the Codex catalog.") : tr("Checking models…");
-    if (!m_client.canStartConversation() && !m_client.canSend()) return tr("Native chat is not enabled for this runtime. Select Codex 0.162.0-alpha.17.2 in Assistant settings.");
+    if (!m_client.canStartConversation() && !m_client.canSend()) return m_client.compatibilityReport().explanation;
     return tr("Codex is ready. Text chat stays inside DevHub.");
 }
 const AssistantMessage* AssistantController::message(const QUuid& id) const
@@ -629,6 +652,10 @@ QStringList AssistantController::diagnosticsSnapshot() const
     return {tr("Assistant connection: %1").arg(connection),
             tr("Assistant operation: %1").arg(operation),
             tr("Codex runtime: %1; profile: %2").arg(version, profile),
+            tr("Codex compatibility: %1 (%2); adapter: %3; binary: %4; configuration: %5; policy: %6")
+                .arg(m_client.compatibilityReport().stateText(), m_client.compatibilityReport().reasonCode(),
+                    m_client.compatibilityReport().adapter, m_client.compatibilityReport().binaryIdentity,
+                    m_client.compatibilityReport().configurationIdentity, m_client.compatibilityReport().policyIdentity),
             tr("Codex profile restrictions: %1").arg(m_profileProblems.isEmpty() ? tr("none reported") : m_profileProblems.join(QStringLiteral("; "))),
             tr("Assistant access generation: %1").arg(m_accessGeneration)};
 }
@@ -708,9 +735,25 @@ QString AssistantController::runtimeText() const
     const QString process = m_connection == AssistantConnectionState::Probing ? tr("Checking executable")
         : m_connection == AssistantConnectionState::Starting ? tr("Starting") : m_connection == AssistantConnectionState::Stopping ? tr("Stopping")
         : m_connection == AssistantConnectionState::Failed ? tr("Failed") : m_client.isInitialized() ? tr("Running") : tr("Disconnected");
-    return tr("Version: %1\nProcess: %2\nAccount: %3\nRestrictions: %4")
+    const auto report = m_client.compatibilityReport();
+    const auto restrictionStatus = !m_client.profileVerified() ? tr("Not verified")
+        : report.runtimePolicyVerified ? tr("Verified") : tr("Configuration checked; behavior verification required");
+    const auto explanation = report.reason == CodexCompatibilityReason::RuntimeRestrictionFailed && !m_profileProblems.isEmpty()
+        ? tr("Runtime restriction check failed: %1.").arg(m_profileProblems.join(QStringLiteral("; ")))
+        : report.explanation;
+    return tr("Version: %1\nProcess: %2\nAccount: %3\nRestrictions: %4\nCompatibility: %5\n%6")
         .arg(m_runtimeVersion.isEmpty() ? tr("Not checked") : m_runtimeVersion, process, account,
-            m_client.profileVerified() ? tr("Verified") : tr("Not verified"));
+            restrictionStatus, report.stateText(), explanation);
+}
+bool AssistantController::canVerifyCompatibility() const
+{
+    return m_allowed && !busy() && !loginActive() && !m_pendingConfiguration
+        && m_client.isInitialized() && m_client.profileVerified() && !compatibilityVerificationActive()
+        && m_client.compatibilityReport().protocolCompatible;
+}
+void AssistantController::verifyCompatibility()
+{
+    if (canVerifyCompatibility()) (void)m_client.verifyCompatibility();
 }
 void AssistantController::setError(ErrorCode code, const QString& text)
 {
@@ -748,6 +791,7 @@ void AssistantController::maybeRestoreConversation()
     if (m_restoreAttempted || !m_allowed
         || !m_client.isInitialized() || !m_client.profileVerified() || m_client.account().mode != CodexAccountMode::ChatGpt
         || !m_client.account().requiresOpenaiAuth || m_client.account().identityFingerprint.isEmpty()
+        || (!m_client.canStartConversation() && !m_client.canSend())
         || m_model.isEmpty() || busy()) return;
     const bool current = !m_binding.threadId.isEmpty() && m_client.threadBinding().threadId.isEmpty();
     if (!current && (m_autoRestoreSuppressed || !m_restoreEnabled || !m_repository || m_accountId.isEmpty()
@@ -764,6 +808,10 @@ void AssistantController::maybeRestoreConversation()
         if (!saved) { setError(saved.error().code, tr("The live chat is available, but saved conversation metadata could not be read.")); return; }
         if (saved.value().isEmpty()) return;
         metadata = saved.value().first();
+    }
+    if (!sameContextBinding(metadata.conversation.context, m_selectedContext)) {
+        m_restoreUnavailable = true;
+        setError(ErrorCode::AssistantHistoryUnavailable, tr("The saved conversation belongs to a different workspace. Start a new chat.")); return;
     }
     if (metadata.devhubAccountId != m_accountId || metadata.binding.accountFingerprint != m_client.account().identityFingerprint
         || metadata.binding.threadId.isEmpty()) {

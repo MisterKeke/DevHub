@@ -5,6 +5,9 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
+import subprocess
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +19,9 @@ spec.loader.exec_module(freeze)
 capability_spec = importlib.util.spec_from_file_location("verify_codex_capabilities", ROOT / "tools" / "verify-codex-capabilities.py")
 capabilities = importlib.util.module_from_spec(capability_spec)
 capability_spec.loader.exec_module(capabilities)
+identity_spec = importlib.util.spec_from_file_location("inventory_identity", ROOT / "tools" / "codex-inventory-identity.py")
+inventory_identity = importlib.util.module_from_spec(identity_spec)
+identity_spec.loader.exec_module(inventory_identity)
 
 
 def nodes(value):
@@ -29,6 +35,42 @@ def nodes(value):
 
 
 class CodexContractTest(unittest.TestCase):
+    def test_hook_cli_never_inherits_desktop_input(self):
+        # Desktop QProcess keeps stdin open. Inheriting it makes `codex exec`
+        # wait for EOF instead of processing the explicit synthetic prompt.
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(capabilities, "ScriptedModel") as model, \
+                patch.object(capabilities.subprocess, "run") as run:
+            model.return_value.overrides.return_value = ()
+            model.return_value.requests = [{}]
+            run.return_value = subprocess.CompletedProcess([], 0)
+            result = capabilities.run_case(Path("fixture-codex"), Path(temporary),
+                "cli-hook-disabled-control", (), [], cli_hook_control=True)
+            self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+            self.assertEqual(result["exitCode"], 0)
+            self.assertEqual(result["modelRequestCount"], 1)
+            model.return_value.close.assert_called_once()
+
+    def test_hook_cli_timeout_produces_failed_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(capabilities, "ScriptedModel") as model, \
+                patch.object(capabilities.subprocess, "run", side_effect=subprocess.TimeoutExpired("fixture", 15)):
+            model.return_value.overrides.return_value = ()
+            model.return_value.requests = []
+            result = capabilities.run_case(Path("fixture-codex"), Path(temporary),
+                "cli-hook-disabled-control", (), [], cli_hook_control=True)
+            self.assertEqual(result["failure"], "hook-control-timeout")
+            self.assertNotIn("exitCode", result)
+            self.assertFalse(result["hookStarted"])
+            model.return_value.close.assert_called_once()
+
+    def test_hook_controls_require_completed_model_round_trip(self):
+        for key, value in (("exitCode", 1), ("modelRequestCount", 0), ("failure", "hook-control-timeout")):
+            cases = json.loads((FIXTURES / "capability-verification.json").read_text(encoding="utf-8"))["cases"]
+            next(case for case in cases if case["case"] == "cli-hook-disabled-control")[key] = value
+            checks = capabilities.evaluate_cases(cases)
+            self.assertFalse(checks["hookCliPositiveAndNegativeControl"])
+
     def test_phase9_native_inventory_evidence(self):
         path = ALPHA_FIXTURES / "phase9-tool-specifications.json"
         specs = json.loads(path.read_text(encoding="utf-8"))
@@ -39,7 +81,8 @@ class CodexContractTest(unittest.TestCase):
         self.assertFalse(evidence["releaseEligible"])
         self.assertTrue(evidence["fixtureScopePassed"])
         self.assertTrue(all(evidence["checks"].values()))
-        self.assertEqual(evidence["inventorySha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertEqual(evidence["inventoryHashAlgorithm"], "sha256-canonical-json-v1")
+        self.assertEqual(evidence["inventorySha256"], inventory_identity.inventory_sha256(specs))
         self.assertEqual(evidence["toolInventory"], [item["name"] for item in specs])
         self.assertEqual(len(specs), 14)
         self.assertEqual(len({item["name"] for item in specs}), 14)
@@ -48,6 +91,26 @@ class CodexContractTest(unittest.TestCase):
             self.assertFalse(item["inputSchema"]["additionalProperties"])
             self.assertFalse({"command", "shell", "argv", "root", "accountId", "effect"}
                              & set(item["inputSchema"]["properties"]))
+
+    def test_inventory_identity_is_portable_and_detects_schema_changes(self):
+        specs = json.loads((ALPHA_FIXTURES / "phase9-tool-specifications.json").read_text(encoding="utf-8"))
+        lf = json.dumps(specs, indent=2, ensure_ascii=False) + "\n"
+        crlf = lf.replace("\n", "\r\n")
+        self.assertEqual(inventory_identity.inventory_sha256(json.loads(lf)),
+                         inventory_identity.inventory_sha256(json.loads(crlf)))
+        changed = json.loads(lf)
+        changed[0]["inputSchema"]["additionalProperties"] = True
+        self.assertNotEqual(inventory_identity.inventory_sha256(specs), inventory_identity.inventory_sha256(changed))
+
+    def test_schema_layout_normalization(self):
+        schemas = {"method.json": {"$defs": {"Identifier": {"type": "string"}},
+                                   "properties": {"id": {"$ref": "#/$defs/Identifier"}}},
+                   "other.json": {"properties": {"id": {"$ref": "method.json#/$defs/Identifier"}}}}
+        normalized = freeze.normalize_bundle(schemas)
+        self.assertEqual(normalized["other.json"]["properties"]["id"], {"$ref": "#/definitions/Identifier"})
+        self.assertEqual(normalized["other.json"]["definitions"]["Identifier"], {"type": "string"})
+        with self.assertRaises(ValueError):
+            freeze.normalize_bundle({"bad.json": {"$ref": "https://example.com/schema.json"}})
 
     @classmethod
     def setUpClass(cls):
