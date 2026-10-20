@@ -18,6 +18,7 @@
 #include <algorithm>
 #ifdef Q_OS_WIN
 #include <windows.h>
+#include <winioctl.h>
 #endif
 
 namespace devhub::infrastructure::codex {
@@ -30,7 +31,62 @@ constexpr qint64 fileLimit = 4 * 1024 * 1024;
 QHash<QString, CodexCompatibilityReport>& acquired() { static QHash<QString, CodexCompatibilityReport> reports; return reports; }
 QMutex& acquiredMutex() { static QMutex mutex; return mutex; }
 QString evidenceKey(const QString& path, const QString& binary) { return path + QChar('|') + binary; }
-QHash<QString, QString>& measuredBinaries() { static QHash<QString, QString> identities; return identities; }
+// A read-cache oplock is broken by writes even when Windows reports the same
+// size and timestamps. Level 2 breaks need no acknowledgement, so this cache
+// never holds up an executable update waiting for the UI event loop.
+class BinaryReadLease final {
+public:
+    BinaryReadLease() = default;
+    BinaryReadLease(const BinaryReadLease&) = delete;
+    BinaryReadLease& operator=(const BinaryReadLease&) = delete;
+    static std::shared_ptr<BinaryReadLease> acquire(const QString& path) {
+#ifdef Q_OS_WIN
+        auto lease = std::make_shared<BinaryReadLease>();
+        const auto native = QDir::toNativeSeparators(path);
+        lease->m_file = CreateFileW(reinterpret_cast<LPCWSTR>(native.utf16()), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+        if (lease->m_file == INVALID_HANDLE_VALUE) return {};
+        lease->m_io.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!lease->m_io.hEvent) return {};
+        DWORD bytes = 0;
+        lease->m_pending = !DeviceIoControl(lease->m_file, FSCTL_REQUEST_OPLOCK_LEVEL_2,
+            nullptr, 0, nullptr, 0, &bytes, &lease->m_io) && GetLastError() == ERROR_IO_PENDING;
+        return lease->unchanged() ? lease : std::shared_ptr<BinaryReadLease>{};
+#else
+        Q_UNUSED(path);
+        return {};
+#endif
+    }
+    bool unchanged() const {
+#ifdef Q_OS_WIN
+        return m_pending && WaitForSingleObject(m_io.hEvent, 0) == WAIT_TIMEOUT;
+#else
+        return false;
+#endif
+    }
+    ~BinaryReadLease() {
+#ifdef Q_OS_WIN
+        if (m_file != INVALID_HANDLE_VALUE) {
+            if (m_pending) {
+                CancelIoEx(m_file, &m_io);
+                DWORD bytes = 0;
+                // OVERLAPPED storage must outlive completion, including cancel.
+                GetOverlappedResult(m_file, &m_io, &bytes, TRUE);
+            }
+            CloseHandle(m_file);
+        }
+        if (m_io.hEvent) CloseHandle(m_io.hEvent);
+#endif
+    }
+private:
+#ifdef Q_OS_WIN
+    HANDLE m_file = INVALID_HANDLE_VALUE;
+    OVERLAPPED m_io{};
+    bool m_pending = false;
+#endif
+};
+struct MeasuredBinary { QString identity; std::shared_ptr<BinaryReadLease> lease; };
+QHash<QString, MeasuredBinary>& measuredBinaries() { static QHash<QString, MeasuredBinary> identities; return identities; }
 QMutex& binaryMutex() { static QMutex mutex; return mutex; }
 QString binaryStamp(const QString& path)
 {
@@ -44,8 +100,8 @@ QString binaryStamp(const QString& path)
         && GetFileInformationByHandleEx(handle, FileBasicInfo, &basic, sizeof(basic));
     CloseHandle(handle);
     if (!valid || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return {};
-    // ChangeTime cannot be restored with ordinary timestamp preservation. File
-    // identity also detects replacement with identical size and last-write time.
+    // File identity detects replacement at the same path. Timestamps alone are
+    // insufficient for same-size writes; the read lease also must remain valid.
     return path + '|' + QString::number(info.dwVolumeSerialNumber) + '|' + QString::number(info.nFileIndexHigh)
         + '|' + QString::number(info.nFileIndexLow) + '|' + QString::number(info.nFileSizeHigh)
         + '|' + QString::number(info.nFileSizeLow) + '|' + QString::number(basic.CreationTime.QuadPart)
@@ -112,8 +168,9 @@ QString CodexSchemaInspector::binaryIdentity(const QString& path)
     if (!stamp.isEmpty()) {
         QMutexLocker lock(&binaryMutex());
         const auto found = measuredBinaries().constFind(stamp);
-        if (found != measuredBinaries().cend()) return *found;
+        if (found != measuredBinaries().cend() && found->lease->unchanged()) return found->identity;
     }
+    const auto lease = BinaryReadLease::acquire(path);
     const QFileInfo before(path);
     if (!before.isFile() || before.size() <= 0 || before.size() > 512 * 1024 * 1024) return {};
     QFile file(path); if (!file.open(QIODevice::ReadOnly)) return {};
@@ -129,10 +186,10 @@ QString CodexSchemaInspector::binaryIdentity(const QString& path)
         || before.lastModified() != after.lastModified() || before.canonicalFilePath() != after.canonicalFilePath()) return {};
     if (!stamp.isEmpty() && stamp != binaryStamp(path)) return {};
     const auto identity = QString::fromLatin1(hash.result().toHex());
-    if (!stamp.isEmpty()) {
+    if (!stamp.isEmpty() && lease && lease->unchanged()) {
         QMutexLocker lock(&binaryMutex());
         if (measuredBinaries().size() >= 32) measuredBinaries().clear();
-        measuredBinaries().insert(stamp, identity);
+        measuredBinaries().insert(stamp, {identity, lease});
     }
     return identity;
 }
@@ -141,7 +198,8 @@ bool CodexSchemaInspector::matchesBinaryIdentity(const QString& path, const QStr
     const auto stamp = binaryStamp(path);
     if (stamp.isEmpty() || identity.isEmpty()) return false;
     QMutexLocker lock(&binaryMutex());
-    return measuredBinaries().value(stamp) == identity;
+    const auto found = measuredBinaries().constFind(stamp);
+    return found != measuredBinaries().cend() && found->identity == identity && found->lease->unchanged();
 }
 std::optional<CodexCompatibilityReport> CodexSchemaInspector::evidence(const CodexExecutable& executable)
 {

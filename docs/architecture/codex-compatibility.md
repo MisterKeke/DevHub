@@ -13,8 +13,13 @@ bounded `--version` response, hashes its bytes, and delegates schema inspection.
 Discovery, hashing, directory monitoring, schema parsing and comparison run on a
 dedicated worker thread. The hash is checked before and after acquisition. On
 Windows, subsequent launch/inference checks use a process-local measured digest
-keyed by volume/file identity, size, creation, write and change times; a metadata
-change requires fresh measurement. UI getters never reread the executable. A file
+keyed by volume/file identity, size, creation, write and change times, protected
+by a Windows level 2 read-cache oplock. A broken oplock or metadata change requires
+fresh measurement, including same-size writes with identical timestamps. The
+oplock breaks without application acknowledgement and permits other readers,
+writers and deletion; it does not wait for the UI event loop. If a read-cache
+oplock cannot be obtained, the digest cannot grant cached admission. UI getters
+never reread the executable. A file
 watcher revokes the connection on any change notification, including replacement
 at the same path. Missing executables, malformed versions, unsupported schema
 commands, malformed/truncated schemas, limits and cancellation fail explicitly.

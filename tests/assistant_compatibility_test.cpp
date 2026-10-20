@@ -9,6 +9,9 @@
 #include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QTest>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 using namespace devhub::application::assistant;
 using namespace devhub::infrastructure::codex;
@@ -190,6 +193,44 @@ private slots:
         QVERIFY(!CodexSchemaInspector::matchesBinaryIdentity(path, first));
         QVERIFY(CodexSchemaInspector::binaryIdentity(path) != first);
         QVERIFY(CodexSchemaInspector::binaryIdentity(directory.filePath("missing.exe")).isEmpty());
+    }
+    void sameSizeRewriteWithPreservedMetadataRevokesIdentity() {
+#ifdef Q_OS_WIN
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("candidate.exe");
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("first binary"), qint64(12)); file.close();
+        const auto native = QDir::toNativeSeparators(path);
+        const auto openMetadata = [&] {
+            return CreateFileW(reinterpret_cast<LPCWSTR>(native.utf16()), FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        };
+        FILE_BASIC_INFO original{};
+        auto handle = openMetadata(); QVERIFY(handle != INVALID_HANDLE_VALUE);
+        const bool captured = GetFileInformationByHandleEx(handle, FileBasicInfo, &original, sizeof(original));
+        CloseHandle(handle); QVERIFY(captured);
+        const auto first = CodexSchemaInspector::binaryIdentity(path); QVERIFY(!first.isEmpty());
+        QVERIFY(CodexSchemaInspector::matchesBinaryIdentity(path, first));
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QCOMPARE(file.write("other binary"), qint64(12)); file.close();
+        // Model a same-tick rewrite without sleeping or depending on the host's
+        // clock resolution. File identity and every cached timestamp stay equal.
+        handle = openMetadata(); QVERIFY(handle != INVALID_HANDLE_VALUE);
+        const bool restored = SetFileInformationByHandle(handle, FileBasicInfo, &original, sizeof(original));
+        FILE_BASIC_INFO after{};
+        const bool readBack = GetFileInformationByHandleEx(handle, FileBasicInfo, &after, sizeof(after));
+        CloseHandle(handle); QVERIFY(restored); QVERIFY(readBack);
+        QCOMPARE(after.CreationTime.QuadPart, original.CreationTime.QuadPart);
+        QCOMPARE(after.LastWriteTime.QuadPart, original.LastWriteTime.QuadPart);
+        QCOMPARE(after.ChangeTime.QuadPart, original.ChangeTime.QuadPart);
+        QVERIFY(!CodexSchemaInspector::matchesBinaryIdentity(path, first));
+        const auto second = CodexSchemaInspector::binaryIdentity(path);
+        QVERIFY(!second.isEmpty()); QVERIFY(second != first);
+        QVERIFY(CodexSchemaInspector::matchesBinaryIdentity(path, second));
+        QCOMPARE(CodexSchemaInspector::binaryIdentity(path), second);
+#else
+        QSKIP("Windows executable identity cache regression.");
+#endif
     }
     void legacyBindingMigratesOnlyAfterScopedResume() {
         Session s; QVERIFY(s.ready()); QVERIFY(s.openThread());

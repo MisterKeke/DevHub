@@ -49,7 +49,8 @@ qt_add_executable(devhub_assistant_protocol_tests assistant_protocol_test.cpp)
 qt_add_executable(devhub_assistant_compatibility_tests assistant_compatibility_test.cpp)
 target_link_libraries(devhub_assistant_compatibility_tests PRIVATE devhub_assistant Qt6::Test project_warnings)
 add_test(NAME devhub.assistant-compatibility COMMAND devhub_assistant_compatibility_tests
-    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-compatibility-tests.txt,txt")
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-compatibility-tests.txt,txt"
+    -o "-,txt")
 set_tests_properties(devhub.assistant-compatibility PROPERTIES TIMEOUT 45
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")

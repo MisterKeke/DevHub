@@ -19,7 +19,8 @@ public:
     void cancel();
     [[nodiscard]] static QString binaryIdentity(const QString& path);
     // Checks only a digest previously measured in this process. Never reads the
-    // whole executable from UI admission/refresh paths; metadata changes revoke it.
+    // whole executable from UI admission/refresh paths; metadata changes or a
+    // broken Windows read-cache lease revoke it without relying on timestamps.
     [[nodiscard]] static bool matchesBinaryIdentity(const QString& path, const QString& identity);
     // Only live acquisition can populate this process-local evidence registry.
     // A public value snapshot or an editable disk cache cannot grant admission.
