@@ -56,6 +56,10 @@ class RuntimeShell final : public QObject
     Q_PROPERTY(QString shellWorkspaceId MEMBER id CONSTANT)
     Q_PROPERTY(QVariantList overviewSections MEMBER sections CONSTANT)
     Q_PROPERTY(int quickModule MEMBER module CONSTANT)
+    Q_PROPERTY(bool workspaceRemovalInProgress READ workspaceRemovalInProgress CONSTANT)
+    Q_PROPERTY(QString workspaceActionMessage READ workspaceActionMessage CONSTANT)
+    Q_PROPERTY(QString workspaceRemovalWorkspaceId READ workspaceRemovalWorkspaceId CONSTANT)
+    Q_PROPERTY(QString workspaceActionTone READ workspaceActionTone CONSTANT)
   public:
     QString title = QStringLiteral("Runtime check");
     QString path = QStringLiteral("C:/RuntimeCheck");
@@ -91,6 +95,13 @@ class RuntimeShell final : public QObject
     Q_INVOKABLE void restartQuickServices() {}
     Q_INVOKABLE void openQuickFolder() {}
     Q_INVOKABLE void openQuickSettings() {}
+    Q_INVOKABLE void showQuickWorkspaceMenu(QString) {}
+    Q_INVOKABLE void manageArchivedWorkspaces() {}
+    Q_INVOKABLE void cancelQuickWorkspaceRemoval(QString) {}
+    bool workspaceRemovalInProgress() const { return false; }
+    QString workspaceActionMessage() const { return {}; }
+    QString workspaceRemovalWorkspaceId() const { return {}; }
+    QString workspaceActionTone() const { return QStringLiteral("info"); }
 };
 
 void polishItems(QQuickItem *item)

@@ -5,6 +5,8 @@
 #include <QPointer>
 #include <QStringList>
 #include <QVariantList>
+#include <QSet>
+#include <optional>
 
 #include "../../application/workspaces/WorkspaceManager.h"
 #include "../../application/workspaces/WorkspaceContext.h"
@@ -69,6 +71,10 @@ class MainWindow final : public QMainWindow
     Q_PROPERTY(QString shellWorkspaceId READ shellWorkspaceId NOTIFY shellChanged)
     Q_PROPERTY(QVariantList overviewSections READ overviewSections NOTIFY shellChanged)
     Q_PROPERTY(int quickModule READ quickModule NOTIFY shellChanged)
+    Q_PROPERTY(bool workspaceRemovalInProgress READ workspaceRemovalInProgress NOTIFY shellChanged)
+    Q_PROPERTY(QString workspaceActionMessage READ workspaceActionMessage NOTIFY shellChanged)
+    Q_PROPERTY(QString workspaceRemovalWorkspaceId READ workspaceRemovalWorkspaceId NOTIFY shellChanged)
+    Q_PROPERTY(QString workspaceActionTone READ workspaceActionTone NOTIFY shellChanged)
 public:
     MainWindow(application::authentication::SessionController& session,
                application::authentication::AuthenticationService& authentication,
@@ -111,6 +117,10 @@ public:
     QString shellWorkspaceId() const;
     QVariantList overviewSections() const;
     int quickModule() const noexcept { return m_quickModule; }
+    bool workspaceRemovalInProgress() const noexcept { return !m_archivingWorkspaceIds.isEmpty(); }
+    QString workspaceActionMessage() const { return m_workspaceActionMessage; }
+    QString workspaceRemovalWorkspaceId() const { return m_removalWorkspaceId; }
+    QString workspaceActionTone() const { return m_workspaceActionTone; }
 
 public slots:
     void selectQuickModule(int index);
@@ -121,6 +131,9 @@ public slots:
     void restartQuickServices();
     void openQuickFolder();
     void openQuickSettings();
+    void showQuickWorkspaceMenu(const QString& id);
+    void manageArchivedWorkspaces();
+    void cancelQuickWorkspaceRemoval(const QString& id);
 
 signals:
     void manualLockRequested();
@@ -138,11 +151,15 @@ private:
     void selectPage(int index);
     void updateSessionPage(application::authentication::SessionState state);
     void submitUnlock();
-    void reloadWorkspaces(QString preferredId = {});
+    void reloadWorkspaces(QString preferredId = {}, bool chooseFallback = true);
     void addWorkspace(QString initialPath = {});
     bool activateWorkspace(const QString& id, std::function<bool()> revalidate = {},
                            std::function<void()> committed = {});
     void showWorkspaceMenu(const QPoint& position);
+    void showWorkspaceMenuForId(const QString& id, const QPoint& globalPosition);
+    void archiveWorkspace(const QString& id);
+    void finishWorkspaceArchive(const QString& id, const QString& name, bool serviceStopTimedOut = false);
+    void restoreWorkspaceAfterArchiveFailure(const QString& id);
 
     QLabel* m_workspaceTitle = nullptr;
     QLabel* m_workspacePath = nullptr;
@@ -202,6 +219,12 @@ private:
     QDialog* m_moduleWindow = nullptr;
     QList<QWidget*> m_modulePages;
     int m_quickModule = 0;
+    QSet<QString> m_archivingWorkspaceIds;
+    QString m_workspaceActionMessage;
+    QString m_workspaceActionTone = QStringLiteral("info");
+    QString m_removalWorkspaceId;
+    QStringList m_workspaceCommandIds;
+    std::optional<devhub::domain::workspace::Workspace> m_workspaceBeingArchivedActive;
 };
 
 } // namespace devhub::presentation::shell

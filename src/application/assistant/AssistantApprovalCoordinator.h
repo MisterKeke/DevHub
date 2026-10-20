@@ -20,6 +20,7 @@ public:
     bool decide(const QString& id, bool allowOnce);
     void revokeAll();
     void revokeCall(const QString& callId);
+    void revokeWorkspace(const QString& workspaceId);
     void expireNow(qint64 monotonicMs);
     [[nodiscard]] QList<AssistantApprovalRequest> pending() const;
 signals:

@@ -18,6 +18,7 @@
 #include "../notes/NotesPage.h"
 #include "../assistant/AssistantPage.h"
 #include "../assistant/AssistantNavigation.h"
+#include "../../application/assistant/AssistantApprovalCoordinator.h"
 #include "../files/FileBrowserPage.h"
 #include "../overview/OverviewPage.h"
 #include "../commands/CommandPaletteDialog.h"
@@ -67,9 +68,14 @@
 #include <QWidget>
 #include <QQuickView>
 #include <QSignalBlocker>
+#include <QCursor>
+#include <QElapsedTimer>
 #include <QQmlContext>
 #include <QDialog>
 #include <QVariantMap>
+#include <algorithm>
+#include <memory>
+#include <utility>
 
 namespace devhub::presentation::shell {
 namespace {
@@ -1016,7 +1022,16 @@ void MainWindow::selectQuickModule(int index)
 
 void MainWindow::activateQuickWorkspace(const QString& id) { activateWorkspace(id); }
 void MainWindow::addQuickWorkspace() { addWorkspace(); }
-void MainWindow::lockQuickSession() { emit manualLockRequested(); }
+void MainWindow::lockQuickSession()
+{
+    if (!m_archivingWorkspaceIds.isEmpty()) {
+        m_workspaceActionMessage = tr("Finish or cancel workspace removal before locking DevHub.");
+        m_workspaceActionTone = QStringLiteral("error");
+        emit shellChanged();
+        return;
+    }
+    emit manualLockRequested();
+}
 
 void MainWindow::openQuickTerminal()
 {
@@ -1104,7 +1119,7 @@ void MainWindow::showRecoveryNotice()
     statusBar()->showMessage(tr("DevHub recovered after an unexpected exit. Git and SQL operations were not replayed, and managed services were not restarted. Check Ports for processes that may still be running; open a note to check for a recovery copy."), 20000);
 }
 
-void MainWindow::reloadWorkspaces(QString preferredId)
+void MainWindow::reloadWorkspaces(QString preferredId, bool chooseFallback)
 {
     if (preferredId.isEmpty() && m_workspaceList->currentIndex().isValid())
         preferredId = m_workspaceList->currentIndex().data(devhub::presentation::workspaces::WorkspaceListModel::WorkspaceIdRole).toString();
@@ -1114,29 +1129,37 @@ void MainWindow::reloadWorkspaces(QString preferredId)
     }
     auto result = m_workspaceManager.list();
     if (!result) { statusBar()->showMessage(result.error().userMessage, 6000); return; }
-    m_workspaceModel->setWorkspaces(std::move(result).value());
+    m_workspaceModel->setWorkspaces(result.value());
     QVector<application::commands::SearchCandidate> workspaceEntries;
-    for (int row = 0; row < m_workspaceModel->rowCount(); ++row) {
-        const auto* workspace = m_workspaceModel->workspaceAt(row);
-        if (!workspace) continue;
-        const QString id = workspace->id().toString();
+    QStringList currentCommandIds;
+    for (const auto& workspace : result.value()) {
+        const QString id = workspace.id().toString();
         const QString commandId = QStringLiteral("workspace.open.%1").arg(id);
-        workspaceEntries.push_back({workspace->displayName(), workspace->path().enteredPath(), commandId, tr("Workspaces")});
+        currentCommandIds.append(commandId);
+        workspaceEntries.push_back({workspace.displayName(), workspace.path().enteredPath(), commandId, tr("Workspaces")});
         if (!m_commandRegistry->contains(commandId)) {
-            m_commandRegistry->addCommand(commandId, tr("Open workspace: %1").arg(workspace->displayName()),
+            m_commandRegistry->addCommand(commandId, tr("Open workspace: %1").arg(workspace.displayName()),
                 application::commands::CommandCategory::Workspace, [this, id] { activateWorkspace(id); }, {},
-                workspace->path().enteredPath(), {workspace->displayName().toLower(), tr("workspace")});
+                workspace.path().enteredPath(), {workspace.displayName().toLower(), tr("workspace")});
         }
     }
     m_workspaceSearchProvider->setEntries(std::move(workspaceEntries));
+    for (const QString& staleId : std::as_const(m_workspaceCommandIds))
+        if (!currentCommandIds.contains(staleId)) m_commandRegistry->removeCommand(staleId);
+    m_workspaceCommandIds = std::move(currentCommandIds);
     int selectedRow = m_workspaceModel->rowForId(preferredId);
-    if (selectedRow < 0) {
+    if (selectedRow < 0 && chooseFallback) {
         for (int row = 0; row < m_workspaceModel->rowCount(); ++row) {
             const auto* workspace = m_workspaceModel->workspaceAt(row);
             if (workspace && workspace->status() == domain::workspace::WorkspaceStatus::Ready) { selectedRow = row; break; }
         }
     }
     if (selectedRow >= 0) m_workspaceList->setCurrentIndex(m_workspaceModel->index(selectedRow, 0));
+    else if (!chooseFallback) {
+        const QSignalBlocker blocker(m_workspaceList->selectionModel());
+        m_workspaceList->clearSelection();
+        m_workspaceList->setCurrentIndex({});
+    }
     else if (m_workspaceModel->rowCount() == 0) {
         m_workspaceContext.clear(); m_workspaceState.clearSelected(m_workspaceManager.accountId());
         m_workspacePath->setText(tr("No workspace selected"));
@@ -1145,16 +1168,31 @@ void MainWindow::reloadWorkspaces(QString preferredId)
 
 void MainWindow::addWorkspace(QString initialPath)
 {
+    if (!m_archivingWorkspaceIds.isEmpty()) return;
     devhub::presentation::workspaces::AddWorkspaceDialog dialog(this);
     if (!initialPath.isEmpty()) {
         if (auto* path = dialog.findChild<QLineEdit*>(QStringLiteral("workspacePath"))) path->setText(initialPath);
     }
     if (dialog.exec() != QDialog::Accepted) return;
+    QString restoredId;
+    const auto candidatePath = m_workspaceManager.validator().validate(dialog.folderPath());
+    if (candidatePath) {
+        const auto archived = m_workspaceManager.listArchived();
+        if (archived) for (const auto& workspace : archived.value())
+            if (application::workspaces::WorkspaceValidator::pathsEqual(
+                    workspace.path().canonicalPath(), candidatePath.value().path.canonicalPath())) {
+                restoredId = workspace.id().toString(); break;
+            }
+    }
     auto result = m_workspaceManager.add(dialog.displayName(), dialog.folderPath());
     if (!result) { QMessageBox::warning(this, tr("Could not add workspace"), result.error().userMessage); return; }
     const QString id = result.value().id().toString();
+    m_scheduler.setWorkspaceBlocked(QUuid(id), false);
+    if (!restoredId.isEmpty() && restoredId == id)
+        m_workspaceActionMessage = tr("Restored the existing workspace and its DevHub data.");
     reloadWorkspaces(id);
     activateWorkspace(id);
+    emit shellChanged();
 }
 
 bool MainWindow::requestAssistantWorkspaceOpen(const QString& id,
@@ -1166,7 +1204,7 @@ bool MainWindow::requestAssistantWorkspaceOpen(const QString& id,
 bool MainWindow::activateWorkspace(const QString& id, std::function<bool()> revalidate,
     std::function<void()> committed)
 {
-    if (id.isEmpty() || (revalidate && !revalidate())) return false;
+    if (id.isEmpty() || !m_archivingWorkspaceIds.isEmpty() || (revalidate && !revalidate())) return false;
     const auto active = m_workspaceContext.activeWorkspace();
     if (active && active->id().toString() != id && !confirmDatabaseTransition()) {
         const QSignalBlocker blocker(m_workspaceList->selectionModel());
@@ -1201,15 +1239,28 @@ void MainWindow::showWorkspaceMenu(const QPoint& position)
 {
     const QModelIndex index = m_workspaceList->indexAt(position);
     if (!index.isValid()) return;
-    m_workspaceList->setCurrentIndex(index);
-    const auto* workspace = m_workspaceModel->workspaceAt(index.row());
-    if (!workspace) return;
-    const auto id = workspace->id();
-    const QString name = workspace->displayName();
-    const QString path = workspace->path().enteredPath();
+    showWorkspaceMenuForId(index.data(devhub::presentation::workspaces::WorkspaceListModel::WorkspaceIdRole).toString(),
+        m_workspaceList->viewport()->mapToGlobal(position));
+}
+
+void MainWindow::showQuickWorkspaceMenu(const QString& id)
+{
+    showWorkspaceMenuForId(id, QCursor::pos());
+}
+
+void MainWindow::showWorkspaceMenuForId(const QString& workspaceIdText, const QPoint& globalPosition)
+{
+    const int row = m_workspaceModel->rowForId(workspaceIdText);
+    if (row < 0) return;
+    const auto* workspaceRow = m_workspaceModel->workspaceAt(row);
+    if (!workspaceRow) return;
+    const auto workspace = *workspaceRow;
+    const auto id = workspace.id();
+    const QString name = workspace.displayName();
+    const QString path = workspace.path().enteredPath();
     QMenu menu(this);
     QAction* openAction = menu.addAction(tr("Open"));
-    QAction* pinAction = menu.addAction(workspace->isFavorite() ? tr("Unpin") : tr("Pin"));
+    QAction* pinAction = menu.addAction(workspace.isFavorite() ? tr("Unpin") : tr("Pin"));
     QAction* renameAction = menu.addAction(tr("Rename"));
     QAction* locateAction = menu.addAction(tr("Locate Moved Workspace…"));
     QAction* explorerAction = menu.addAction(tr("Open in Explorer"));
@@ -1217,10 +1268,10 @@ void MainWindow::showWorkspaceMenu(const QPoint& position)
     QAction* copyRelativeAction = menu.addAction(tr("Copy Relative Path"));
     menu.addSeparator();
     QAction* removeAction = menu.addAction(tr("Remove from DevHub"));
-    locateAction->setEnabled(workspace->status() != domain::workspace::WorkspaceStatus::Ready);
-    QAction* selected = menu.exec(m_workspaceList->viewport()->mapToGlobal(position));
+    locateAction->setEnabled(workspace.status() != domain::workspace::WorkspaceStatus::Ready);
+    QAction* selected = menu.exec(globalPosition);
     if (selected == openAction) activateWorkspace(id.toString());
-    else if (selected == pinAction) { auto r = m_workspaceManager.setFavorite(id, !workspace->isFavorite()); if (!r) statusBar()->showMessage(r.error().userMessage); reloadWorkspaces(id.toString()); }
+    else if (selected == pinAction) { auto r = m_workspaceManager.setFavorite(id, !workspace.isFavorite()); if (!r) statusBar()->showMessage(r.error().userMessage); reloadWorkspaces(id.toString()); }
     else if (selected == renameAction) {
         bool accepted = false; const QString value = QInputDialog::getText(this, tr("Rename Workspace"), tr("Name"), QLineEdit::Normal, name, &accepted);
         if (accepted) { auto r = m_workspaceManager.rename(id, value); if (!r) QMessageBox::warning(this, tr("Rename failed"), r.error().userMessage); reloadWorkspaces(id.toString()); }
@@ -1231,19 +1282,217 @@ void MainWindow::showWorkspaceMenu(const QPoint& position)
         if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path))) statusBar()->showMessage(tr("The folder could not be opened."));
     } else if (selected == copyPathAction) QApplication::clipboard()->setText(path);
     else if (selected == copyRelativeAction) QApplication::clipboard()->setText(QStringLiteral("."));
-    else if (selected == removeAction) {
-        const auto answer = QMessageBox::question(this, tr("Remove Workspace"),
-            tr("Remove “%1” from DevHub? Its project files will not be deleted.").arg(name));
-        if (answer == QMessageBox::Yes) {
-            if (!confirmDatabaseTransition()) return;
-            auto r = m_workspaceManager.removeMetadata(id);
-            if (!r) QMessageBox::warning(this, tr("Remove failed"), r.error().userMessage);
-            else if (m_workspaceContext.activeWorkspace() && m_workspaceContext.activeWorkspace()->id() == id) {
-                m_workspaceContext.clear(); m_workspaceState.clearSelected(m_workspaceManager.accountId());
-            }
-            reloadWorkspaces();
+    else if (selected == removeAction) archiveWorkspace(id.toString());
+}
+
+void MainWindow::archiveWorkspace(const QString& id)
+{
+    if (id.isEmpty() || !m_archivingWorkspaceIds.isEmpty()) return;
+    auto workspaceId = domain::workspace::WorkspaceId::fromString(id);
+    if (!workspaceId) return;
+    const auto rows = m_workspaceManager.list();
+    if (!rows) { m_workspaceActionMessage = rows.error().userMessage; m_workspaceActionTone = QStringLiteral("error"); emit shellChanged(); return; }
+    const auto target = std::find_if(rows.value().cbegin(), rows.value().cend(), [&workspaceId](const auto& row) {
+        return row.id() == workspaceId.value();
+    });
+    if (target == rows.value().cend()) { m_workspaceActionMessage = tr("That workspace is no longer available."); m_workspaceActionTone = QStringLiteral("error"); emit shellChanged(); return; }
+    const QString name = target->displayName();
+
+    QMessageBox confirmation(this);
+    confirmation.setWindowTitle(tr("Remove Workspace"));
+    confirmation.setIcon(QMessageBox::Question);
+    confirmation.setText(tr("Remove “%1” from DevHub?").arg(name));
+    confirmation.setInformativeText(tr("Project files remain untouched. The workspace registration and its DevHub data can be restored later."));
+    confirmation.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    confirmation.setDefaultButton(QMessageBox::Cancel);
+    if (auto* label = confirmation.findChild<QLabel*>(QStringLiteral("qt_msgbox_label")))
+        label->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+    if (auto* info = confirmation.findChild<QLabel*>(QStringLiteral("qt_msgbox_informativelabel")))
+        info->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+    if (confirmation.exec() != QMessageBox::Ok) return;
+
+    if (!m_archivingWorkspaceIds.isEmpty()) return;
+    const auto currentRows = m_workspaceManager.list();
+    if (!currentRows || std::none_of(currentRows.value().cbegin(), currentRows.value().cend(), [&workspaceId](const auto& row) {
+            return row.id() == workspaceId.value();
+        })) {
+        m_workspaceActionMessage = currentRows ? tr("That workspace is no longer available.") : currentRows.error().userMessage;
+        m_workspaceActionTone = QStringLiteral("error");
+        emit shellChanged();
+        return;
+    }
+
+    auto active = m_workspaceContext.activeWorkspace();
+    bool removingActive = active && active->id() == workspaceId.value();
+    if (removingActive && !confirmDatabaseTransition()) return;
+    active = m_workspaceContext.activeWorkspace();
+    const bool targetIsNowActive = active && active->id() == workspaceId.value();
+    if (targetIsNowActive && !removingActive && !confirmDatabaseTransition()) return;
+    active = m_workspaceContext.activeWorkspace();
+    removingActive = active && active->id() == workspaceId.value();
+    const auto finalRows = m_workspaceManager.list();
+    if (!finalRows || std::none_of(finalRows.value().cbegin(), finalRows.value().cend(), [&workspaceId](const auto& row) {
+            return row.id() == workspaceId.value();
+        })) {
+        m_workspaceActionMessage = finalRows ? tr("That workspace is no longer available.") : finalRows.error().userMessage;
+        m_workspaceActionTone = QStringLiteral("error");
+        emit shellChanged();
+        return;
+    }
+
+    m_archivingWorkspaceIds.insert(id);
+    m_removalWorkspaceId = id;
+    m_workspaceActionMessage = tr("Preparing to remove %1…").arg(name);
+    m_workspaceActionTone = QStringLiteral("info");
+    emit shellChanged();
+    const QUuid workspaceUuid(id);
+    m_scheduler.cancelWorkspace(workspaceUuid);
+    if (m_assistantController.approvals()) m_assistantController.approvals()->revokeWorkspace(id);
+    if (removingActive) {
+        m_workspaceBeingArchivedActive = *active;
+        m_workspaceContext.clear();
+    }
+
+    for (const auto& state : m_serviceCoordinator.states()) {
+        if (state.definition.workspaceId != id) continue;
+        m_serviceCoordinator.cancelPendingRestart(state.definition.id);
+        const auto stopped = m_serviceCoordinator.stop(state.definition.id);
+        if (!stopped) {
+            m_scheduler.setWorkspaceBlocked(workspaceUuid, false);
+            m_archivingWorkspaceIds.remove(id);
+            m_removalWorkspaceId.clear();
+            m_workspaceActionMessage = tr("Workspace is still registered. A managed service could not be stopped: %1").arg(stopped.error().userMessage);
+            m_workspaceActionTone = QStringLiteral("error");
+            restoreWorkspaceAfterArchiveFailure(id);
+            emit shellChanged();
+            return;
         }
     }
+
+    auto elapsed = std::make_shared<QElapsedTimer>();
+    elapsed->start();
+    auto poll = std::make_shared<std::function<void()>>();
+    std::weak_ptr<std::function<void()>> weakPoll = poll;
+    *poll = [this, id, name, elapsed, weakPoll] {
+        if (!m_archivingWorkspaceIds.contains(id)) return;
+        bool stillStopping = false;
+        for (const auto& state : m_serviceCoordinator.states()) {
+            if (state.definition.workspaceId != id) continue;
+            if (state.processId != 0 || state.lifecycle == application::services::ServiceLifecycleState::Starting
+                || state.lifecycle == application::services::ServiceLifecycleState::Running
+                || state.lifecycle == application::services::ServiceLifecycleState::Stopping) {
+                stillStopping = true; break;
+            }
+        }
+        if (!stillStopping) { finishWorkspaceArchive(id, name); return; }
+        if (elapsed->elapsed() >= 10000) { finishWorkspaceArchive(id, name, true); return; }
+        if (auto again = weakPoll.lock()) QTimer::singleShot(50, this, [again] { (*again)(); });
+    };
+    (*poll)();
+}
+
+void MainWindow::finishWorkspaceArchive(const QString& id, const QString& name, bool serviceStopTimedOut)
+{
+    if (!m_archivingWorkspaceIds.contains(id)) return;
+    const QUuid workspaceUuid(id);
+    if (serviceStopTimedOut) {
+        m_scheduler.setWorkspaceBlocked(workspaceUuid, false);
+        m_archivingWorkspaceIds.remove(id);
+        m_removalWorkspaceId.clear();
+        m_workspaceActionMessage = tr("Workspace is still registered because a managed service did not stop. Stop it and try again.");
+        m_workspaceActionTone = QStringLiteral("error");
+        restoreWorkspaceAfterArchiveFailure(id);
+        emit shellChanged();
+        return;
+    }
+    auto workspaceId = domain::workspace::WorkspaceId::fromString(id);
+    if (!workspaceId) {
+        m_scheduler.setWorkspaceBlocked(workspaceUuid, false);
+        m_archivingWorkspaceIds.remove(id);
+        m_removalWorkspaceId.clear();
+        m_workspaceActionMessage = tr("The workspace could not be removed because its identifier is invalid.");
+        m_workspaceActionTone = QStringLiteral("error");
+        restoreWorkspaceAfterArchiveFailure(id);
+        emit shellChanged();
+        return;
+    }
+    auto result = m_workspaceManager.archive(workspaceId.value());
+    m_archivingWorkspaceIds.remove(id);
+    m_removalWorkspaceId.clear();
+    if (!result) {
+        m_scheduler.setWorkspaceBlocked(workspaceUuid, false);
+        m_workspaceActionMessage = tr("Services stopped, but the workspace remains registered because DevHub could not save the removal: %1").arg(result.error().userMessage);
+        m_workspaceActionTone = QStringLiteral("error");
+        restoreWorkspaceAfterArchiveFailure(id);
+        emit shellChanged();
+        return;
+    }
+    const bool removingActive = m_workspaceBeingArchivedActive
+        && m_workspaceBeingArchivedActive->id() == workspaceId.value();
+    const QString preserveId = removingActive ? QString{} : (m_workspaceContext.activeWorkspace()
+        ? m_workspaceContext.activeWorkspace()->id().toString() : QString{});
+    if (removingActive) {
+        m_workspaceState.clearSelected(m_workspaceManager.accountId());
+    }
+    m_workspaceBeingArchivedActive.reset();
+    m_workspaceActionMessage = tr("Removed %1 from DevHub. Its registration data is available in Archived Workspaces.").arg(name);
+    m_workspaceActionTone = QStringLiteral("success");
+    reloadWorkspaces(preserveId);
+    emit shellChanged();
+}
+
+void MainWindow::cancelQuickWorkspaceRemoval(const QString& id)
+{
+    if (!m_archivingWorkspaceIds.remove(id)) return;
+    m_removalWorkspaceId.clear();
+    m_scheduler.setWorkspaceBlocked(QUuid(id), false);
+    m_workspaceActionMessage = tr("Removal cancelled. The workspace remains registered; any services already stopped remain stopped.");
+    m_workspaceActionTone = QStringLiteral("info");
+    restoreWorkspaceAfterArchiveFailure(id);
+    emit shellChanged();
+}
+
+void MainWindow::restoreWorkspaceAfterArchiveFailure(const QString& id)
+{
+    if (!m_workspaceBeingArchivedActive || m_workspaceBeingArchivedActive->id().toString() != id) return;
+    const auto workspace = *m_workspaceBeingArchivedActive;
+    m_workspaceBeingArchivedActive.reset();
+    m_workspaceContext.activate(workspace);
+}
+
+void MainWindow::manageArchivedWorkspaces()
+{
+    if (!m_archivingWorkspaceIds.isEmpty()) return;
+    const auto result = m_workspaceManager.listArchived();
+    if (!result) { m_workspaceActionMessage = result.error().userMessage; m_workspaceActionTone = QStringLiteral("error"); emit shellChanged(); return; }
+    if (result.value().isEmpty()) {
+        QMessageBox::information(this, tr("Archived Workspaces"), tr("There are no archived workspaces."));
+        return;
+    }
+    QStringList labels;
+    for (const auto& workspace : result.value())
+        labels.append(QStringLiteral("%1 — %2 (%3)").arg(workspace.displayName(),
+            workspace.path().enteredPath(), workspace.id().toString().left(8)));
+    bool accepted = false;
+    const QString choice = QInputDialog::getItem(this, tr("Archived Workspaces"),
+        tr("Choose a workspace to restore:"), labels, 0, false, &accepted);
+    if (!accepted) return;
+    const qsizetype index = labels.indexOf(choice);
+    if (index < 0 || index >= result.value().size()) return;
+    const auto& workspace = result.value().at(index);
+    const QString activeId = m_workspaceContext.activeWorkspace()
+        ? m_workspaceContext.activeWorkspace()->id().toString() : QString{};
+    auto restored = m_workspaceManager.restore(workspace.id());
+    if (!restored) {
+        QMessageBox::warning(this, tr("Could not restore workspace"),
+            tr("The workspace remains archived. %1").arg(restored.error().userMessage));
+        return;
+    }
+    m_scheduler.setWorkspaceBlocked(QUuid(workspace.id().toString()), false);
+    m_workspaceActionMessage = tr("Restored %1 with its previous DevHub data.").arg(workspace.displayName());
+    m_workspaceActionTone = QStringLiteral("success");
+    reloadWorkspaces(activeId, false);
+    emit shellChanged();
 }
 
 void MainWindow::updateSessionPage(application::authentication::SessionState state)
@@ -1319,6 +1568,12 @@ void MainWindow::resizeEvent(QResizeEvent* event)
 void MainWindow::closeEvent(QCloseEvent* event)
 {
     if (m_shutdownRequested) { event->ignore(); return; }
+    if (!m_archivingWorkspaceIds.isEmpty()) {
+        QMessageBox::information(this, tr("Workspace removal in progress"),
+            tr("Wait for the workspace removal to finish or cancel it from the workspace list before closing DevHub."));
+        event->ignore();
+        return;
+    }
     if (m_serviceCoordinator.hasRunningServices()) {
         if (!m_closeAfterServicesStop) {
             QMessageBox dialog(this); dialog.setWindowTitle(tr("Services are running"));

@@ -78,4 +78,17 @@ bool CommandRegistry::contains(const QString& id) const
     });
 }
 
+bool CommandRegistry::removeCommand(const QString& id)
+{
+    const auto it = std::find_if(m_entries.begin(), m_entries.end(), [&id](const Entry& entry) {
+        return entry.descriptor.id == id;
+    });
+    if (it == m_entries.end()) return false;
+    if (it->descriptor.action) it->descriptor.action->deleteLater();
+    m_entries.erase(it);
+    m_recent.removeAll(id);
+    emit commandsChanged();
+    return true;
+}
+
 } // namespace devhub::application::commands

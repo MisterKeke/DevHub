@@ -98,6 +98,9 @@ public:
     devhub::shared::common::Result<QVector<devhub::domain::workspace::Workspace>> listForAccount(
         const devhub::domain::account::AccountId&) override
     { return devhub::shared::common::Result<QVector<devhub::domain::workspace::Workspace>>::success(rows); }
+    devhub::shared::common::Result<QVector<devhub::domain::workspace::Workspace>> listArchivedForAccount(
+        const devhub::domain::account::AccountId&) override
+    { return devhub::shared::common::Result<QVector<devhub::domain::workspace::Workspace>>::success({}); }
     devhub::shared::common::Result<devhub::domain::workspace::Workspace> add(const devhub::domain::workspace::Workspace&) override
     { return devhub::shared::common::Result<devhub::domain::workspace::Workspace>::failure(unusedToolFixtureError()); }
     devhub::shared::common::Result<void> rename(const devhub::domain::workspace::WorkspaceId&, const devhub::domain::account::AccountId&, const QString&) override
@@ -106,7 +109,9 @@ public:
     { return devhub::shared::common::Result<void>::failure(unusedToolFixtureError()); }
     devhub::shared::common::Result<void> updateLocation(const devhub::domain::workspace::WorkspaceId&, const devhub::domain::account::AccountId&, const devhub::domain::workspace::WorkspacePath&) override
     { return devhub::shared::common::Result<void>::failure(unusedToolFixtureError()); }
-    devhub::shared::common::Result<void> remove(const devhub::domain::workspace::WorkspaceId&, const devhub::domain::account::AccountId&) override
+    devhub::shared::common::Result<void> archive(const devhub::domain::workspace::WorkspaceId&, const devhub::domain::account::AccountId&) override
+    { return devhub::shared::common::Result<void>::failure(unusedToolFixtureError()); }
+    devhub::shared::common::Result<void> restore(const devhub::domain::workspace::WorkspaceId&, const devhub::domain::account::AccountId&) override
     { return devhub::shared::common::Result<void>::failure(unusedToolFixtureError()); }
     devhub::shared::common::Result<void> recordOpened(const devhub::domain::workspace::WorkspaceId&, const devhub::domain::account::AccountId&, const QDateTime&) override
     { return devhub::shared::common::Result<void>::success(); }

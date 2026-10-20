@@ -73,6 +73,31 @@ void TaskScheduler::cancelAll()
     }
 }
 
+void TaskScheduler::setWorkspaceBlocked(const QUuid& workspaceId, bool blocked)
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (workspaceId.isNull()) return;
+    if (blocked) m_blockedWorkspaces.insert(workspaceId);
+    else m_blockedWorkspaces.remove(workspaceId);
+}
+
+void TaskScheduler::cancelWorkspace(const QUuid& workspaceId)
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (workspaceId.isNull()) return;
+    setWorkspaceBlocked(workspaceId, true);
+    QSet<QString> owners;
+    for (auto it = m_requests.cbegin(); it != m_requests.cend(); ++it) {
+        if (!it->workspaceId || *it->workspaceId != workspaceId) continue;
+        owners.insert(generationOwnerKey(*it));
+        if (m_runningCancellation.contains(it.key())) m_runningCancellation.value(it.key()).requestCancellation();
+        for (const auto& pending : std::as_const(m_pending))
+            if (pending.id == it.key()) pending.cancellation.requestCancellation();
+    }
+    for (const QString& owner : owners)
+        m_latestGenerationByOwner.insert(owner, m_latestGenerationByOwner.value(owner) + 1);
+}
+
 void TaskScheduler::reportProgress(TaskProgress progress)
 {
     if (QThread::currentThread() == thread()) {
@@ -108,6 +133,7 @@ void TaskScheduler::enqueue(TaskId id,
                                 std::move(execute),
                                 priority,
                                 m_nextInsertionOrder++});
+    m_requests.insert(id, m_pending.constLast().request);
     dispatchPending();
 }
 
@@ -144,6 +170,7 @@ void TaskScheduler::dispatchPending()
 void TaskScheduler::completeTaskSlot(const TaskId& id, const QString& moduleKey)
 {
     m_runningCancellation.remove(id);
+    m_requests.remove(id);
     const int activeCount = m_activeByModule.value(moduleKey);
     if (activeCount <= 1) {
         m_activeByModule.remove(moduleKey);

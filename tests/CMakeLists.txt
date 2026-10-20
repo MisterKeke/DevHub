@@ -183,6 +183,7 @@ qt_add_executable(devhub_database_tests
     ../resources/database_migrations.qrc
 )
 target_link_libraries(devhub_database_tests PRIVATE
+    devhub_workspaces
     devhub_database
     Qt6::Core
     Qt6::Sql

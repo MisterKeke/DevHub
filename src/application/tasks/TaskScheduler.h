@@ -5,6 +5,7 @@
 #include "../../shared/identifiers/IdGenerator.h"
 
 #include <QHash>
+#include <QSet>
 #include <QObject>
 #include <QPointer>
 #include <QTimer>
@@ -44,6 +45,8 @@ public:
     void setGlobalConcurrencyLimit(int limit);
     void stopAcceptingAndCancel();
     void cancelAll();
+    void cancelWorkspace(const QUuid& workspaceId);
+    void setWorkspaceBlocked(const QUuid& workspaceId, bool blocked);
     [[nodiscard]] bool isAccepting() const noexcept { return m_accepting; }
     [[nodiscard]] int activeTaskCount() const noexcept { return static_cast<int>(m_runningCancellation.size()); }
 
@@ -62,12 +65,16 @@ public:
         CancellationSource cancellation;
         TaskHandle handle{taskId, cancellation};
         auto completionFunction = std::function<void(TaskOutcome<T>)>(std::forward<Completion>(completion));
-        if (!m_accepting) {
+        const bool workspaceBlocked = request.workspaceId && m_blockedWorkspaces.contains(*request.workspaceId);
+        if (!m_accepting || workspaceBlocked) {
+            const QString userMessage = workspaceBlocked
+                ? QStringLiteral("This workspace is being removed and cannot start new work.")
+                : QStringLiteral("DevHub is shutting down and cannot start new work.");
             auto error = domain::errors::AppError::failure(
                 domain::errors::ErrorCode::ShutdownInProgress,
                 domain::errors::ErrorCategory::Internal,
-                QStringLiteral("DevHub is shutting down and cannot start new work."),
-                QStringLiteral("Task rejected after scheduler shutdown began."),
+                userMessage,
+                QStringLiteral("Task rejected because its workspace is blocked or the scheduler is shutting down."),
                 QStringLiteral("schedule task"));
             QTimer::singleShot(0, this, [callback = std::move(completionFunction), error = std::move(error)]() mutable {
                 callback(TaskOutcome<T>{shared::common::Result<T>::failure(std::move(error))});
@@ -189,6 +196,8 @@ private:
     QHash<QString, int> m_moduleConcurrencyLimits;
     QHash<QString, int> m_activeByModule;
     QHash<TaskId, CancellationSource> m_runningCancellation;
+    QHash<TaskId, TaskRequest> m_requests;
+    QSet<QUuid> m_blockedWorkspaces;
     QHash<QString, TaskGeneration> m_latestGenerationByOwner;
     quint64 m_nextInsertionOrder = 0;
     bool m_accepting = true;
