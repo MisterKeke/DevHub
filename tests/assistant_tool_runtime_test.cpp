@@ -3,6 +3,7 @@
 #include "application/git/GitExecutableLocator.h"
 #include "application/git/GitService.h"
 #include "support/AssistantHarness.h"
+#include "support/SyntheticSomethingProfile.h"
 #include "application/services/ServiceCoordinator.h"
 #include "application/workspaces/IWorkspaceRepository.h"
 #include "application/workspaces/WorkspaceValidation.h"
@@ -562,11 +563,22 @@ private slots:
             QVERIFY(run({"init", "--quiet"}));
             QVERIFY(run({"-c", "user.name=DevHub test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture", "--quiet"}));
         }
+        devhub::tests::assistant::SyntheticProfile profile;
+        const bool taskTool = tool.startsWith(QStringLiteral("devhub_something_task"));
+        if (taskTool) {
+            QVERIFY(profile.created);
+            QVERIFY(profile.addTask(9007199254740993LL, QStringLiteral("Synthetic DevHub task")));
+            QVERIFY(profile.addTag(9007199254740993LL, QStringLiteral("DevHub")));
+        }
         tasks::TaskScheduler scheduler(h.ids);
         AssistantToolRuntime runtime(h.client, h.controller, scheduler, manager, workspaceContext, serviceRepo, coordinator, noteRepo);
         h.controller.setPersistenceContext(accountId.toString(), false);
         h.controller.setContext({workspaceId.toString(), workspace.displayName(), root});
         QVERIFY(h.readyController()); QVERIFY(h.sendAndAccept()); h.controller.setToolDisclosureGrants(true, true);
+        if (taskTool) {
+            runtime.setSomethingTasksProfilePath(profile.path);
+            h.controller.setTaskDataDisclosureGrant(true);
+        }
         QSignalSpy activity(&h.controller, &AssistantController::toolActivityChanged);
         GitInvocationObserver gitCalls;
         QJsonObject args;
@@ -575,6 +587,8 @@ private slots:
         if (tool == "devhub_notes_search") args = {{"query", "private"}};
         if (tool == "devhub_files_read") args = {{"path", "note.md"}};
         if (tool == "devhub_files_search") args = {{"query", "note"}};
+        if (tool == "devhub_something_tasks_find") args = {{"tags", QJsonArray{QStringLiteral("DevHub")}}};
+        if (tool == "devhub_something_task_read") args = {{"taskId", QStringLiteral("9007199254740993")}};
         const auto deliver = [&](QString id, QString callId, const QString& name, QJsonObject arguments) {
             h.transport.deliver({{"id", id}, {"method", "item/tool/call"}, {"params", QJsonObject{
                 {"threadId", "thread-1"}, {"turnId", "turn-1"}, {"callId", callId}, {"tool", name}, {"arguments", arguments}}}});
@@ -592,6 +606,20 @@ private slots:
         deliver("in-flight-alias", "same-call", tool, args);
         QTRY_VERIFY_WITH_TIMEOUT(!response("first").isEmpty(), 5000);
         QVERIFY(response("first").value("success").toBool());
+        if (taskTool) {
+            const auto wireResponse = response("first");
+            const auto text = wireResponse.value(QStringLiteral("contentItems")).toArray().first().toObject()
+                .value(QStringLiteral("text")).toString();
+            const auto body = QJsonDocument::fromJson(text.toUtf8()).object();
+            QVERIFY(body.value(QStringLiteral("success")).toBool());
+            const auto data = body.value(QStringLiteral("data")).toObject();
+            QCOMPARE(data.value(QStringLiteral("source")).toString(), QStringLiteral("SomethingQt"));
+            const auto task = tool == QStringLiteral("devhub_something_tasks_find")
+                ? data.value(QStringLiteral("tasks")).toArray().first().toObject()
+                : data.value(QStringLiteral("task")).toObject();
+            QCOMPARE(task.value(QStringLiteral("taskId")).toString(), QStringLiteral("9007199254740993"));
+            QCOMPARE(task.value(QStringLiteral("title")).toString(), QStringLiteral("Synthetic DevHub task"));
+        }
         QCOMPARE(response("in-flight-alias"), response("first"));
         deliver("completed-alias", "same-call", tool, args);
         QCOMPARE(response("completed-alias"), response("first"));
@@ -780,7 +808,7 @@ private slots:
         AssistantToolRuntime runtime(client, controller, scheduler, manager, workspaceContext,
             serviceRepo, coordinator, noteRepo);
         QVERIFY(runtime.enabledForTestedWireProfile());
-        QCOMPARE(client.specifications.size(), 14);
+        QCOMPARE(client.specifications, AssistantToolRuntime::experimentalToolSpecifications());
         client.call(11, QStringLiteral("devhub_workspace_metadata"));
         QTRY_COMPARE_WITH_TIMEOUT(client.replies.size(), 1, 1000);
         QCOMPARE(workspaceRepo.listCalls, 1);

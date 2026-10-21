@@ -166,16 +166,25 @@ bool validateSchema(QSqlDatabase& db, const application::tasks::CancellationToke
     if (checkCancellation(cancellation, failureResult)) return false;
     for (const auto& table : requiredTables) {
         QSqlQuery exists(db);
-        exists.prepare(QStringLiteral("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1"));
+        if (!exists.prepare(QStringLiteral("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1"))) {
+            *failureResult = failure(sqliteFailureCode(exists.lastError().text(), QStringLiteral("schema_incompatible")));
+            return false;
+        }
         exists.addBindValue(QString::fromLatin1(table.name));
         if (!exists.exec()) {
             *failureResult = failure(sqliteFailureCode(exists.lastError().text(), QStringLiteral("schema_incompatible")));
             return false;
         }
-        if (!exists.next()) { *failureResult = failure(QStringLiteral("schema_incompatible")); return false; }
+        if (!exists.next()) {
+            *failureResult = failure(sqliteFailureCode(exists.lastError().text(), QStringLiteral("schema_incompatible")));
+            return false;
+        }
         exists.finish();
         QSqlQuery columns(db);
-        columns.prepare(QStringLiteral("PRAGMA table_info(\"%1\")").arg(QString::fromLatin1(table.name)));
+        if (!columns.prepare(QStringLiteral("PRAGMA table_info(\"%1\")").arg(QString::fromLatin1(table.name)))) {
+            *failureResult = failure(sqliteFailureCode(columns.lastError().text(), QStringLiteral("schema_incompatible")));
+            return false;
+        }
         if (!columns.exec()) { *failureResult = failure(sqliteFailureCode(columns.lastError().text(), QStringLiteral("schema_incompatible"))); return false; }
         QHash<QString, QString> found;
         while (columns.next()) found.insert(columns.value(1).toString().toCaseFolded(),
@@ -255,8 +264,11 @@ QJsonArray readTags(QSqlDatabase& db, qint64 taskId, const application::tasks::C
 {
     QJsonArray output;
     QSqlQuery query(db);
-    query.prepare(QStringLiteral("SELECT substr(g.name,1,65),length(g.name) FROM task_tags x JOIN tags g ON g.id=x.tag_id "
-        "WHERE x.task_id=? ORDER BY g.name_normalized,g.id LIMIT ?"));
+    if (!query.prepare(QStringLiteral("SELECT substr(g.name,1,65),length(g.name) FROM task_tags x JOIN tags g ON g.id=x.tag_id "
+        "WHERE x.task_id=? ORDER BY g.name_normalized,g.id LIMIT ?"))) {
+        *result = failure(sqliteFailureCode(query.lastError().text()));
+        return {};
+    }
     query.addBindValue(taskId);
     query.addBindValue(kTagDisplayLimit + 1);
     if (!query.exec()) { *result = failure(sqliteFailureCode(query.lastError().text())); return {}; }
@@ -348,7 +360,10 @@ SomethingTasksReadResult SomethingTasksReader::find(const QString& profilePath, 
     bindings.append(offset);
     QSqlQuery query(db);
     query.setForwardOnly(true);
-    query.prepare(sql);
+    if (!query.prepare(sql)) {
+        const QString code = sqliteFailureCode(query.lastError().text());
+        db.rollback(); return failure(code);
+    }
     for (const auto& binding : std::as_const(bindings)) query.addBindValue(binding);
     if (!query.exec()) {
         const QString error = query.lastError().text();
@@ -406,7 +421,10 @@ SomethingTasksReadResult SomethingTasksReader::read(const QString& profilePath, 
     QSqlQuery row(db);
     QString sql = QStringLiteral("SELECT id,substr(title,1,?),length(title),is_completed,priority,difficulty,revision,due_date,updated_at,substr(description,1,?),length(description),created_at FROM tasks WHERE id=?");
     if (!foldedRequiredTag.isEmpty()) sql += QStringLiteral(" AND EXISTS(SELECT 1 FROM task_tags x JOIN tags g ON g.id=x.tag_id WHERE x.task_id=tasks.id AND g.name_normalized=?)");
-    row.prepare(sql);
+    if (!row.prepare(sql)) {
+        const QString code = sqliteFailureCode(row.lastError().text());
+        db.rollback(); return failure(code);
+    }
     row.addBindValue(kTitleLimit);
     row.addBindValue(kDescriptionLimit + 1);
     row.addBindValue(id);
@@ -428,7 +446,10 @@ SomethingTasksReadResult SomethingTasksReader::read(const QString& profilePath, 
     QJsonArray subtasks;
     bool subtasksTruncated = false;
     QSqlQuery subtaskRows(db);
-    subtaskRows.prepare(QStringLiteral("SELECT id,substr(title,1,257),length(title),is_completed,position FROM task_subtasks WHERE task_id=? ORDER BY position,id LIMIT ?"));
+    if (!subtaskRows.prepare(QStringLiteral("SELECT id,substr(title,1,257),length(title),is_completed,position FROM task_subtasks WHERE task_id=? ORDER BY position,id LIMIT ?"))) {
+        const QString code = sqliteFailureCode(subtaskRows.lastError().text());
+        db.rollback(); return failure(code);
+    }
     subtaskRows.addBindValue(id);
     subtaskRows.addBindValue(kSubtaskLimit + 1);
     if (!subtaskRows.exec()) { const QString code = sqliteFailureCode(subtaskRows.lastError().text()); row.finish(); db.rollback(); return failure(code); }

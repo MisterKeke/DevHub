@@ -130,7 +130,7 @@ set_tests_properties(devhub.assistant-tools PROPERTIES TIMEOUT 45
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(devhub_assistant_tool_runtime_tests assistant_tool_runtime_test.cpp)
-target_link_libraries(devhub_assistant_tool_runtime_tests PRIVATE devhub_assistant Qt6::Test project_warnings)
+target_link_libraries(devhub_assistant_tool_runtime_tests PRIVATE devhub_assistant Qt6::Sql Qt6::Test project_warnings)
 add_test(NAME devhub.assistant-tool-runtime COMMAND devhub_assistant_tool_runtime_tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-tool-runtime-tests.txt,txt")
 set_tests_properties(devhub.assistant-tool-runtime PROPERTIES TIMEOUT 45
