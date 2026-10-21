@@ -393,7 +393,8 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
     assistantController.setPersistenceContext(session.account()->id().toString(),
         settingsService.value(QStringLiteral("assistant/restoreConversation")).toBool());
     application::assistant::AssistantToolRuntime assistantToolRuntime(assistantClient, assistantController,
-        scheduler, workspaceManager, workspaceContext, serviceRepository, serviceCoordinator, notesRepository);
+        scheduler, workspaceManager, workspaceContext, serviceRepository, serviceCoordinator, notesRepository,
+        settingsService);
     QObject::connect(&assistantController, &application::assistant::AssistantController::executableProbeRequested,
         &assistantLocator, [&assistantLocator](const QString& path, quint64 generation) { assistantLocator.locate(path, generation); });
     QObject::connect(&assistantController, &application::assistant::AssistantController::cancelProbeRequested,
@@ -424,7 +425,8 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
                                                 databaseReferenceRepository, databaseConnectionFactory, notesRepository,
                                                 notesStorageRoot, session.account()->id().toString(), trashService, editorLauncher,
                                                 settingsService, *themeManager, eventHub, notificationRepository,
-                                                notifications, supportBundleBuilder, redactor, assistantController, assistantSetupLocator, shutdown);
+                                                notifications, supportBundleBuilder, redactor, assistantController,
+                                                assistantToolRuntime, assistantSetupLocator, shutdown);
     auto* noteEditorOwner = mainWindow.findChild<presentation::notes::NotesPage*>();
     assistantToolRuntime.setMutationIntegration({
         [noteEditorOwner](const QString& workspace, const QString& note) {

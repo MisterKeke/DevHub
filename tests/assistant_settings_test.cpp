@@ -6,6 +6,7 @@
 #include "presentation/theme/ThemeManager.h"
 #include <QApplication>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFontDatabase>
 #include <QComboBox>
 #include <QLabel>
@@ -26,7 +27,7 @@ using presentation::settings::AssistantSettingsPanel;
 using presentation::settings::SettingsWindow;
 class SettingsRepository final : public ISettingsRepository {
 public:
-    SettingValues values; bool failSave = false; int failBatchAfterWrites = -1; int lastBatchWrites = 0;
+    SettingValues values; SettingUpdates lastUpdates; bool failSave = false; int failBatchAfterWrites = -1; int lastBatchWrites = 0;
     shared::common::Result<SettingValues> load(SettingScope, const QString&) override { return shared::common::Result<SettingValues>::success(values); }
     shared::common::Result<void> save(SettingScope, const QString&, const QString& id, const QVariant& value) override {
         if (failSave) return shared::common::Result<void>::failure(domain::errors::AppError::failure(domain::errors::ErrorCode::IoFailure,
@@ -34,6 +35,7 @@ public:
         values.insert(id, value); return shared::common::Result<void>::success();
     }
     shared::common::Result<void> saveBatch(const SettingUpdates& updates) override {
+        lastUpdates = updates;
         auto staged = values; lastBatchWrites = 0;
         for (const auto& update : updates) {
             if (update.scope == SettingScope::Session) continue;
@@ -92,6 +94,29 @@ private slots:
             QVERIFY2(descriptor.validate, qPrintable(descriptor.id));
             QVERIFY2(descriptor.validate(descriptor.defaultValue), qPrintable(descriptor.id));
         }
+    }
+    void somethingQtProfileUsesGlobalSensitiveScopeAndTagsAreWorkspaceScoped() {
+        SettingsRepository repository; SettingsService settings(repository);
+        const QString profilePath = QDir(QDir::rootPath()).filePath(QStringLiteral("Something/profiles/default/something.sqlite"));
+        const auto profile = settings.descriptor(QStringLiteral("assistant/somethingQtProfilePath"));
+        const auto tag = settings.descriptor(QStringLiteral("assistant/somethingQtWorkspaceTag"));
+        const auto restriction = settings.descriptor(QStringLiteral("assistant/somethingQtRestrictWorkspaceTag"));
+        QCOMPARE(profile.scope, SettingScope::Global);
+        QCOMPARE(profile.sensitivity, SettingSensitivity::Sensitive);
+        QVERIFY(profile.defaultValue.toString().isEmpty());
+        QVERIFY(profile.validate(profilePath));
+        QVERIFY(!profile.validate(QStringLiteral("relative/something.sqlite")));
+        QCOMPARE(tag.scope, SettingScope::Workspace);
+        QCOMPARE(restriction.scope, SettingScope::Workspace);
+        QVERIFY(settings.setValue(profile.id, profilePath));
+        QCOMPARE(repository.lastUpdates.size(), 1);
+        QCOMPARE(repository.lastUpdates.first().scope, SettingScope::Global);
+        QVERIFY(!settings.sanitizedValues().contains(profile.label));
+        QVERIFY(settings.setValue(tag.id, QStringLiteral("DevHub"), QStringLiteral("workspace-1")));
+        QCOMPARE(repository.lastUpdates.first().scope, SettingScope::Workspace);
+        QCOMPARE(repository.lastUpdates.first().workspaceId, QStringLiteral("workspace-1"));
+        QVERIFY(settings.setValue(restriction.id, true, QStringLiteral("workspace-1")));
+        QCOMPARE(repository.lastUpdates.first().scope, SettingScope::Workspace);
     }
     void restoreConversationPreferenceUsesBooleanValidation() {
         SettingsRepository repository; SettingsService settings(repository);

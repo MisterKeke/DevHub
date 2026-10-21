@@ -211,6 +211,9 @@ The [Phase 2 client report](assistant-client.md) records typed protocol operatio
 the implemented runtime admission checks and the continuing native inference gate.
 The [Phase 3 UI report](assistant-ui.md) records the in-app replacement, streaming
 controller, offline interaction tests and remaining baseline/live-turn checks.
+The [SomethingQt task lookup contract](assistant-something-tasks.md) records the
+read-only profile adapter, schema and exact-tag contract, disclosure scope and
+fresh-page concurrency semantics.
 
 Official references rechecked on the evidence date:
 [App Server](https://learn.chatgpt.com/docs/app-server),

@@ -7,6 +7,7 @@
 #include "../services/IServiceDefinitionRepository.h"
 #include "../services/ServiceCoordinator.h"
 #include "../tasks/TaskScheduler.h"
+#include "../settings/SettingsService.h"
 #include "../workspaces/WorkspaceContext.h"
 #include "../workspaces/WorkspaceManager.h"
 #include "../git/GitService.h"
@@ -26,6 +27,13 @@ public:
         services::IServiceDefinitionRepository& serviceDefinitions,
         services::ServiceCoordinator& serviceCoordinator, notes::INotesRepository& notes,
         QObject* parent = nullptr);
+    AssistantToolRuntime(ICodexClient& client, AssistantController& controller,
+        tasks::TaskScheduler& scheduler, workspaces::WorkspaceManager& workspaces,
+        workspaces::WorkspaceContext& workspaceContext,
+        services::IServiceDefinitionRepository& serviceDefinitions,
+        services::ServiceCoordinator& serviceCoordinator, notes::INotesRepository& notes,
+        settings::SettingsService& settings,
+        QObject* parent = nullptr);
     ~AssistantToolRuntime() override;
 
     [[nodiscard]] bool enabledForTestedWireProfile() const { return m_profileConfigured; }
@@ -42,8 +50,28 @@ public:
     };
     void setMutationIntegration(MutationIntegration integration) { m_mutations = std::move(integration); }
     [[nodiscard]] AssistantApprovalCoordinator& approvals() { return m_approvals; }
+    [[nodiscard]] QString somethingTasksProfilePath() const { return m_somethingTasksProfilePath; }
+    [[nodiscard]] QString somethingTasksProfileIdentity() const;
+    [[nodiscard]] QString somethingTasksConnectionStatus() const { return m_somethingTasksConnectionStatus; }
+    [[nodiscard]] QString activeWorkspaceId() const;
+    [[nodiscard]] QString workspaceTaskTagDefault() const;
+    [[nodiscard]] bool workspaceTaskTagRestricted() const;
+    void setSomethingTasksProfilePath(QString path);
+    void reloadSomethingTasksSettings();
+    [[nodiscard]] bool setWorkspaceTaskTagSettings(QString tag, bool restricted);
+    void checkSomethingTasksConnection();
+
+signals:
+    void somethingTasksConnectionChanged(QString profileIdentity, QString status);
+    void somethingTasksLookupStatusChanged(QString status);
 
 private:
+    AssistantToolRuntime(ICodexClient& client, AssistantController& controller,
+        tasks::TaskScheduler& scheduler, workspaces::WorkspaceManager& workspaces,
+        workspaces::WorkspaceContext& workspaceContext,
+        services::IServiceDefinitionRepository& serviceDefinitions,
+        services::ServiceCoordinator& serviceCoordinator, notes::INotesRepository& notes,
+        settings::SettingsService* settings, QObject* parent);
     void registerHandlers();
     void registerMutationHandlers();
     [[nodiscard]] bool scopeStillCurrent(const ToolCall& call) const;
@@ -55,6 +83,7 @@ private:
         std::function<shared::common::Result<QJsonObject>(const tasks::TaskContext&)> work,
         std::function<void(ToolResult)> done);
     void reportActivity(const QString& wireName, bool active, bool success = false);
+    void updateSomethingTasksConnectionStatus(QString status);
 
     ICodexClient& m_client;
     AssistantController& m_controller;
@@ -64,10 +93,15 @@ private:
     services::IServiceDefinitionRepository& m_serviceDefinitions;
     services::ServiceCoordinator& m_serviceCoordinator;
     notes::INotesRepository& m_notes;
+    settings::SettingsService* m_settings = nullptr;
     AssistantToolRegistry m_registry;
     AssistantApprovalCoordinator m_approvals;
     MutationIntegration m_mutations;
     QString m_registryFingerprint;
+    QString m_somethingTasksProfilePath;
+    QString m_somethingTasksConnectionStatus;
+    std::optional<tasks::TaskHandle> m_connectionCheckHandle;
+    quint64 m_connectionCheckGeneration = 0;
     bool m_profileConfigured = false;
 };
 

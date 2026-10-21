@@ -19,6 +19,7 @@
 #include "../assistant/AssistantPage.h"
 #include "../assistant/AssistantNavigation.h"
 #include "../../application/assistant/AssistantApprovalCoordinator.h"
+#include "../../application/assistant/AssistantToolRuntime.h"
 #include "../files/FileBrowserPage.h"
 #include "../overview/OverviewPage.h"
 #include "../commands/CommandPaletteDialog.h"
@@ -149,6 +150,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
                        application::support::SupportBundleBuilder& supportBundleBuilder,
                        const shared::security::RedactionService& redactor,
                        application::assistant::AssistantController& assistantController,
+                       application::assistant::AssistantToolRuntime& assistantToolRuntime,
                        application::assistant::ICodexExecutableProbe& assistantSetupProbe,
                        application::lifecycle::ShutdownCoordinator& shutdownCoordinator,
                        QWidget* parent)
@@ -163,7 +165,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
       m_scheduler(scheduler),
       m_serviceCoordinator(serviceCoordinator),
       m_settingsService(settingsService),
-      m_assistantController(assistantController), m_assistantSetupProbe(assistantSetupProbe),
+      m_assistantController(assistantController), m_assistantToolRuntime(assistantToolRuntime),
+      m_assistantSetupProbe(assistantSetupProbe),
       m_shutdownCoordinator(shutdownCoordinator),
       m_themeManager(themeManager),
       m_eventHub(eventHub),
@@ -496,7 +499,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     settingsLayout->addWidget(supportBundleButton, 0, Qt::AlignLeft);
     settingsLayout->addStretch();
     m_pageHost->addWidget(settingsPage);
-    m_assistantPage = new devhub::presentation::assistant::AssistantPage(assistantController, m_pageHost);
+    m_assistantPage = new devhub::presentation::assistant::AssistantPage(
+        assistantController, assistantToolRuntime, settingsService, m_pageHost);
     m_pageHost->addWidget(m_assistantPage);
     m_commandPalette = new devhub::presentation::commands::CommandPaletteDialog(*m_commandRegistry, this);
     m_workspaceSearchProvider = new application::commands::WorkspaceSearchProvider();
@@ -844,6 +848,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this, &m_assistantController, &m_assistantSetupProbe);
         connect(&dialog, &devhub::presentation::settings::SettingsWindow::settingsApplied, &m_assistantController, [this] {
             m_assistantController.applyConfiguration({m_settingsService.value(QStringLiteral("assistant/executable")).toString(), m_settingsService.value(QStringLiteral("assistant/model")).toString()});
+            m_assistantToolRuntime.reloadSomethingTasksSettings();
             if (m_session.account()) m_assistantController.setPersistenceContext(m_session.account()->id().toString(),
                 m_settingsService.value(QStringLiteral("assistant/restoreConversation")).toBool());
         });
@@ -1082,6 +1087,7 @@ void MainWindow::openQuickSettings()
     devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this, &m_assistantController, &m_assistantSetupProbe);
     connect(&dialog, &devhub::presentation::settings::SettingsWindow::settingsApplied, &m_assistantController, [this] {
         m_assistantController.applyConfiguration({m_settingsService.value(QStringLiteral("assistant/executable")).toString(), m_settingsService.value(QStringLiteral("assistant/model")).toString()});
+        m_assistantToolRuntime.reloadSomethingTasksSettings();
         if (m_session.account()) m_assistantController.setPersistenceContext(m_session.account()->id().toString(),
             m_settingsService.value(QStringLiteral("assistant/restoreConversation")).toBool());
     });

@@ -109,6 +109,10 @@ set(DEVHUB_ASSISTANT_SOURCES
     src/application/assistant/AssistantToolHandlers.cpp
     src/application/assistant/AssistantToolRuntime.h
     src/application/assistant/AssistantToolRuntime.cpp
+    src/application/assistant/SomethingTasksResponse.h
+    src/application/assistant/SomethingTasksResponse.cpp
+    src/infrastructure/assistant/SomethingTasksReader.h
+    src/infrastructure/assistant/SomethingTasksReader.cpp
     src/application/assistant/AssistantApprovalCoordinator.h
     src/application/assistant/AssistantApprovalCoordinator.cpp
     src/application/assistant/ICodexTransport.h
@@ -157,9 +161,14 @@ add_library(devhub_file_services STATIC
 target_include_directories(devhub_file_services PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(devhub_file_services PUBLIC project_options devhub_core Qt6::Core PRIVATE project_warnings)
 
+add_library(devhub_settings STATIC
+    src/application/settings/SettingsService.cpp)
+target_include_directories(devhub_settings PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(devhub_settings PUBLIC project_options devhub_core Qt6::Core PRIVATE project_warnings)
+
 function(configure_devhub_assistant target)
     target_include_directories(${target} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(${target} PUBLIC project_options devhub_core devhub_file_services devhub_services devhub_workspaces Qt6::Core
+    target_link_libraries(${target} PUBLIC project_options devhub_core devhub_settings devhub_file_services devhub_services devhub_workspaces Qt6::Core
         PRIVATE project_warnings devhub_database Qt6::Sql)
 endfunction()
 
@@ -286,7 +295,6 @@ target_link_libraries(devhub_logs PUBLIC project_options devhub_database Qt6::Co
 
 add_executable(devhub WIN32
     src/application/logging/ApplicationLogCategories.cpp
-    src/application/settings/SettingsService.cpp
     src/application/support/SupportBundleBuilder.cpp
     src/application/overview/OverviewStateComposer.cpp
     src/application/commands/CommandRegistry.cpp
