@@ -42,25 +42,66 @@ private slots:
         QVERIFY(profile.addTag(12, QStringLiteral("DevHub")));
         QVERIFY(profile.addTag(13, QStringLiteral(" DevHub ")));
         QVERIFY(profile.addTag(13, QStringLiteral("Review")));
-        QVERIFY(profile.addTag(13, QStringLiteral("Straße")));
+        // Final sigma and capital sigma case-fold to the same Unicode tag.
+        // Escapes keep the fixture independent of MSVC's source code page.
+        QVERIFY(profile.addTag(13, QStringLiteral("\u03c2")));
 
         const auto exact = SomethingTasksReader::find(profile.path, {QStringLiteral(" devhub ")},
             QStringLiteral("incomplete"), 0, 20);
         QVERIFY(exact.success);
         QCOMPARE(exact.data.value(QStringLiteral("tasks")).toArray().size(), 2);
         const auto conjunction = SomethingTasksReader::find(profile.path,
-            {QStringLiteral("DEVHUB"), QStringLiteral("review"), QStringLiteral("STRASSE")},
+            {QStringLiteral("DEVHUB"), QStringLiteral("review"), QStringLiteral("\u03a3")},
             QStringLiteral("incomplete"), 0, 20);
         QVERIFY(conjunction.success);
         const auto rows = conjunction.data.value(QStringLiteral("tasks")).toArray();
         QCOMPARE(rows.size(), 1);
         QCOMPARE(rows.first().toObject().value(QStringLiteral("taskId")).toString(), QStringLiteral("13"));
+        const auto absentConjunction = SomethingTasksReader::find(profile.path,
+            {QStringLiteral("DevHub"), QStringLiteral("MissingTag")},
+            QStringLiteral("incomplete"), 0, 20);
+        QVERIFY(absentConjunction.success);
+        QVERIFY(absentConjunction.data.value(QStringLiteral("tasks")).toArray().isEmpty());
         const auto complete = SomethingTasksReader::find(profile.path, {QStringLiteral("DevHub")},
             QStringLiteral("complete"), 0, 20);
         QVERIFY(complete.success);
         QCOMPARE(complete.data.value(QStringLiteral("tasks")).toArray().size(), 1);
-        QVERIFY(SomethingTasksReader::find(profile.path, {QStringLiteral("DevHub-old")},
-            QStringLiteral("all"), 0, 20).success);
+        const auto oldTag = SomethingTasksReader::find(profile.path, {QStringLiteral("DevHub-old")},
+            QStringLiteral("all"), 0, 20);
+        QVERIFY(oldTag.success);
+        const auto oldRows = oldTag.data.value(QStringLiteral("tasks")).toArray();
+        QCOMPARE(oldRows.size(), 1);
+        QCOMPARE(oldRows.first().toObject().value(QStringLiteral("taskId")).toString(), QStringLiteral("11"));
+    }
+
+    void unicodeTagsUseQtCaseFolding_data()
+    {
+        QTest::addColumn<QString>("storedTag");
+        QTest::addColumn<QString>("requestedTag");
+        QTest::newRow("accented Latin") << QStringLiteral("\u00c5ngstr\u00f6m") << QStringLiteral("\u00e5NGSTR\u00d6M");
+        QTest::newRow("Greek final sigma") << QStringLiteral("\u03c2") << QStringLiteral("\u03a3");
+        QTest::newRow("German sharp S") << QStringLiteral("Stra\u00dfe") << QStringLiteral("STRA\u1e9eE");
+    }
+
+    void unicodeTagsUseQtCaseFolding()
+    {
+        QFETCH(QString, storedTag); QFETCH(QString, requestedTag);
+        SyntheticProfile profile;
+        QVERIFY(profile.created);
+        QVERIFY(profile.addTask(1, QStringLiteral("Unicode tag")));
+        QVERIFY(profile.addTask(2, QStringLiteral("Different exact tag")));
+        QVERIFY(profile.addTag(1, storedTag));
+        QVERIFY(profile.addTag(2, storedTag + QStringLiteral("-old")));
+        const auto result = SomethingTasksReader::find(profile.path, {QStringLiteral(" ") + requestedTag + QStringLiteral(" ")},
+            QStringLiteral("all"), 0, 20);
+        QVERIFY2(result.success, qPrintable(result.message));
+        const auto rows = result.data.value(QStringLiteral("tasks")).toArray();
+        QCOMPARE(rows.size(), 1);
+        QCOMPARE(rows.first().toObject().value(QStringLiteral("taskId")).toString(), QStringLiteral("1"));
+        const auto detail = SomethingTasksReader::read(profile.path, QStringLiteral("1"), requestedTag);
+        QVERIFY2(detail.success, qPrintable(detail.message));
+        QCOMPARE(SomethingTasksReader::read(profile.path, QStringLiteral("2"), requestedTag).errorCode,
+            QStringLiteral("task_not_found"));
     }
 
     void boundedDetailLongTextSubtasksAndLargeIds()
