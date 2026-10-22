@@ -109,6 +109,7 @@ bool samePushApproval(const GitPushPreview& expected, const GitPushPreview& curr
         && expected.remote == current.remote
         && expected.effectivePushUrl == current.effectivePushUrl
         && expected.pushUrlForExecution == current.pushUrlForExecution
+        && expected.fetchUrlForValidation == current.fetchUrlForValidation
         && expected.targetBranch == current.targetBranch
         && expected.remoteTrackingCommit == current.remoteTrackingCommit
         && expected.establishUpstream == current.establishUpstream
@@ -416,6 +417,31 @@ shared::common::Result<GitPushPreview> GitService::preparePush(const QString& di
             ? QStringLiteral("This remote has no effective push URL. Configure one before publishing.")
             : QStringLiteral("This remote has multiple push destinations. DevHub supports one destination per push."));
 
+    // Git fetch uses the first configured fetch URL. Resolve it during preview
+    // so the follow-up network operation is visible and covered by approval.
+    GitCommand fetchUrlCommand{QStringLiteral("post-push-fetch-destination"),
+        {QStringLiteral("remote"), QStringLiteral("get-url"), QStringLiteral("--"), remote}, root};
+    const auto fetchUrlResult = m_runner.run(fetchUrlCommand, cancellation);
+    if (fetchUrlResult.exitCode != 0 || fetchUrlResult.timedOut || fetchUrlResult.cancelled
+        || fetchUrlResult.outputTruncated)
+        return shared::common::Result<GitPushPreview>::failure(commandError(fetchUrlResult, fetchUrlCommand.operation));
+    const QString fetchUrl = QString::fromUtf8(fetchUrlResult.standardOutput).trimmed();
+    if (fetchUrl.isEmpty()) return fail(QStringLiteral("Configure a fetch URL before using the push-and-fetch workflow."));
+    // A fetch argument may also name a remote group. Do not let this approved
+    // single-remote operation contact additional repositories through a group.
+    GitCommand groupsCommand{QStringLiteral("post-push-fetch-groups"),
+        {QStringLiteral("config"), QStringLiteral("--null"), QStringLiteral("--get-regexp"), QStringLiteral("^remotes\\.")}, root};
+    const auto groups = m_runner.run(groupsCommand, cancellation);
+    if (groups.timedOut || groups.cancelled || groups.outputTruncated || (groups.exitCode != 0 && groups.exitCode != 1))
+        return shared::common::Result<GitPushPreview>::failure(commandError(groups, groupsCommand.operation));
+    for (const QByteArray& row : groups.standardOutput.split('\0')) {
+        const qsizetype separator = row.indexOf('\n');
+        if (separator < 0) continue;
+        if (QString::fromUtf8(row.left(separator)).compare(QStringLiteral("remotes.") + remote, Qt::CaseInsensitive) == 0
+            && !row.mid(separator + 1).trimmed().isEmpty())
+            return fail(QStringLiteral("The selected remote also names a remote group. Remove that group before using the single-remote push-and-fetch workflow."));
+    }
+
     const QString remoteKey = QStringLiteral("remote.%1.").arg(remote);
     const QString mirror = configValue(m_runner, root, remoteKey + QStringLiteral("mirror"), cancellation);
     if (gitBoolean(mirror)) return fail(QStringLiteral("Mirror remotes can publish or delete multiple refs. Disable mirror mode before using DevHub push."));
@@ -465,6 +491,9 @@ shared::common::Result<GitPushPreview> GitService::preparePush(const QString& di
     shared::security::RedactionService redactor;
     preview.effectivePushUrl = redactor.redact(effectiveUrls.first());
     preview.pushUrlForExecution = effectiveUrls.first();
+    preview.effectiveFetchUrl = redactor.redact(fetchUrl);
+    preview.fetchUrlForValidation = fetchUrl;
+    preview.fetchUrlDiffersFromPushUrl = fetchUrl != effectiveUrls.first();
     preview.targetBranch = targetBranch;
     preview.establishUpstream = establishUpstream;
     preview.upstreamChange = establishUpstream
@@ -533,6 +562,7 @@ GitPushResult GitService::classifyPushResult(const GitPushPreview& preview,
     result.approvedSourceCommit = preview.sourceCommit;
     result.remote = preview.remote;
     result.targetBranch = preview.targetBranch;
+    result.fetchUrlDiffersFromPushUrl = preview.fetchUrlDiffersFromPushUrl;
     result.diagnostic = boundedDiagnostic(processResult);
     const QString output = QString::fromUtf8(processResult.standardOutput + '\n' + processResult.standardError).toLower();
     QString porcelainRejection;
@@ -656,6 +686,10 @@ shared::common::Result<GitPushResult> GitService::executePush(const QString& dir
     if (pushed.timedOut || pushed.cancelled || (pushed.exitCode < 0 && pushed.processStarted))
         return reconcileInterruptedPush(approvedPreview, pushed);
     if (pushed.exitCode == 0) {
+        // Keep the same mutation slot. Calling fetch() here would try to acquire
+        // it again. Fetch before tracking config writes so the approved config
+        // fingerprint can still be checked without accepting unrelated changes.
+        refreshAfterPush(approvedPreview, result, cancellation);
         if (approvedPreview.establishUpstream && approvedPreview.upstreamChange) {
             // Config writes the exact approved tracking pair after publication;
             // branch --set-upstream-to requires a local remote-tracking ref.
@@ -703,6 +737,57 @@ shared::common::Result<GitPushResult> GitService::executePush(const QString& dir
     return shared::common::Result<GitPushResult>::success(std::move(result));
 }
 
+void GitService::refreshAfterPush(const GitPushPreview& preview, GitPushResult& result,
+    const tasks::CancellationToken& cancellation) const {
+    result.fetchUrlDiffersFromPushUrl = preview.fetchUrlDiffersFromPushUrl;
+    const auto warn = [&result, &preview](const QString& detail) {
+        result.fetchMessage = QStringLiteral("Push succeeded; tracking refresh failed. ") + detail;
+        if (preview.fetchUrlDiffersFromPushUrl)
+            result.fetchMessage += QStringLiteral(" The fetch and push URLs differ; fetched tracking data may not reflect the published branch.");
+    };
+    if (cancellation.isCancellationRequested()) {
+        warn(QStringLiteral("The follow-up fetch was cancelled before it started."));
+        return;
+    }
+    GitRepositoryLocator locator(m_runner);
+    const auto repository = locator.locate(preview.repositoryRoot, cancellation);
+    if (!repository || !repository.value().isRepository
+        || repository.value().root != preview.repositoryRoot
+        || repository.value().commonDirectory != preview.repositoryIdentity
+        || configurationFingerprint(m_runner, preview.repositoryRoot, cancellation) != preview.configurationFingerprint) {
+        warn(QStringLiteral("The repository or Git configuration changed after publication. Review the remote before fetching manually."));
+        return;
+    }
+    GitCommand fetchUrlCommand{QStringLiteral("post-push-fetch-destination"),
+        {QStringLiteral("remote"), QStringLiteral("get-url"), QStringLiteral("--"), preview.remote}, preview.repositoryRoot};
+    const auto fetchUrl = m_runner.run(fetchUrlCommand, cancellation);
+    if (fetchUrl.exitCode != 0 || fetchUrl.timedOut || fetchUrl.cancelled || fetchUrl.outputTruncated
+        || QString::fromUtf8(fetchUrl.standardOutput).trimmed() != preview.fetchUrlForValidation) {
+        warn(QStringLiteral("The approved fetch destination could not be revalidated. Prepare a fresh preview before contacting it."));
+        result.fetchDiagnostic = boundedDiagnostic(fetchUrl);
+        return;
+    }
+    // Fetch only the selected remote, with submodule recursion disabled. It
+    // refreshes tracking refs; it does not pull, merge, or change working files.
+    GitCommand command{QStringLiteral("post-push-fetch"),
+        {QStringLiteral("fetch"), QStringLiteral("--no-recurse-submodules"), QStringLiteral("--"), preview.remote},
+        preview.repositoryRoot, std::chrono::milliseconds(60000), true};
+    const auto fetched = m_runner.run(command, cancellation);
+    result.fetchAttempted = true;
+    result.fetchSucceeded = fetched.exitCode == 0 && !fetched.timedOut && !fetched.cancelled && fetched.exitStatus == 0;
+    if (!result.fetchSucceeded) {
+        const QString detail = fetched.cancelled ? QStringLiteral("The follow-up fetch was cancelled.")
+            : fetched.timedOut ? QStringLiteral("The follow-up fetch timed out.")
+            : QStringLiteral("Git could not fetch the selected remote. Review the fetch diagnostic and retry fetching manually.");
+        warn(detail);
+        result.fetchDiagnostic = boundedDiagnostic(fetched);
+        return;
+    }
+    result.fetchMessage = preview.fetchUrlDiffersFromPushUrl
+        ? QStringLiteral("Fetched the selected remote, but its fetch and push URLs differ; refreshed tracking data may not reflect the published branch.")
+        : QStringLiteral("Fetched the selected remote and refreshed remote-tracking information.");
+}
+
 shared::common::Result<GitPushResult> GitService::reconcileInterruptedPush(const GitPushPreview& preview,
     const GitCommandResult& interruptedResult) const {
     GitPushResult result;
@@ -711,6 +796,7 @@ shared::common::Result<GitPushResult> GitService::reconcileInterruptedPush(const
     result.approvedSourceCommit = preview.sourceCommit;
     result.remote = preview.remote;
     result.targetBranch = preview.targetBranch;
+    result.fetchUrlDiffersFromPushUrl = preview.fetchUrlDiffersFromPushUrl;
     result.diagnostic = boundedDiagnostic(interruptedResult);
     GitCommand query{QStringLiteral("reconcile-push"),
         {QStringLiteral("ls-remote"), QStringLiteral("--heads"), QStringLiteral("--"), preview.pushUrlForExecution,
@@ -723,6 +809,9 @@ shared::common::Result<GitPushResult> GitService::reconcileInterruptedPush(const
         if (remoteObject == preview.sourceCommit) {
             result.remotePublished = true;
             result.completionUncertain = false;
+            result.fetchMessage = QStringLiteral("Automatic fetch was skipped because the push was interrupted. Fetch the selected remote manually to refresh tracking information.");
+            if (preview.fetchUrlDiffersFromPushUrl)
+                result.fetchMessage += QStringLiteral(" The fetch and push URLs differ; fetched tracking data may not reflect the published branch.");
             const bool trackingAlreadyMatches = !preview.upstream.isEmpty()
                 && preview.upstream == preview.remote + QLatin1Char('/') + preview.targetBranch;
             if (preview.establishUpstream && preview.upstreamChange) {

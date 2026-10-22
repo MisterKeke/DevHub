@@ -60,6 +60,8 @@ public:
     [[nodiscard]] shared::common::Result<GitCommandResult> abortMerge(const QString& directory,
         const tasks::CancellationToken& cancellation = {}) const;
 private:
+    void refreshAfterPush(const GitPushPreview& preview, GitPushResult& result,
+        const tasks::CancellationToken& cancellation) const;
     [[nodiscard]] shared::common::Result<GitPushResult> reconcileInterruptedPush(const GitPushPreview& preview,
         const GitCommandResult& interruptedResult) const;
     [[nodiscard]] shared::common::Result<GitCommandResult> mutate(const QString& directory,

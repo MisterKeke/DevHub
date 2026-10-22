@@ -285,8 +285,8 @@ QJsonArray AssistantToolRuntime::experimentalToolSpecifications()
         {QStringLiteral("devhub_git_status"), {QStringLiteral("Read Git status in the selected workspace."), statusArgs}},
         {QStringLiteral("devhub_git_branches"), {QStringLiteral("List local or remote Git branches in the selected workspace."), branchArgs}},
         {QStringLiteral("devhub_git_log"), {QStringLiteral("Read a bounded page of Git history in the selected workspace."), logArgs}},
-        {QStringLiteral("devhub_git_push_preview"), {QStringLiteral("Prepare a single-branch Git push to an explicitly named configured remote and target branch. Returns a bounded preview and a short-lived operation ID; no remote is contacted."), gitPushPreviewArgs}},
-        {QStringLiteral("devhub_git_push"), {QStringLiteral("Request one-time human approval to publish a previously prepared Git push. The prepared operation is bound to its workspace, branch, commit, destination and configuration."), gitPushArgs}},
+        {QStringLiteral("devhub_git_push_preview"), {QStringLiteral("Prepare a single-branch Git push to an explicitly named configured remote and target branch, followed by a fetch on success. Returns a bounded preview and a short-lived operation ID; no remote is contacted."), gitPushPreviewArgs}},
+        {QStringLiteral("devhub_git_push"), {QStringLiteral("Request one-time human approval to publish a previously prepared Git push and fetch the selected remote on success. The prepared operation is bound to its workspace, branch, commit, push and fetch destinations, and configuration."), gitPushArgs}},
         {QStringLiteral("devhub_workspace_metadata"), {QStringLiteral("Read metadata for the selected registered workspace."), empty}},
         {QStringLiteral("devhub_services_list"), {QStringLiteral("List service names and runtime states for the selected workspace."), empty}},
         {QStringLiteral("devhub_notes_read"), {QStringLiteral("Read a selected-workspace note after note-text disclosure is enabled."), noteArgs}},
@@ -374,12 +374,17 @@ ToolResult gitPushToolResult(const git::GitPushResult& push) {
         {QStringLiteral("remotePublished"), push.remotePublished},
         {QStringLiteral("trackingConfigured"), push.trackingConfigured},
         {QStringLiteral("completionUncertain"), push.completionUncertain},
+        {QStringLiteral("fetchAttempted"), push.fetchAttempted},
+        {QStringLiteral("fetchSucceeded"), push.fetchSucceeded},
+        {QStringLiteral("fetchUrlDiffersFromPushUrl"), push.fetchUrlDiffersFromPushUrl},
+        {QStringLiteral("fetchMessage"), push.fetchMessage},
         {QStringLiteral("retryAutomatically"), false},
         {QStringLiteral("sourceCommit"), push.approvedSourceCommit},
         {QStringLiteral("remote"), push.remote},
         {QStringLiteral("targetBranch"), push.targetBranch},
         {QStringLiteral("message"), push.message}};
     if (!push.diagnostic.isEmpty()) result.data.insert(QStringLiteral("diagnostic"), push.diagnostic);
+    if (!push.fetchDiagnostic.isEmpty()) result.data.insert(QStringLiteral("fetchDiagnostic"), push.fetchDiagnostic);
     return result;
 }
 }
@@ -564,10 +569,14 @@ void AssistantToolRuntime::registerMutationHandlers() {
                     tr("Destination: %1 (%2)").arg(preview.remote, preview.effectivePushUrl),
                     tr("Target branch: %1").arg(preview.targetBranch),
                     tr("Tracking: %1").arg(preview.trackingDescription),
+                    tr("After a successful push, fetch %1 (%2) to refresh remote-tracking information.")
+                        .arg(preview.remote, preview.effectiveFetchUrl),
                     preview.hasCachedRemoteTracking
                         ? tr("Remote state is cached remote-tracking data; it was not refreshed.")
                         : tr("Remote state was not queried; outgoing count is unavailable."),
                     tr("Uncommitted files are not included.")};
+                if (preview.fetchUrlDiffersFromPushUrl)
+                    approvalLines.append(tr("The fetch and push URLs differ; fetched tracking data may not reflect the published branch."));
                 if (preview.outgoingCountAvailable)
                     approvalLines.append(tr("Outgoing commits: %1").arg(preview.outgoingCommitCount));
                 for (const auto& commit : preview.outgoingCommits)
@@ -893,7 +902,7 @@ void AssistantToolRuntime::registerHandlers()
     add(std::move(log), [gitRead](const ToolCall& c, const ToolCancellation& x, auto done) mutable { gitRead(c, x, std::move(done), QStringLiteral("log")); });
 
     auto pushPreview = definition(QStringLiteral("devhub_git_push_preview"),
-        QStringLiteral("Prepare a single-branch push to an explicitly selected configured remote and target branch. Returns a bounded preview and short-lived operation ID; does not contact the remote."),
+        QStringLiteral("Prepare a single-branch push to an explicitly selected configured remote and target branch, followed by a fetch on success. Returns a bounded preview and short-lived operation ID; does not contact the remote."),
         {{QStringLiteral("remote"), stringSchema(128)},
          {QStringLiteral("targetBranch"), stringSchema(256)},
          {QStringLiteral("establishUpstream"), QJsonObject{{QStringLiteral("type"), QStringLiteral("boolean")}}}},
@@ -982,6 +991,9 @@ void AssistantToolRuntime::registerHandlers()
                     {QStringLiteral("upstream"), preview.upstream},
                     {QStringLiteral("remote"), preview.remote},
                     {QStringLiteral("effectivePushUrl"), preview.effectivePushUrl},
+                    {QStringLiteral("effectiveFetchUrl"), preview.effectiveFetchUrl},
+                    {QStringLiteral("fetchAfterPush"), true},
+                    {QStringLiteral("fetchUrlDiffersFromPushUrl"), preview.fetchUrlDiffersFromPushUrl},
                     {QStringLiteral("targetBranch"), preview.targetBranch},
                     {QStringLiteral("remoteState"), preview.remoteState},
                     {QStringLiteral("outgoingCountAvailable"), preview.outgoingCountAvailable},

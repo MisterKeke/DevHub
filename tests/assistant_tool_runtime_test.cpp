@@ -497,6 +497,10 @@ private slots:
         QVERIFY(!operationId.isEmpty());
         QCOMPARE(previewData.value(QStringLiteral("remoteContacted")).toBool(), false);
         QVERIFY(!previewData.contains(QStringLiteral("pushUrlForExecution")));
+        QVERIFY(!previewData.contains(QStringLiteral("fetchUrlForValidation")));
+        QVERIFY(previewData.value(QStringLiteral("fetchAfterPush")).toBool());
+        QCOMPARE(previewData.value(QStringLiteral("effectiveFetchUrl")).toString(), bare);
+        QVERIFY(!previewData.value(QStringLiteral("fetchUrlDiffersFromPushUrl")).toBool());
 
         const QJsonObject pushArgs{{QStringLiteral("preparedOperationId"), operationId}};
         f.call(QStringLiteral("devhub_git_push"), pushArgs, QStringLiteral("push"), QStringLiteral("push-call"));
@@ -505,10 +509,14 @@ private slots:
         const auto approval = f.runtime.approvals().pending().first();
         QVERIFY(approval.preview.contains(previewData.value(QStringLiteral("sourceCommit")).toString()));
         QVERIFY(approval.preview.contains(QStringLiteral("origin/assistant-release")));
+        QVERIFY(approval.preview.contains(QStringLiteral("fetch origin")));
         QVERIFY(f.response(QStringLiteral("push")).isEmpty());
         QVERIFY(f.runtime.approvals().decide(approval.id, true));
         QTRY_VERIFY_WITH_TIMEOUT(!f.response(QStringLiteral("push")).isEmpty(), 15000);
         QVERIFY(f.response(QStringLiteral("push")).value(QStringLiteral("success")).toBool());
+        const auto pushData = f.response(QStringLiteral("push")).value(QStringLiteral("data")).toObject();
+        QVERIFY(pushData.value(QStringLiteral("fetchAttempted")).toBool());
+        QVERIFY(pushData.value(QStringLiteral("fetchSucceeded")).toBool());
         QCOMPARE(f.response(QStringLiteral("push-alias")), f.response(QStringLiteral("push")));
         QVERIFY(run(bare, {QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
             QStringLiteral("refs/heads/assistant-release")}));

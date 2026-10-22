@@ -357,6 +357,7 @@ class FeatureRegressionTest final : public QObject
         const QString bare = root.filePath(QStringLiteral("remote.git"));
         const QString alternateBare = root.filePath(QStringLiteral("alternate.git"));
         QVERIFY(QDir().mkpath(repository));
+        QVERIFY(QDir().mkpath(bare));
         QVERIFY(QDir().mkpath(alternateBare));
         const auto run = [git](const QString& directory, QStringList arguments) {
             QProcess process; process.setProgram(git); process.setArguments(std::move(arguments));
@@ -392,14 +393,19 @@ class FeatureRegressionTest final : public QObject
         QVERIFY(published.value().outcome == application::git::GitPushOutcome::Published);
         QVERIFY(published.value().remotePublished);
         QVERIFY(published.value().trackingConfigured);
+        QVERIFY(published.value().fetchAttempted);
+        QVERIFY2(published.value().fetchSucceeded, qPrintable(published.value().fetchDiagnostic));
+        QVERIFY(!published.value().fetchUrlDiffersFromPushUrl);
         QVERIFY(run(bare, {QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
             QStringLiteral("refs/heads/published/server")}));
         auto status = service.status(repository);
         QVERIFY(status);
+        QCOMPARE(status.value().ahead, 0);
         QVERIFY(!status.value().files.isEmpty()); // Dirty files remain outside the committed push.
         auto existingUpstream = service.preparePush(repository);
         QVERIFY(existingUpstream);
         QCOMPARE(existingUpstream.value().upstream, QStringLiteral("origin/published/server"));
+        QCOMPARE(existingUpstream.value().remoteTrackingCommit, first.value().sourceCommit);
 
         QFile second(QDir(repository).filePath(QStringLiteral("second.txt")));
         QVERIFY(second.open(QIODevice::WriteOnly)); second.write("second\n"); second.close();
@@ -407,6 +413,18 @@ class FeatureRegressionTest final : public QObject
         QVERIFY(run(repository, {QStringLiteral("-c"), QStringLiteral("user.name=Regression"),
             QStringLiteral("-c"), QStringLiteral("user.email=regression@example.invalid"),
             QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("second commit"), QStringLiteral("--quiet")}));
+        auto ahead = service.status(repository);
+        QVERIFY(ahead);
+        QCOMPARE(ahead.value().ahead, 1);
+        auto nextPush = service.preparePush(repository);
+        QVERIFY(nextPush);
+        auto pushedAgain = service.executePush(repository, nextPush.value());
+        QVERIFY(pushedAgain);
+        QVERIFY(pushedAgain.value().remotePublished);
+        QVERIFY2(pushedAgain.value().fetchSucceeded, qPrintable(pushedAgain.value().fetchDiagnostic));
+        auto refreshed = service.status(repository);
+        QVERIFY(refreshed);
+        QCOMPARE(refreshed.value().ahead, 0);
         auto staleSource = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false);
         QVERIFY(staleSource);
         QFile third(QDir(repository).filePath(QStringLiteral("third.txt")));
@@ -433,14 +451,16 @@ class FeatureRegressionTest final : public QObject
         QVERIFY(partialResult);
         QVERIFY(partialResult.value().outcome == application::git::GitPushOutcome::PartialTrackingFailure);
         QVERIFY(partialResult.value().remotePublished);
+        QVERIFY(!partialResult.value().fetchAttempted); // The hook changed approved configuration.
         QVERIFY(run(bare, {QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
             QStringLiteral("refs/heads/tracking-failure")}));
-        QVERIFY(writeHook("#!/bin/sh\nexit 1\n"));
+        QVERIFY(writeHook("#!/bin/sh\nprintf 'pre-push hook rejected fixture\\n' >&2\nexit 1\n"));
         auto hookRejected = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("hook-failure"), false);
         QVERIFY(hookRejected);
         auto hookResult = service.executePush(repository, hookRejected.value());
         QVERIFY(hookResult);
         QVERIFY(hookResult.value().outcome == application::git::GitPushOutcome::HookRejected);
+        QVERIFY(!hookResult.value().fetchAttempted);
         QVERIFY(QFile::remove(hookPath));
 
         auto changedDestination = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false);
@@ -451,15 +471,15 @@ class FeatureRegressionTest final : public QObject
         QVERIFY(rejectedDestination);
         QVERIFY(rejectedDestination.value().outcome == application::git::GitPushOutcome::PreviewChanged);
 
-        const QString rewriteKey = QStringLiteral("url.\"%1\".insteadOf")
+        const QString rewriteKey = QStringLiteral("url.%1.insteadOf")
             .arg(QDir::fromNativeSeparators(alternateBare));
         QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"), QStringLiteral("--add"),
             rewriteKey, QStringLiteral("push-alias:")}));
         QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("set-url"), QStringLiteral("--push"),
-            QStringLiteral("origin"), QStringLiteral("push-alias:repo")}));
+            QStringLiteral("origin"), QStringLiteral("push-alias:")}));
         auto rewrittenDestination = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false);
         QVERIFY(rewrittenDestination);
-        QVERIFY(rewrittenDestination.value().pushUrlForExecution.contains(QStringLiteral("alternate.git")));
+        QCOMPARE(rewrittenDestination.value().pushUrlForExecution, QDir::fromNativeSeparators(alternateBare));
         QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("set-url"), QStringLiteral("--push"),
             QStringLiteral("origin"), bare}));
         QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"), QStringLiteral("--unset-all"),
@@ -469,8 +489,15 @@ class FeatureRegressionTest final : public QObject
             QStringLiteral("--add"), QStringLiteral("origin"), bare}));
         auto multipleDestinations = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false);
         QVERIFY(!multipleDestinations);
+        QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"), QStringLiteral("--unset-all"),
+            QStringLiteral("remote.origin.pushurl")}));
         QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("set-url"), QStringLiteral("--push"),
             QStringLiteral("origin"), bare}));
+        QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"),
+            QStringLiteral("remotes.origin"), QStringLiteral("origin another-remote")}));
+        QVERIFY(!service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false));
+        QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"),
+            QStringLiteral("--unset"), QStringLiteral("remotes.origin")}));
         QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"),
             QStringLiteral("remote.origin.mirror"), QStringLiteral("true")}));
         QVERIFY(!service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false));
@@ -503,13 +530,16 @@ class FeatureRegressionTest final : public QObject
     void gitPushUsesApprovedDestinationBeforeCommitRefspec_data()
     {
         QTest::addColumn<bool>("useFileUrl");
-        QTest::newRow("local path with spaces") << false;
-        QTest::newRow("file URL with spaces") << true;
+        QTest::addColumn<bool>("fetchFails");
+        QTest::newRow("local path with spaces") << false << false;
+        QTest::newRow("file URL with spaces") << true << false;
+        QTest::newRow("unavailable fetch destination") << false << true;
     }
 
     void gitPushUsesApprovedDestinationBeforeCommitRefspec()
     {
         QFETCH(bool, useFileUrl);
+        QFETCH(bool, fetchFails);
         QTemporaryDir root; QVERIFY(root.isValid());
         const QString git = QStandardPaths::findExecutable(QStringLiteral("git")); QVERIFY(!git.isEmpty());
         const QString repository = root.filePath(QStringLiteral("working repository"));
@@ -526,7 +556,8 @@ class FeatureRegressionTest final : public QObject
         };
         QVERIFY(run(repository, {QStringLiteral("init"), QStringLiteral("--quiet"),
             QStringLiteral("--initial-branch=feature/local")}));
-        QVERIFY(run(root.path(), {QStringLiteral("init"), QStringLiteral("--bare"), QStringLiteral("--quiet"), fetchBare}));
+        if (!fetchFails)
+            QVERIFY(run(root.path(), {QStringLiteral("init"), QStringLiteral("--bare"), QStringLiteral("--quiet"), fetchBare}));
         QVERIFY(run(root.path(), {QStringLiteral("init"), QStringLiteral("--bare"), QStringLiteral("--quiet"), pushBare}));
         QVERIFY(run(repository, {QStringLiteral("-c"), QStringLiteral("user.name=Regression"),
             QStringLiteral("-c"), QStringLiteral("user.email=regression@example.invalid"),
@@ -542,12 +573,23 @@ class FeatureRegressionTest final : public QObject
         auto preview = service.preparePush(repository, QStringLiteral("reviewed"), QStringLiteral("published/server"), true);
         QVERIFY2(preview, qPrintable(preview ? QString{} : preview.error().userMessage));
         QCOMPARE(preview.value().pushUrlForExecution, pushUrl);
+        QCOMPARE(preview.value().effectiveFetchUrl, fetchBare);
+        QVERIFY(preview.value().fetchUrlDiffersFromPushUrl);
         auto published = service.executePush(repository, preview.value());
         QVERIFY2(published, qPrintable(published ? QString{} : published.error().userMessage));
         QVERIFY2(published.value().outcome == application::git::GitPushOutcome::Published,
             qPrintable(published.value().message + QLatin1Char('\n') + published.value().diagnostic));
         QVERIFY(published.value().remotePublished);
         QVERIFY(published.value().trackingConfigured);
+        QVERIFY(published.value().fetchAttempted);
+        QCOMPARE(published.value().fetchSucceeded, !fetchFails);
+        QVERIFY(published.value().fetchUrlDiffersFromPushUrl);
+        QVERIFY(published.value().fetchMessage.contains(QStringLiteral("fetch and push URLs differ")));
+        QVERIFY(!published.value().completionUncertain);
+        if (fetchFails) {
+            QVERIFY(published.value().fetchMessage.startsWith(QStringLiteral("Push succeeded; tracking refresh failed.")));
+            QVERIFY(!published.value().fetchDiagnostic.isEmpty());
+        }
         QByteArray remoteCommit;
         QVERIFY(run(pushBare, {QStringLiteral("rev-parse"), QStringLiteral("--verify"),
             QStringLiteral("refs/heads/published/server")}, &remoteCommit));
@@ -563,6 +605,8 @@ class FeatureRegressionTest final : public QObject
         QVERIFY(repeated);
         QVERIFY2(repeated.value().outcome == application::git::GitPushOutcome::AlreadyUpToDate,
             qPrintable(repeated.value().message + QLatin1Char('\n') + repeated.value().diagnostic));
+        QVERIFY(repeated.value().fetchAttempted);
+        QCOMPARE(repeated.value().fetchSucceeded, !fetchFails);
     }
 
     void gitPushPorcelainResultsClassifyFailuresAndRedactCredentials()
@@ -654,6 +698,7 @@ class FeatureRegressionTest final : public QObject
         QCOMPARE(result.value().outcome, application::git::GitPushOutcome::Published);
         QVERIFY(result.value().remotePublished);
         QVERIFY(!result.value().completionUncertain);
+        QVERIFY(!result.value().fetchAttempted); // Cancellation must not start another network operation.
         QVERIFY(run(bare, {QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
             QStringLiteral("refs/heads/cancelled/publication")}));
     }

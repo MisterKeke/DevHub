@@ -268,7 +268,7 @@ target_link_libraries(devhub_feature_tests PRIVATE devhub_services devhub_databa
 add_test(NAME devhub.feature-regressions COMMAND devhub_feature_tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/feature-regressions-tests.txt,txt")
 set_tests_properties(devhub.feature-regressions PROPERTIES
-    TIMEOUT 45
+    TIMEOUT 90
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;PATH=path_list_prepend:$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin>"
 )

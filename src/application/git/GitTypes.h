@@ -95,8 +95,11 @@ struct GitPushPreview final {
     QString upstream;
     QString remote;
     QString effectivePushUrl;
-    // Kept only in the in-memory approved operation; never serialize this field.
+    QString effectiveFetchUrl;
+    // Kept only in the in-memory approved operation; never serialize these URLs.
     QString pushUrlForExecution;
+    QString fetchUrlForValidation;
+    bool fetchUrlDiffersFromPushUrl = false;
     QString targetBranch;
     QString remoteTrackingCommit;
     QString trackingDescription;
@@ -131,6 +134,11 @@ struct GitPushResult final {
     bool remotePublished = false;
     bool trackingConfigured = false;
     bool completionUncertain = false;
+    bool fetchAttempted = false;
+    bool fetchSucceeded = false;
+    bool fetchUrlDiffersFromPushUrl = false;
+    QString fetchMessage;
+    QString fetchDiagnostic;
     QString message;
     QString diagnostic;
     QString approvedSourceCommit;

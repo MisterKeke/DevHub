@@ -165,10 +165,14 @@ QString GitPage::pushPreviewText(const application::git::GitPushPreview& preview
         tr("Effective push URL: %1").arg(preview.effectivePushUrl),
         tr("Target branch: %1").arg(preview.targetBranch),
         tr("Tracking: %1").arg(preview.trackingDescription),
+        tr("After a successful push, fetch %1 (%2) to refresh remote-tracking information.")
+            .arg(preview.remote, preview.effectiveFetchUrl),
         tr("Remote state: %1").arg(preview.hasCachedRemoteTracking
             ? tr("cached remote-tracking data; not refreshed and no remote was contacted")
             : tr("not queried; outgoing commit count is unavailable")),
         tr("Uncommitted files are not included in this push.")};
+    if (preview.fetchUrlDiffersFromPushUrl)
+        lines.append(tr("The fetch and push URLs differ; fetched tracking data may not reflect the published branch."));
     if (preview.outgoingCountAvailable)
         lines.append(tr("Outgoing commits: %1").arg(preview.outgoingCommitCount));
     if (!preview.outgoingCommits.isEmpty()) {
@@ -324,6 +328,8 @@ void GitPage::executePush(const application::git::GitPushPreview& preview) {
             if (hasPushResult) {
                 m_operationFeedback = pushResult.message;
                 if (!pushResult.diagnostic.isEmpty()) m_operationFeedback += QStringLiteral("\n") + pushResult.diagnostic;
+                if (!pushResult.fetchMessage.isEmpty()) m_operationFeedback += QStringLiteral("\n") + pushResult.fetchMessage;
+                if (!pushResult.fetchDiagnostic.isEmpty()) m_operationFeedback += QStringLiteral("\n") + pushResult.fetchDiagnostic;
                 if (pushResult.outcome != application::git::GitPushOutcome::Published
                     && pushResult.outcome != application::git::GitPushOutcome::AlreadyUpToDate)
                     emit operationFailed(tr("Git push did not complete"), m_operationFeedback);
