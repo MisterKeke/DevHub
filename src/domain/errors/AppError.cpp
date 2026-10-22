@@ -38,6 +38,7 @@ QString errorCodeName(ErrorCode code)
     case ErrorCode::ProfileResetFailed: return QStringLiteral("profile_reset_failed");
     case ErrorCode::AccountAlreadyExists: return QStringLiteral("account_already_exists");
     case ErrorCode::AccountStoreCorrupt: return QStringLiteral("account_store_corrupt");
+    case ErrorCode::RevisionConflict: return QStringLiteral("revision_conflict");
     case ErrorCode::AccountNotFound: return QStringLiteral("account_not_found");
     case ErrorCode::InvalidPasswordHash: return QStringLiteral("invalid_password_hash");
     case ErrorCode::PasswordHashFailed: return QStringLiteral("password_hash_failed");

@@ -248,6 +248,17 @@ target_include_directories(devhub_workspaces PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(devhub_workspaces PUBLIC project_options devhub_accounts Qt6::Core Qt6::Sql
     PRIVATE project_warnings)
 
+add_library(devhub_planner STATIC
+    src/domain/planner/PlannerTypes.cpp
+    src/domain/planner/PlannerRules.cpp
+    src/application/planner/PlannerValidation.cpp
+    src/application/planner/PlannerService.cpp
+    src/infrastructure/planner/SqlPlannerRepository.cpp
+)
+target_include_directories(devhub_planner PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(devhub_planner PUBLIC project_options devhub_core devhub_database devhub_accounts Qt6::Core Qt6::Sql
+    PRIVATE project_warnings)
+
 add_library(devhub_detection STATIC
     src/application/detection/WorkspaceDetectorRegistry.cpp
     src/application/detection/WorkspaceScanService.cpp
@@ -363,6 +374,7 @@ target_link_libraries(devhub PRIVATE
     devhub_database
     devhub_accounts
     devhub_workspaces
+    devhub_planner
     devhub_detection
     devhub_services
     devhub_ports

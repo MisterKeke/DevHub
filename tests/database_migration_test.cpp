@@ -39,7 +39,7 @@ private slots:
             "'note_nodes', 'note_tags', 'notifications', 'ui_state', 'assistant_conversations')")));
         QVERIFY(query.next());
         QCOMPARE(query.value(0).toInt(), 10);
-        QCOMPARE(manager.currentSchemaVersion(), 8);
+        QCOMPARE(manager.currentSchemaVersion(), 9);
         QVERIFY(query.exec(QStringLiteral("PRAGMA table_info(workspaces)")));
         bool hasArchiveTimestamp = false;
         while (query.next()) {
