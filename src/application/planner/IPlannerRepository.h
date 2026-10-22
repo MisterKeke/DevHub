@@ -3,6 +3,8 @@
 #include "../../domain/planner/PlannerTypes.h"
 #include "../../shared/common/Result.h"
 
+#include <QHash>
+
 namespace devhub::application::planner
 {
 
@@ -16,6 +18,10 @@ class IPlannerRepository
   public:
     virtual ~IPlannerRepository() = default;
     [[nodiscard]] virtual shared::common::Result<PlannerTask> createTask(PlannerTask task) = 0;
+    [[nodiscard]] virtual shared::common::Result<PlannerTask>
+    createImportedTask(PlannerTask task, bool allowAdditionalCopy) = 0;
+    [[nodiscard]] virtual shared::common::Result<QHash<QString, int>>
+    importedSourceTaskCounts(const QString& workspaceId, const QString& sourceProfileIdentity) = 0;
     [[nodiscard]] virtual shared::common::Result<PlannerTask> getTask(const QString &workspaceId,
                                                                       const QString &taskId) = 0;
     [[nodiscard]] virtual shared::common::Result<QVector<PlannerTask>>

@@ -77,4 +77,8 @@ integration creates or mutates tasks or changes SomethingQt files.
 Synthetic reader regression tests cover exact and Unicode tag matching,
 whitespace, AND filters, completion, subtasks, long descriptions, large IDs,
 offset ordering, schema replacement, cancellation, permissions and busy
-handling. These test sources were added without executing tests or applications.
+handling. The Planner import uses its own `SomethingQtImportReader`: it shares
+the read-only schema contract but has no Assistant response caps, and it does
+not use or change the Assistant disclosure grant. Phase 3 regression coverage
+builds compatible SQLite fixtures and verifies the Assistant reader remains
+unchanged.

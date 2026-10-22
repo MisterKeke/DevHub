@@ -20,6 +20,10 @@ class PlannerService final
     [[nodiscard]] shared::common::Result<domain::planner::PlannerTask>
     createTask(QString workspaceId, domain::planner::PlannerTask task);
     [[nodiscard]] shared::common::Result<domain::planner::PlannerTask>
+    importTask(QString workspaceId, domain::planner::PlannerTask task, bool allowAdditionalCopy = false);
+    [[nodiscard]] shared::common::Result<QHash<QString, int>>
+    importedSourceTaskCounts(const QString& workspaceId, const QString& sourceProfileIdentity);
+    [[nodiscard]] shared::common::Result<domain::planner::PlannerTask>
     getTask(const QString &workspaceId, const QString &taskId);
     [[nodiscard]] shared::common::Result<QVector<domain::planner::PlannerTask>>
     listTasks(const QString &workspaceId, const domain::planner::PlannerTaskFilter &filter);

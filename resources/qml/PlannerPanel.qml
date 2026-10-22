@@ -40,6 +40,7 @@ Rectangle {
     property string selectedTaskToDelete: ""
     property string sortField: "createdAt"
     property bool sortDescending: false
+    property var importController: typeof plannerImportController !== "undefined" ? plannerImportController : null
 
     function isoDate(date) {
         return date.getFullYear().toString().padStart(4, "0") + "-" + (date.getMonth() + 1).toString().padStart(2, "0") + "-" + date.getDate().toString().padStart(2, "0")
@@ -200,12 +201,14 @@ Rectangle {
                     }
                     Button {
                         visible: !plannerController.collapsed
-                        text: qsTr("Import (Phase 3)")
-                        enabled: false
-                        Accessible.description: qsTr("Import becomes available in Phase 3. No import is performed in this phase.")
+                        text: qsTr("Import from SomethingQt")
+                        enabled: plannerController.hasWorkspace && root.importController !== null
+                        Accessible.description: qsTr("Copy tasks from a compatible SomethingQt database into a DevHub Workspace.")
                         ToolTip.visible: hovered
-                        ToolTip.text: qsTr("Import becomes available in Phase 3. No import is performed in this phase.")
-                        contentItem: Text { text: parent.text; color: root.muted; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        ToolTip.text: qsTr("Import tasks from SomethingQt")
+                        onClicked: { root.importController.openDialog(); importDialog.open() }
+                        background: Rectangle { radius: 7; color: parent.enabled ? root.activeSurface : "transparent"; border.color: parent.enabled ? root.borderStrong : "transparent" }
+                        contentItem: Text { text: parent.text; color: parent.enabled ? root.text : root.muted; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; leftPadding: 8; rightPadding: 8 }
                     }
                 }
                 Button {
@@ -689,6 +692,246 @@ Rectangle {
         anchors.centerIn: Overlay.overlay
         contentItem: Text { text: qsTr("This permanently removes the task and its Planner details from this workspace."); color: root.secondary; wrapMode: Text.WordWrap }
         onAccepted: root.confirmDelete()
+    }
+
+    Dialog {
+        id: importDialog
+        modal: true
+        title: qsTr("Import tasks from SomethingQt")
+        width: Math.min(980, Math.max(640, root.width + 420))
+        height: Math.min(760, root.height + 360)
+        anchors.centerIn: Overlay.overlay
+        standardButtons: Dialog.Close
+        background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
+        onClosed: if (root.importController) root.importController.closeDialog()
+        contentItem: ColumnLayout {
+            spacing: 9
+            RowLayout {
+                Layout.fillWidth: true; spacing: 7
+                TextField {
+                    id: sourceProfilePath
+                    Layout.fillWidth: true
+                    enabled: root.importController && !root.importController.importing
+                    text: root.importController ? root.importController.profilePath : ""
+                    placeholderText: qsTr("Choose a SomethingQt SQLite profile")
+                    selectByMouse: true
+                    onEditingFinished: if (root.importController) root.importController.setProfilePath(text)
+                    color: root.text; placeholderTextColor: root.muted
+                    background: Rectangle { radius: 6; color: root.surface; border.color: sourceProfilePath.activeFocus ? root.accent : root.border }
+                }
+                Button { text: qsTr("Browse…"); enabled: root.importController !== null && !root.importController.importing; onClicked: root.importController.browseProfile() }
+                Button { text: root.importController && root.importController.loading ? qsTr("Checking…") : qsTr("Verify"); enabled: root.importController !== null && !root.importController.loading && !root.importController.importing; onClicked: { root.importController.setProfilePath(sourceProfilePath.text); root.importController.verifyConnection() } }
+            }
+            Text {
+                Layout.fillWidth: true
+                text: root.importController ? root.importController.connectionStatus : qsTr("Import service is unavailable")
+                color: root.importController && root.importController.verified ? root.success : root.muted
+                font.pixelSize: 10; wrapMode: Text.WordWrap
+            }
+            Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 7
+                TextField {
+                    id: sourceSearch
+                    Layout.fillWidth: true
+                    text: root.importController ? root.importController.searchText : ""
+                    placeholderText: qsTr("Search titles")
+                    onTextChanged: if (root.importController) root.importController.setSearchText(text)
+                    color: root.text; placeholderTextColor: root.muted
+                    background: Rectangle { radius: 6; color: root.surface; border.color: sourceSearch.activeFocus ? root.accent : root.border }
+                }
+                ComboBox {
+                    id: sourceTagFilter
+                    Layout.preferredWidth: 150
+                    model: (root.importController ? [qsTr("All tags")].concat(root.importController.sourceTags) : [qsTr("All tags")])
+                    currentIndex: root.importController && root.importController.tagFilter.length > 0 ? Math.max(0, model.indexOf(root.importController.tagFilter)) : 0
+                    onActivated: if (root.importController) root.importController.setTagFilter(index === 0 ? "" : currentText)
+                }
+                ComboBox {
+                    Layout.preferredWidth: 120
+                    model: [qsTr("Any priority"), qsTr("High"), qsTr("Medium"), qsTr("Low")]
+                    currentIndex: root.importController ? Math.max(0, ["", "high", "medium", "low"].indexOf(root.importController.priorityFilter)) : 0
+                    onActivated: if (root.importController) root.importController.setPriorityFilter(["", "high", "medium", "low"][index])
+                }
+                ComboBox {
+                    Layout.preferredWidth: 125
+                    model: [qsTr("Any completion"), qsTr("Incomplete"), qsTr("Complete")]
+                    currentIndex: root.importController ? root.importController.completionFilter + 1 : 0
+                    onActivated: if (root.importController) root.importController.setCompletionFilter(index === 0 ? -1 : index === 1 ? 0 : 1)
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 8
+                Text { text: qsTr("Import:"); color: root.secondary; font.pixelSize: 10 }
+                ComboBox {
+                    id: importMode
+                    Layout.preferredWidth: 205
+                    textRole: "text"; valueRole: "value"
+                    model: [
+                        { text: qsTr("Selected tasks"), value: "selected" },
+                        { text: qsTr("Tasks matching tags"), value: "tags" },
+                        { text: qsTr("All compatible tasks"), value: "all" }
+                    ]
+                }
+                Text { text: qsTr("Destination Workspace:"); color: root.secondary; font.pixelSize: 10 }
+                ComboBox {
+                    id: destinationWorkspace
+                    Layout.fillWidth: true
+                    model: root.importController ? root.importController.workspaceOptions : []
+                    textRole: "name"; valueRole: "id"
+                    currentIndex: {
+                        if (!root.importController) return -1
+                        for (var wi = 0; wi < model.length; ++wi)
+                            if (model[wi].id === root.importController.destinationWorkspaceId) return wi
+                        return -1
+                    }
+                    onActivated: if (root.importController) root.importController.setDestinationWorkspaceId(currentValue)
+                    Component.onCompleted: {
+                        if (!root.importController) return
+                        for (var i = 0; i < root.importController.workspaceOptions.length; ++i)
+                            if (root.importController.workspaceOptions[i].id === root.importController.destinationWorkspaceId) { currentIndex = i; break }
+                    }
+                }
+            }
+            Rectangle {
+                visible: importMode.currentValue === "tags"
+                Layout.fillWidth: true
+                Layout.preferredHeight: 56
+                radius: 7; color: root.surface; border.color: root.border
+                ScrollView {
+                    anchors.fill: parent; anchors.margins: 4; clip: true
+                    Flow {
+                        width: parent.width
+                        spacing: 4
+                        Repeater {
+                            model: root.importController ? root.importController.sourceTags : []
+                            delegate: CheckBox {
+                                required property string modelData
+                                text: modelData
+                                checked: root.importController ? root.importController.isImportTagSelected(modelData) : false
+                                onToggled: if (root.importController) root.importController.toggleImportTag(modelData, checked)
+                            }
+                        }
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 7
+                Text { text: qsTr("%1 source tasks · %2 selected").arg(root.importController ? root.importController.totalCount : 0).arg(root.importController ? root.importController.selectedCount : 0); color: root.secondary; font.pixelSize: 10; Layout.fillWidth: true }
+                Button { text: qsTr("Select all visible"); enabled: root.importController && root.importController.tasks.length > 0; onClicked: root.importController.selectAllVisible() }
+                Button { text: qsTr("Clear selection"); enabled: root.importController && root.importController.selectedCount > 0; onClicked: root.importController.clearSelection() }
+            }
+            Rectangle {
+                Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 180
+                radius: 7; color: root.surface; border.color: root.border
+                ListView {
+                    id: sourceTaskList
+                    anchors.fill: parent; anchors.margins: 4; clip: true; spacing: 3
+                    model: root.importController ? root.importController.tasks : []
+                    delegate: Rectangle {
+                        required property var modelData
+                        width: sourceTaskList.width; height: 54; radius: 5
+                        color: modelData.selected ? root.activeSurface : "transparent"
+                        RowLayout {
+                            anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6; spacing: 7
+                            CheckBox {
+                                checked: modelData.selected
+                                onToggled: if (root.importController) root.importController.selectTask(modelData.sourceTaskId, checked)
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true; spacing: 2
+                                Text { text: modelData.title; color: root.text; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true }
+                                Text {
+                                    text: qsTr("#%1 · %2 · %3 priority · %4").arg(modelData.sourceTaskId).arg(modelData.completed ? qsTr("Complete") : qsTr("Incomplete")).arg(modelData.priority).arg((modelData.tags || []).join(", ") || qsTr("no tags"))
+                                    color: root.muted; font.pixelSize: 9; elide: Text.ElideRight; Layout.fillWidth: true
+                                }
+                            }
+                            Text { visible: modelData.importCount > 0; text: qsTr("Imported ×%1").arg(modelData.importCount); color: root.warning; font.pixelSize: 9 }
+                            ToolButton { text: qsTr("Preview"); onClicked: if (root.importController) { root.importController.previewTask(modelData.sourceTaskId); sourcePreviewDialog.open() } }
+                        }
+                    }
+                    Text { anchors.centerIn: parent; visible: sourceTaskList.count === 0 && root.importController && root.importController.verified && !root.importController.loading; text: qsTr("No tasks match these filters."); color: root.muted; font.pixelSize: 11 }
+                    BusyIndicator { anchors.centerIn: parent; running: root.importController ? root.importController.loading : false; visible: running }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 8
+                Button { text: qsTr("Previous"); enabled: root.importController && root.importController.page > 0 && !root.importController.loading; onClicked: root.importController.previousPage() }
+                Text { text: root.importController ? qsTr("Page %1 · %2 tasks").arg(root.importController.page + 1).arg(root.importController.totalCount) : ""; color: root.muted; font.pixelSize: 9; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter }
+                Button { text: qsTr("Next"); enabled: root.importController && (root.importController.page + 1) * root.importController.pageSize < root.importController.totalCount && !root.importController.loading; onClicked: root.importController.nextPage() }
+                Button {
+                    text: root.importController && root.importController.loading && !root.importController.importing ? qsTr("Preparing…") : qsTr("Review import…")
+                    enabled: root.importController && root.importController.verified && !root.importController.loading && !root.importController.importing && root.importController.destinationWorkspaceId.length > 0
+                    onClicked: root.importController.prepareImport(importMode.currentValue)
+                    background: Rectangle { radius: 6; color: parent.enabled ? root.accent : root.activeSurface }
+                    contentItem: Text { text: parent.text; color: parent.enabled ? "white" : root.muted; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; leftPadding: 10; rightPadding: 10 }
+                }
+            }
+            ProgressBar { Layout.fillWidth: true; visible: root.importController && root.importController.importing; from: 0; to: 100; value: root.importController ? root.importController.progress : 0 }
+            RowLayout {
+                Layout.fillWidth: true
+                Text { Layout.fillWidth: true; visible: root.importController && root.importController.importing; text: root.importController ? root.importController.progressMessage : ""; color: root.secondary; font.pixelSize: 9; wrapMode: Text.WordWrap }
+                Button { visible: root.importController && root.importController.importing; text: qsTr("Cancel import"); onClicked: root.importController.cancelImport() }
+            }
+            Text { Layout.fillWidth: true; visible: root.importController && root.importController.error.length > 0; text: root.importController ? root.importController.error : ""; color: root.error; font.pixelSize: 10; wrapMode: Text.WordWrap }
+            Text { Layout.fillWidth: true; visible: root.importController && root.importController.resultMessage.length > 0; text: root.importController ? root.importController.resultMessage : ""; color: root.success; font.pixelSize: 10; wrapMode: Text.WordWrap }
+        }
+    }
+
+    Dialog {
+        id: sourcePreviewDialog
+        modal: true; title: qsTr("SomethingQt task preview")
+        width: Math.min(700, root.width + 250); height: Math.min(650, root.height + 220)
+        anchors.centerIn: Overlay.overlay
+        standardButtons: Dialog.Close
+        background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
+        contentItem: ScrollView {
+            clip: true
+            ColumnLayout {
+                width: sourcePreviewDialog.availableWidth; spacing: 8
+                Text { text: root.importController && root.importController.preview.title ? root.importController.preview.title : qsTr("Loading task…"); color: root.text; font.pixelSize: 17; font.weight: Font.DemiBold; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                Text { text: root.importController ? qsTr("Source ID %1 · revision %2 · %3 · %4 priority · %5 difficulty · deadline %6").arg(root.importController.preview.sourceTaskId || "—").arg(root.importController.preview.revision || "—").arg(root.importController.preview.completed ? qsTr("Complete") : qsTr("Incomplete")).arg(root.importController.preview.priority || "—").arg(root.importController.preview.difficulty || qsTr("not set")).arg(root.importController.preview.dueDate || qsTr("none")) : ""; color: root.secondary; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                Text { text: qsTr("Description"); color: root.secondary; font.pixelSize: 10; font.weight: Font.DemiBold }
+                Text { text: root.importController && root.importController.preview.description !== undefined ? root.importController.preview.description : ""; color: root.text; font.pixelSize: 10; wrapMode: Text.Wrap; textFormat: Text.PlainText; Layout.fillWidth: true }
+                Text { text: qsTr("Tags: %1").arg(root.importController ? (root.importController.preview.tags || []).join(", ") || qsTr("none") : ""); color: root.secondary; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                Text { text: qsTr("Original timestamps: created %1 · updated %2").arg(root.importController ? root.importController.preview.createdAt || "—" : "—").arg(root.importController ? root.importController.preview.updatedAt || "—" : "—"); color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                Text { text: qsTr("Subtasks (%1)").arg(root.importController ? (root.importController.preview.subtasks || []).length : 0); color: root.secondary; font.pixelSize: 10; font.weight: Font.DemiBold }
+                Repeater {
+                    model: root.importController ? (root.importController.preview.subtasks || []) : []
+                    delegate: Text {
+                        required property var modelData
+                        text: qsTr("%1. %2 %3 · source ID %4").arg(modelData.position).arg(modelData.completed ? "✓" : "○").arg(modelData.title).arg(modelData.sourceId)
+                        color: root.text; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: importConfirmationDialog
+        modal: true; title: qsTr("Confirm task import")
+        width: 460; anchors.centerIn: Overlay.overlay
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
+        onOpened: additionalCopies.checked = false
+        contentItem: ColumnLayout {
+            spacing: 9
+            Text {
+                Layout.fillWidth: true
+                text: root.importController ? qsTr("Import up to %1 tasks into %2?").arg(root.importController.expectedCount).arg(root.importController.destinationWorkspaceName) : ""
+                color: root.text; font.pixelSize: 12; wrapMode: Text.WordWrap
+            }
+            Text { Layout.fillWidth: true; text: qsTr("Existing source tasks are skipped by default. Imported tasks become independent DevHub copies; later changes or deletion in SomethingQt will not synchronize."); color: root.secondary; font.pixelSize: 10; wrapMode: Text.WordWrap }
+            CheckBox { id: additionalCopies; text: qsTr("Import another independent copy of tasks already imported here"); checked: false }
+        }
+        onAccepted: if (root.importController) root.importController.startImport(additionalCopies.checked)
+    }
+
+    Connections {
+        target: root.importController
+        ignoreUnknownSignals: true
+        function onConfirmationReady(expectedCount) { importConfirmationDialog.open() }
     }
 
     function sourceTypeText() { return (detail.sourceType || "local") === "local" ? qsTr("Local") : qsTr("Imported") }

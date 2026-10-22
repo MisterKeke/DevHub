@@ -57,6 +57,30 @@ Result<PlannerTask> PlannerService::createTask(QString workspaceId, PlannerTask 
     return m_repository.createTask(std::move(task));
 }
 
+Result<PlannerTask> PlannerService::importTask(QString workspaceId, PlannerTask task,
+                                               bool allowAdditionalCopy)
+{
+    task.id = m_ids.create().toString(QUuid::WithoutBraces);
+    task.workspaceId = std::move(workspaceId);
+    task.sourceType = QStringLiteral("somethingqt");
+    task.revision = 1;
+    task.createdAtUtc = nowUtc(m_clock);
+    task.updatedAtUtc = task.createdAtUtc;
+    task.status = task.completed ? PlannerStatus::Done : PlannerStatus::Todo;
+    task.importedAtUtc = task.createdAtUtc;
+    for (PlannerSubtask& subtask : task.subtasks)
+        subtask.id = m_ids.create().toString(QUuid::WithoutBraces);
+    auto validation = m_validation.validateTask(task);
+    if (!validation) return Result<PlannerTask>::failure(validation.error());
+    return m_repository.createImportedTask(std::move(task), allowAdditionalCopy);
+}
+
+Result<QHash<QString, int>> PlannerService::importedSourceTaskCounts(
+    const QString& workspaceId, const QString& sourceProfileIdentity)
+{
+    return m_repository.importedSourceTaskCounts(workspaceId, sourceProfileIdentity);
+}
+
 Result<PlannerTask> PlannerService::getTask(const QString &workspaceId, const QString &taskId)
 {
     return m_repository.getTask(workspaceId, taskId);

@@ -23,6 +23,7 @@
 #include "../files/FileBrowserPage.h"
 #include "../overview/OverviewPage.h"
 #include "../overview/planner/PlannerController.h"
+#include "../overview/planner/PlannerImportController.h"
 #include "../commands/CommandPaletteDialog.h"
 #include "../settings/SettingsWindow.h"
 #include "../notifications/NotificationCenterDialog.h"
@@ -443,6 +444,11 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     m_overviewPage = new devhub::presentation::overview::OverviewPage(*m_commandRegistry, m_pageHost);
     m_plannerController = new devhub::presentation::overview::planner::PlannerController(
         plannerService, m_settingsService, m_workspaceContext, this);
+    m_plannerImportController = new devhub::presentation::overview::planner::PlannerImportController(
+        plannerService, m_workspaceManager, m_workspaceContext, m_scheduler, m_assistantToolRuntime,
+        m_settingsService, m_session, this);
+    connect(m_plannerImportController, &devhub::presentation::overview::planner::PlannerImportController::tasksImported,
+        m_plannerController, &devhub::presentation::overview::planner::PlannerController::refresh);
     m_pageHost->addWidget(m_overviewPage);
     auto* gitPage = new devhub::presentation::git::GitPage(m_scheduler, m_pageHost, &m_settingsService);
     m_pageHost->addWidget(gitPage);
@@ -907,6 +913,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     quickView->rootContext()->setContextProperty(QStringLiteral("workspaceModel"), m_workspaceModel);
     quickView->rootContext()->setContextProperty(QStringLiteral("themeController"), &m_themeManager);
     quickView->rootContext()->setContextProperty(QStringLiteral("plannerController"), m_plannerController);
+    quickView->rootContext()->setContextProperty(QStringLiteral("plannerImportController"), m_plannerImportController);
     quickView->setSource(QUrl(QStringLiteral("qrc:/qt/qml/DevHub/MainShell.qml")));
     m_quickShell = QWidget::createWindowContainer(quickView, m_rootPages);
     m_quickShell->setObjectName(QStringLiteral("quickMainShell"));

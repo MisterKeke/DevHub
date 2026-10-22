@@ -60,6 +60,7 @@ namespace devhub::application::support { class SupportBundleBuilder; }
 namespace devhub::presentation::theme { class ThemeManager; }
 namespace devhub::presentation::overview { class OverviewPage; }
 namespace devhub::presentation::overview::planner { class PlannerController; }
+namespace devhub::presentation::overview::planner { class PlannerImportController; }
 namespace devhub::presentation::commands { class CommandPaletteDialog; }
 namespace devhub::presentation::notifications { class ToastManager; }
 
@@ -213,6 +214,7 @@ private:
     application::commands::CommandRegistry* m_commandRegistry = nullptr;
     devhub::presentation::overview::OverviewPage* m_overviewPage = nullptr;
     devhub::presentation::overview::planner::PlannerController* m_plannerController = nullptr;
+    devhub::presentation::overview::planner::PlannerImportController* m_plannerImportController = nullptr;
     devhub::presentation::commands::CommandPaletteDialog* m_commandPalette = nullptr;
     application::commands::CachedSearchProvider* m_workspaceSearchProvider = nullptr;
     application::commands::CachedSearchProvider* m_servicesSearchProvider = nullptr;

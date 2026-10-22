@@ -9,5 +9,6 @@
         <file alias="0007_assistant_conversations.sql">database/migrations/0007_assistant_conversations.sql</file>
         <file alias="0008_workspace_archiving.sql">database/migrations/0008_workspace_archiving.sql</file>
         <file alias="0009_workspace_planner.sql">database/migrations/0009_workspace_planner.sql</file>
+        <file alias="0010_planner_import_copies.sql">database/migrations/0010_planner_import_copies.sql</file>
     </qresource>
 </RCC>

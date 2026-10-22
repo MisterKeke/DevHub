@@ -3,6 +3,8 @@
 #include "../src/infrastructure/planner/SqlPlannerRepository.h"
 #include "../src/shared/identifiers/IdGenerator.h"
 #include "../src/shared/time/ApplicationClock.h"
+#include "../src/infrastructure/planner/SomethingQtImportReader.h"
+#include "support/SyntheticSomethingProfile.h"
 
 #include <QDir>
 #include <QSqlQuery>
@@ -30,7 +32,7 @@ class PlannerTest final : public QObject
         QVERIFY2(opened, opened ? "" : qPrintable(opened.error().technicalMessage));
         const auto migrated = m_database->migrate();
         QVERIFY2(migrated, migrated ? "" : qPrintable(migrated.error().technicalMessage));
-        QCOMPARE(m_database->currentSchemaVersion(), 9);
+        QCOMPARE(m_database->currentSchemaVersion(), 10);
         QSqlQuery query(m_database->database());
         QVERIFY(query.exec(
             QStringLiteral(
@@ -260,22 +262,51 @@ class PlannerTest final : public QObject
     {
         domain::planner::PlannerTask imported;
         imported.title = QStringLiteral("Imported task");
-        imported.sourceType = QStringLiteral("somethingqt");
         imported.completed = true;
         imported.sourceProfileIdentity = QStringLiteral("profile-local-1");
         imported.sourceTaskId = QStringLiteral("9223372036854775807");
         imported.sourceRevision = QStringLiteral("18446744073709551615");
         imported.sourceCreatedAt = QStringLiteral("2020-01-02T03:04:05.123+02:00");
         imported.sourceUpdatedAt = QStringLiteral("2021-02-03T04:05:06.456Z");
-        auto created = m_service->createTask(m_workspaceA, imported);
+        imported.description = QString(150000, QChar(0x03bb));
+        imported.tags = {QStringLiteral("日本語"), QStringLiteral("🧪 test")};
+        for (int position = 74; position >= 0; --position)
+            imported.subtasks.append({{}, QString::number(8000 + position), QStringLiteral("Subtask %1").arg(position),
+                                      position % 2 == 0, position});
+        auto created = m_service->importTask(m_workspaceA, imported);
         QVERIFY2(created, created ? "" : qPrintable(created.error().technicalMessage));
         QCOMPARE(created.value().sourceTaskId, imported.sourceTaskId);
         QCOMPARE(created.value().sourceRevision, imported.sourceRevision);
         QCOMPARE(created.value().sourceCreatedAt, imported.sourceCreatedAt);
         QCOMPARE(created.value().status, domain::planner::PlannerStatus::Done);
-        QVERIFY(!m_service->createTask(m_workspaceA, imported));
+        QCOMPARE(created.value().description, imported.description);
+        QCOMPARE(created.value().subtasks.size(), 75);
+        QCOMPARE(created.value().subtasks.first().position, 0);
+        QCOMPARE(created.value().subtasks.first().sourceSubtaskId, QStringLiteral("8000"));
+        auto counts = m_service->importedSourceTaskCounts(m_workspaceA, imported.sourceProfileIdentity);
+        QVERIFY(counts);
+        QCOMPARE(counts.value().value(imported.sourceTaskId), 1);
+        QVERIFY(!m_service->importTask(m_workspaceA, imported));
+        auto secondCopy = m_service->importTask(m_workspaceA, imported, true);
+        QVERIFY(secondCopy);
+        QVERIFY(secondCopy.value().id != created.value().id);
+        auto otherWorkspace = m_service->importTask(m_workspaceB, imported);
+        QVERIFY(otherWorkspace);
+        QSqlQuery copyNumbers(m_database->database());
+        copyNumbers.prepare(QStringLiteral("SELECT copy_number FROM planner_import_records WHERE workspace_id=? AND source_task_id=? ORDER BY copy_number"));
+        copyNumbers.addBindValue(m_workspaceA); copyNumbers.addBindValue(imported.sourceTaskId);
+        QVERIFY(copyNumbers.exec());
+        QVERIFY(copyNumbers.next()); QCOMPARE(copyNumbers.value(0).toInt(), 1);
+        QVERIFY(copyNumbers.next()); QCOMPARE(copyNumbers.value(0).toInt(), 2);
+        QVERIFY(!copyNumbers.next());
+        auto editedCopy = created.value();
+        editedCopy.title = QStringLiteral("Edited independently");
+        auto edited = m_service->updateTask(editedCopy, 1);
+        QVERIFY(edited);
+        QCOMPARE(edited.value().title, QStringLiteral("Edited independently"));
+        QCOMPARE(edited.value().sourceRevision, imported.sourceRevision);
         QVERIFY(m_service->setTags(m_workspaceA, created.value().id, {QStringLiteral("persist me")},
-                                   1));
+                                   2));
         QSqlQuery archive(m_database->database());
         archive.prepare(
             QStringLiteral("UPDATE workspaces SET archived_at_utc='2026-10-22T00:00:00Z' WHERE "
@@ -286,12 +317,107 @@ class PlannerTest final : public QObject
         auto archivedTask = m_service->getTask(m_workspaceA, created.value().id);
         QVERIFY(archivedTask);
         QCOMPARE(archivedTask.value().tags, QStringList{QStringLiteral("persist me")});
+        QVERIFY(!m_service->importTask(m_workspaceA, imported, true));
         archive.prepare(QStringLiteral(
             "UPDATE workspaces SET archived_at_utc=NULL WHERE id=? AND account_id=?"));
         archive.addBindValue(m_workspaceA);
         archive.addBindValue(m_accountId);
         QVERIFY(archive.exec());
-        QCOMPARE(m_database->currentSchemaVersion(), 9);
+        QCOMPARE(m_database->currentSchemaVersion(), 10);
+    }
+
+    void importedTaskFailureRollsBackTaskTagsSubtasksAndProvenance()
+    {
+        QSqlQuery trigger(m_database->database());
+        QVERIFY(trigger.exec(QStringLiteral(
+            "CREATE TRIGGER fail_import_subtask BEFORE INSERT ON planner_subtasks "
+            "BEGIN SELECT RAISE(ABORT,'import child rejected'); END")));
+        domain::planner::PlannerTask draft;
+        draft.title = QStringLiteral("Atomic import");
+        draft.sourceProfileIdentity = QStringLiteral("atomic-profile");
+        draft.sourceTaskId = QStringLiteral("42");
+        draft.sourceRevision = QStringLiteral("7");
+        draft.tags = {QStringLiteral("atomic tag")};
+        draft.subtasks.append({{}, QStringLiteral("8"), QStringLiteral("Fails"), false, 0});
+        const auto result = m_service->importTask(m_workspaceA, draft);
+        QVERIFY(!result);
+        QSqlQuery query(m_database->database());
+        QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM planner_tasks WHERE title='Atomic import'")));
+        QVERIFY(query.next()); QCOMPARE(query.value(0).toInt(), 0);
+        QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM planner_tags WHERE name='atomic tag'")));
+        QVERIFY(query.next()); QCOMPARE(query.value(0).toInt(), 0);
+        QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM planner_import_records WHERE source_task_id='42'")));
+        QVERIFY(query.next()); QCOMPARE(query.value(0).toInt(), 0);
+    }
+
+    void importedCopySurvivesSourceDeletionAndCancellationStopsAtTaskBoundary()
+    {
+        tests::assistant::SyntheticProfile source;
+        QVERIFY(source.created);
+        const QString longDescription = QString(90000, QChar(0x03bb));
+        QVERIFY(source.addTask(7001, QStringLiteral("Independent copy"), false, longDescription, 12,
+                               QStringLiteral("2027-01-02")));
+        QVERIFY(source.addTag(7001, QStringLiteral("persist")));
+        QVERIFY(source.addSubtask(7001, QStringLiteral("Source child"), true, 4));
+        const auto profile = infrastructure::planner::SomethingQtImportReader::inspect(source.path);
+        QVERIFY2(profile.success, qPrintable(profile.message));
+        const auto sourceTask = infrastructure::planner::SomethingQtImportReader::readTask(
+            source.path, profile.value.identity, QStringLiteral("7001"));
+        QVERIFY2(sourceTask.success, qPrintable(sourceTask.message));
+        auto imported = m_service->importTask(m_workspaceA, sourceTask.value);
+        QVERIFY2(imported, imported ? "" : qPrintable(imported.error().technicalMessage));
+        QCOMPARE(imported.value().description, longDescription);
+        QCOMPARE(imported.value().subtasks.size(), 1);
+        QCOMPARE(imported.value().subtasks.first().sourceSubtaskId, sourceTask.value.subtasks.first().sourceSubtaskId);
+
+        const QString sourceConnection = QStringLiteral("planner-import-delete-")
+            + QUuid::createUuid().toString(QUuid::WithoutBraces);
+        auto sourceDb = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), sourceConnection);
+        sourceDb.setDatabaseName(source.path);
+        QVERIFY(sourceDb.open());
+        QSqlQuery remove(sourceDb);
+        remove.prepare(QStringLiteral("DELETE FROM tasks WHERE id=?"));
+        remove.addBindValue(7001);
+        QVERIFY(remove.exec());
+        remove = QSqlQuery(); sourceDb.close(); sourceDb = QSqlDatabase();
+        QSqlDatabase::removeDatabase(sourceConnection);
+        QVERIFY(!infrastructure::planner::SomethingQtImportReader::readTask(
+            source.path, profile.value.identity, QStringLiteral("7001")).success);
+
+        auto edited = imported.value();
+        edited.title = QStringLiteral("Edited after source deletion");
+        edited.description.append(QStringLiteral(" local"));
+        const auto localEdit = m_service->updateTask(edited, 1);
+        QVERIFY(localEdit);
+        const auto persistedCopy = m_service->getTask(m_workspaceA, imported.value().id);
+        QVERIFY(persistedCopy);
+        QCOMPARE(persistedCopy.value().title, QStringLiteral("Edited after source deletion"));
+        QCOMPARE(persistedCopy.value().description, longDescription + QStringLiteral(" local"));
+
+        QVERIFY(source.addTask(7002, QStringLiteral("Cancel boundary one")));
+        QVERIFY(source.addTask(7003, QStringLiteral("Cancel boundary two")));
+        const auto refreshedProfile = infrastructure::planner::SomethingQtImportReader::inspect(source.path);
+        QVERIFY(refreshedProfile.success);
+        infrastructure::planner::SomethingQtImportSelection all;
+        all.all = true;
+        application::tasks::CancellationSource cancellation;
+        int importedBeforeCancel = 0;
+        const auto stream = infrastructure::planner::SomethingQtImportReader::forEachTask(
+            source.path, refreshedProfile.value.identity, all, cancellation.token(),
+            [this, &importedBeforeCancel, &cancellation](domain::planner::PlannerTask task) {
+                const auto saved = m_service->importTask(m_workspaceB, std::move(task));
+                if (!saved) return false;
+                ++importedBeforeCancel;
+                cancellation.requestCancellation();
+                return true;
+            });
+        QVERIFY(!stream.success);
+        QVERIFY(stream.cancelled);
+        QCOMPARE(importedBeforeCancel, 1);
+        domain::planner::PlannerTaskFilter filter;
+        auto localTasks = m_service->listTasks(m_workspaceB, filter);
+        QVERIFY(localTasks);
+        QCOMPARE(localTasks.value().size(), 1);
     }
 
     void failedTagWriteRollsBackAndDatabaseCanReopen()

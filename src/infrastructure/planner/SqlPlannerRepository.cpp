@@ -135,6 +135,43 @@ bool SqlPlannerRepository::onOwnerThread() const
 
 Result<PlannerTask> SqlPlannerRepository::createTask(PlannerTask task)
 {
+    return createTaskImpl(std::move(task), false);
+}
+
+Result<PlannerTask> SqlPlannerRepository::createImportedTask(PlannerTask task,
+                                                              bool allowAdditionalCopy)
+{
+    if (task.sourceType != QStringLiteral("somethingqt"))
+        return Result<PlannerTask>::failure(AppError::failure(
+            ErrorCode::InvalidArgument, ErrorCategory::Workspace,
+            QStringLiteral("Only SomethingQt tasks can be imported."),
+            QStringLiteral("The imported task source type was not somethingqt."),
+            QStringLiteral("create Planner import")));
+    return createTaskImpl(std::move(task), allowAdditionalCopy);
+}
+
+Result<QHash<QString, int>> SqlPlannerRepository::importedSourceTaskCounts(
+    const QString& workspaceId, const QString& sourceProfileIdentity)
+{
+    if (!onOwnerThread())
+        return threadFailure<QHash<QString, int>>(QStringLiteral("read Planner import records"));
+    QHash<QString, int> counts;
+    QSqlQuery query(m_database.database());
+    query.prepare(QStringLiteral(
+        "SELECT i.source_task_id,COUNT(*) FROM planner_import_records i JOIN workspaces w "
+        "ON w.id=i.workspace_id WHERE i.workspace_id=? AND w.account_id=? AND w.archived_at_utc IS NULL "
+        "AND i.source_type='somethingqt' AND i.source_profile_identity=? GROUP BY i.source_task_id"));
+    query.addBindValue(workspaceId);
+    query.addBindValue(m_accountId.toString());
+    query.addBindValue(sourceProfileIdentity);
+    if (!query.exec())
+        return sqlFailure<QHash<QString, int>>(query, QStringLiteral("read Planner import records"));
+    while (query.next()) counts.insert(query.value(0).toString(), query.value(1).toInt());
+    return Result<QHash<QString, int>>::success(std::move(counts));
+}
+
+Result<PlannerTask> SqlPlannerRepository::createTaskImpl(PlannerTask task, bool allowAdditionalCopy)
+{
     if (!onOwnerThread())
         return threadFailure<PlannerTask>(QStringLiteral("create Planner task"));
     database::SqlTransactionGuard transaction(m_database.database());
@@ -149,7 +186,7 @@ Result<PlannerTask> SqlPlannerRepository::createTask(PlannerTask task)
         "milestone_id,git_branch,"
         "github_issue_url,github_pull_request_url,planner_notes,blocked_reason,source_type) "
         "SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS("
-        "SELECT 1 FROM workspaces WHERE id=? AND account_id=?)"));
+        "SELECT 1 FROM workspaces WHERE id=? AND account_id=? AND archived_at_utc IS NULL)"));
     query.addBindValue(task.id);
     query.addBindValue(task.workspaceId);
     query.addBindValue(task.title);
@@ -183,13 +220,30 @@ Result<PlannerTask> SqlPlannerRepository::createTask(PlannerTask task)
 
     if (task.sourceType == QStringLiteral("somethingqt"))
     {
+        QSqlQuery existing(m_database.database());
+        existing.prepare(QStringLiteral(
+            "SELECT COALESCE(MAX(copy_number),0) FROM planner_import_records WHERE workspace_id=? "
+            "AND source_type='somethingqt' AND source_profile_identity=? AND source_task_id=?"));
+        existing.addBindValue(task.workspaceId);
+        existing.addBindValue(task.sourceProfileIdentity);
+        existing.addBindValue(task.sourceTaskId);
+        if (!existing.exec() || !existing.next())
+            return sqlFailure<PlannerTask>(existing, QStringLiteral("check Planner import duplicates"));
+        const int previousCopy = existing.value(0).toInt();
+        if (previousCopy > 0 && !allowAdditionalCopy)
+            return Result<PlannerTask>::failure(AppError::failure(
+                ErrorCode::InvalidArgument, ErrorCategory::Workspace,
+                QStringLiteral("This SomethingQt task has already been imported into this workspace."),
+                QStringLiteral("Default import policy skips a source task already recorded for this workspace."),
+                QStringLiteral("create Planner import")));
+        const int copyNumber = previousCopy + 1;
         QSqlQuery provenance(m_database.database());
         provenance.prepare(
             QStringLiteral("INSERT INTO "
                            "planner_import_records(task_id,workspace_id,source_type,source_profile_"
                            "identity,source_task_id,"
-                           "source_revision,source_created_at,source_updated_at,imported_at_utc) "
-                           "VALUES(?,?,'somethingqt',?,?,?,?,?,?)"));
+                           "source_revision,source_created_at,source_updated_at,imported_at_utc,copy_number) "
+                           "VALUES(?,?,'somethingqt',?,?,?,?,?,?,?)"));
         provenance.addBindValue(task.id);
         provenance.addBindValue(task.workspaceId);
         provenance.addBindValue(task.sourceProfileIdentity);
@@ -201,6 +255,7 @@ Result<PlannerTask> SqlPlannerRepository::createTask(PlannerTask task)
         provenance.addBindValue(task.sourceUpdatedAt.isEmpty() ? QVariant()
                                                                : QVariant(task.sourceUpdatedAt));
         provenance.addBindValue(timestamp(task.importedAtUtc));
+        provenance.addBindValue(copyNumber);
         if (!provenance.exec())
             return sqlFailure<PlannerTask>(provenance,
                                            QStringLiteral("record Planner import provenance"));

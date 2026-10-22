@@ -1,14 +1,14 @@
 # Workspace Planner architecture
 
-**Status:** Phases 1 and 2 implemented · **Reviewed:** 2026-10-22
-**Scope:** Local Planner storage, services, and embedded Overview UI. SomethingQt import is Phase 3.
+**Status:** Phases 1–3 implemented · **Reviewed:** 2026-10-22
+**Scope:** Local Planner storage, embedded Overview UI, and independent SomethingQt task import.
 
 ## 1. Feature scope and non-goals
 
 Workspace Planner is a local, workspace-owned task manager stored in DevHub's internal SQLite
 database. The embedded Overview panel provides a summary, Kanban board, list and calendar views,
-task editing, and development metadata. SomethingQt import is planned for Phase 3; no source import
-or synchronization is part of the current implementation.
+task editing, development metadata, and a read-only SomethingQt task copy flow. Imported tasks are
+independent DevHub records; automatic refresh, synchronization and write-back are not implemented.
 
 The Planner belongs directly on the existing Overview, after the “Workspace Overview” heading and
 before the existing Git, Services, Ports, Logs, Database and Notes cards. It can collapse and
@@ -88,8 +88,9 @@ uniquely named Qt SQL `QSQLITE` connection on its QObject thread, enables foreig
 5-second busy timeout, requests and verifies WAL, integrity-checks before migration, and applies
 embedded migrations transactionally. `SqlTransactionGuard` rolls back uncommitted work. Released
 migrations are immutable; migration files are embedded by `resources/database_migrations.qrc`.
-The migration sequence now ends at `0009_workspace_planner.sql`. The new migration is additive;
-released migrations 0001–0008 remain unchanged.
+The migration sequence now ends at `0010_planner_import_copies.sql`. Migration 0010 preserves
+existing import provenance and adds a copy number for explicitly requested independent copies;
+released migrations 0001–0009 remain unchanged.
 
 The production application already uses Qt Widgets, Qt Quick/QML, Qt SQL and Qt Test. CMake lists
 sources explicitly and declares QML files in its QML module. No additional framework or database
@@ -131,9 +132,10 @@ Migration `0009_workspace_planner.sql` adds these workspace-owned tables:
 - `planner_milestones` stores date-only planning dates, completion and its own optimistic revision.
 - `planner_task_dependencies` uses composite task/workspace foreign keys and disallows self-links.
 - `planner_import_records` separates source profile/task/revision and original timestamps from
-  editable task state. Source IDs and revisions are text to retain full 64-bit values; uniqueness
-  on workspace/profile/source ID supports future duplicate detection. Original source timestamp
-  strings are kept verbatim; local timestamps use normalized UTC ISO values.
+  editable task state. Source IDs and revisions are text to retain full 64-bit values. Migration
+  0010 adds `copy_number` and scopes uniqueness to workspace/source type/profile/source ID/copy
+  number, enabling duplicate skips and explicitly requested independent copies. Original source
+  timestamp strings are kept verbatim; local timestamps use normalized UTC ISO values.
 
 All workspace-owned rows cascade only when the workspace row is permanently deleted. Archiving
 continues to set `archived_at_utc`, preserving task data for restore. Repository queries and
@@ -162,8 +164,9 @@ The current `Task` model contains numeric `id`, `title`, `description`, `complet
 has `tasks(id,title,description,is_completed,created_at,updated_at,due_date,priority,difficulty,
 revision)`, `tags(id,name,name_normalized)`, `task_tags(task_id,tag_id)`, and
 `task_subtasks(id,task_id,title,is_completed,position,created_at)`. The subtask domain object does
-not expose `created_at`; tag names alone do not expose source tag IDs or normalized values. Preserve
-these extra storage values in the source snapshot as well as all modeled task fields.
+not expose `created_at`; tag names alone do not expose source tag IDs or normalized values. DevHub
+copies all tag names and retains original subtask IDs, but does not retain SomethingQt tag IDs,
+normalized tag strings or subtask creation timestamps.
 
 Source validation trims title/description/date, accepts priorities `low|medium|high`, difficulties
 `easy|medium|hard`, and a valid ISO calendar date. It case-folds tags, deduplicates them, allows at
@@ -179,35 +182,30 @@ until a DevHub action records a completion time.
 
 ### Import flow and ownership
 
-Use an explicit `SomethingQtTaskImporter`, separate from Assistant presentation. Ask the user to
-select/confirm a SomethingQt profile file from the Planner. Open it through a uniquely named
-`QSQLITE` connection with read-only open options, on the worker thread that will read it. Validate
-the required table/column affinities and recognized migration history before reading. Read a
-consistent snapshot in ID order, including tags and subtasks; do not use display truncation,
-truncate input fields, migrate, checkpoint or write to the source. Normal WAL reads are required;
-missing live WAL/SHM access and a busy source should produce an actionable error.
+`SomethingQtImportReader` is separate from Assistant presentation. The Planner reuses the
+configured Assistant profile path and lets the user browse to any compatible SQLite file. Each
+operation opens a uniquely named `QSQLITE` read-only connection on its scheduler worker, validates
+required table/column affinities and contiguous migration history, then reads in a consistent
+transaction. It does not change journal mode, migrate, checkpoint or write to the source. Normal
+WAL reads are used; missing live WAL/SHM access and busy sources produce actionable errors.
 
-For each source task, create a new DevHub task ID and copy the task into the active workspace's
-local task model. Map `completed=true` to `status='done'`, otherwise to `todo`; copy title,
-description, due date, priority, difficulty, tags and subtask content/order. Allocate new local
-subtask and tag IDs. Retain the original source task ID, subtask IDs, tag IDs/normalization,
-timestamps, revision and exact imported values in the immutable provenance snapshot. Record
-`imported_at_utc`; DevHub's `created_at_utc`, `updated_at_utc` and `revision` describe the local
-record lifecycle. This keeps source timestamps available without making future local changes look
-like changes in SomethingQt.
+For each source task, create a new DevHub UUID and copy its full title, description, completion,
+date, priority, difficulty, tags and all subtasks with source positions and completion states.
+Subtasks receive new local UUIDs and retain their original IDs in `source_subtask_id`. Import
+provenance retains the source task ID, source revision, original timestamps, profile identity and
+import time. The local revision starts at 1; local creation/update times describe the DevHub copy.
+Completed source tasks become `done`; incomplete tasks become `todo`.
 
-Use a unique source identity `(workspace_id, source_type, source_profile_identity, source_task_id)`
-in `planner_import_records`.
-On conflict, leave the existing local task unchanged and report it as already imported. Never
-update a duplicate from source data. A source task deleted after import remains in DevHub. A rerun
-may import newly added source tasks while skipping those already copied.
+Migration 0010 keys provenance by
+`(workspace_id, source_type, source_profile_identity, source_task_id, copy_number)`. Default
+imports skip existing source tasks in that workspace. An explicit confirmation can create another
+independent copy. Imports to a different workspace are independent. No import overwrites or merges
+an existing task; deleting or editing the source later does not affect a DevHub copy.
 
-The source schema has no stable profile UUID in the verified task contract. A practical initial
-`source_profile_identity` is a hash of the normalized canonical file path; it avoids storing the path
-with every task but means moving the database can change its identity and allow a duplicate copy.
-Surface that limitation in the preview and allow the user to choose the existing source identity
-when the same profile moved. Do not silently merge by title or task content. Phase 2 should add an
-immutable source snapshot for source-only values such as original tag IDs and normalized names.
+SomethingQt exposes no stable profile UUID. DevHub identifies a source using a hash of the
+normalized canonical path and file birth time; replacing the file is detected on the next operation.
+Moving a profile changes its identity and may allow another import. Source tag IDs are not retained;
+the complete tag names are copied into the workspace's case-folded tag model.
 
 ### Why the Assistant reader is not the importer
 
@@ -236,9 +234,11 @@ binds to the active workspace and uses `PlannerService` for CRUD. List roles bac
 views. Status and ordering changes persist through service calls. Board drag-and-drop is deferred;
 accessible up/down controls change order explicitly.
 
-The import button remains disabled with a Phase 3 explanation. QML does not open SQL connections;
-task content is plain text and URLs are validated by the service. Theme colors come from
-`themeController`.
+The Import from SomethingQt button opens the embedded importer dialog. It supports verification,
+search and filters, paged multi-selection, tag-based/all import, a full plain-text preview,
+destination workspace selection, explicit duplicate-copy confirmation, progress and cancellation.
+QML does not open SQL connections. Source reading is asynchronous; each target task is committed
+atomically on the database owner's thread after rechecking session and workspace authorization.
 
 ## 7. Workspace and account isolation
 
@@ -248,9 +248,10 @@ or foreign-account workspaces for writes. The primary key is local and global, w
 summary, board, calendar, tag and import-dedup queries are workspace filtered. Composite
 workspace foreign keys enforce same-workspace links.
 
-On workspace change, clear the previous task model before loading the new workspace. Current
-Planner service calls are synchronous on the database owner's thread, so no stale read completion
-can publish after a switch. Archive retains task rows with the workspace registration. On
+On workspace change, clear the previous task model before loading the new workspace. Import reads
+are asynchronous and generation-checked; a workspace switch cancels an active import. Session lock
+clears source rows, preview and selections. Target inserts also reject archived and foreign-account
+workspaces inside the transaction. Archive retains task rows with the workspace registration. On
 lock/sign-out, clear the in-memory task model; the locked-session page hides Planner content.
 
 ## 8. Threading and concurrency strategy
@@ -261,18 +262,12 @@ Overview and service repositories use that main-thread connection. Moving it to 
 workers would violate Qt SQL affinity.
 
 The `SqlPlannerRepository` checks that each operation runs on `InternalDatabaseManager`'s owning
-thread. `PlannerController` currently uses synchronous service calls on that thread. Workspace
-switches clear and reload the model in order, so there are no queued Planner reads to invalidate.
-If workloads make Planner operations slow, move them to `TaskScheduler` with a separate, uniquely
-named database connection opened in each worker thread and return detached task values.
-
-For a large import, preview the source count and stream rows into bounded batches rather than
-loading all tasks into memory. Commit completed batches; check cancellation between source rows and
-before each batch commit. If cancelled, retain prior committed tasks and report partial counts; a
-rerun safely resumes by provenance uniqueness. This makes cancellation responsive without a long
-write lock. Use one stable read transaction on the read-only source for the run; close both
-connections on their creating worker before it exits. Emit progress through the existing scheduler
-progress mechanism. Drop a result if its workspace, session scope or generation is obsolete.
+thread. Local `PlannerController` calls remain synchronous on that thread. The import controller
+reads one source task at a time on a scheduler worker under a consistent read transaction, then
+queues the detached task to the owner thread for a per-task target transaction. The worker waits
+with cancellation polling for that task boundary acknowledgement, so shutdown cannot strand a
+blocking GUI call. Large descriptions and subtasks load for preview/import, never for the paged
+list. Cancellation retains prior task commits and reports partial counts.
 
 Use `revision` in update predicates (`WHERE id=? AND workspace_id=? AND revision=?`) and increment
 it atomically. The repository's unique source index remains the final guard against repeated
@@ -280,12 +275,10 @@ imports even with another connection or process.
 
 ## 9. Error handling
 
-Follow existing `Result<T>` and `AppError` patterns. Domain validation errors are distinct from
-not-found, conflict, database-unavailable, source-missing/unreadable, incompatible-schema,
-source-busy, cancellation and shutdown/session-scope errors. Map Qt SQL errors through the existing
-database mapper and include the operation/correlation ID in technical diagnostics. Show actionable
-messages inline in the Planner or through the existing notification system; do not expose SQL text,
-database paths, task descriptions or source contents in logs/support bundles.
+Target validation and SQL failures use existing `Result<T>` and `AppError` patterns. Source failures
+report a missing/unreadable profile, incompatible schema, busy database, changed profile, deleted
+selection, invalid source data or cancellation. Show actionable messages inline in the Planner; do
+not expose SQL text, task descriptions or source contents in logs/support bundles.
 
 An import result should report per-run counts and whether the run completed, was cancelled, or
 failed. Source read-only connection and schema failures must leave local data unchanged for the
@@ -308,24 +301,19 @@ source path or task data should be passed to an external service.
 
 ## 11. Test strategy
 
-Use the existing Qt Test and CTest conventions, including temporary SQLite databases. Phase 1
-coverage in `devhub_planner_tests` and `devhub_database_tests` includes:
+Use the existing Qt Test and CTest conventions, including temporary SQLite databases. Coverage in
+`devhub_planner_tests`, `devhub_database_tests`, `devhub_somethingqt_import_tests`, and the existing
+`devhub_something_tasks_reader_tests` includes:
 
-- fresh migration to schema 9 and foreign-key integrity;
+- fresh migration to schema 10, v9 provenance upgrade, and foreign-key integrity;
 - workspace/account isolation and archive/restore retention;
 - CRUD, Unicode and a large description, tag replacement, subtask ordering, search and pagination;
 - completion/status transitions, board ordering, revision conflicts and stale workspace reads;
 - milestones, dependency cycles, self/cross-workspace dependency rejection;
-- failed tag-write rollback, 64-bit source IDs/revisions and persistence after reopening SQLite.
-
-Still needed in later phases:
-
-- importer read-only behavior, schema/version rejection, long text and 64-bit source IDs,
-  duplicate provenance, full tag/subtask field preservation, source WAL/busy handling, cancellation,
-  partial-batch rerun and source task deletion after import;
-- stale results after workspace switch, archive, account lock and sign-out;
-- QML placement/collapse/expand, all three views, empty/error/loading states, keyboard access and
-  narrow Overview widths; assert existing six cards remain present below the panel.
+- failed target transaction rollback, independent imported copies, 64-bit source IDs/revisions,
+  long descriptions, 75 subtasks, Unicode tags, live WAL reads, source deletion independence and
+  task-boundary cancellation;
+- Assistant reader regression, paged Planner UI, runtime QML loading and migration preservation.
 
 ## 12. Identified risks
 
@@ -333,14 +321,15 @@ Still needed in later phases:
    dialog stack. Keep the Planner in visible QML and test the main shell, or later shell work could
    expose a divergent Overview.
 2. **Source profile identity:** the verified SomethingQt task schema has no stable profile UUID.
-   Path-derived identity changes on relocation; provide an explicit duplicate-source resolution.
+   DevHub hashes canonical path and file birth time; moving a profile changes identity and may allow
+   another copy. The importer does not attempt fuzzy identity matching.
 3. **Source schema drift:** task tables and validation may change. Validate the schema version and
    required affinities; reject incompatible inputs instead of guessing or truncating.
 4. **Qt SQL affinity and concurrent app writes:** planner workers need independent connections to
    the same WAL database. Keep operations serialized within Planner, writes short, and handle
    `SQLITE_BUSY` and session cancellation.
-5. **Import size and partial progress:** full profile import may take time. Preview counts,
-   stream in batches, show progress, and make rerun idempotent after cancellation.
+5. **Import size and partial progress:** full profile import may take time. The reader streams one
+   task at a time, shows progress, and commits each task atomically; rerunning skips completed copies.
 6. **Status mapping:** SomethingQt only has a completion boolean. Map it deterministically to
    `todo`/`done`; other Planner states have no source equivalent.
 7. **Data privacy:** local account locking does not encrypt SQLite. Keep content out of diagnostics
@@ -358,9 +347,10 @@ Still needed in later phases:
 2. **Phase 2 — Overview UI (implemented):** add the controller/model and collapsible QML panel to
    the visible Overview, with board/list/calendar, task editing, filters and persistent ordering.
    Drag-and-drop remains deferred in favor of explicit persisted status/order controls.
-3. **Phase 3 — SomethingQt import:** add the independent read-only import flow with schema
-   validation, new local IDs, source provenance, duplicate detection, preview, progress,
-   cancellation and resumable batches. Do not modify SomethingQt or synchronize writes back to it.
+3. **Phase 3 — SomethingQt import (implemented):** migration 0010, a dedicated read-only source
+   reader, paged filtering, complete task previews, workspace-scoped duplicate detection, explicit
+   independent copies, per-task atomic writes and cancellation at task boundaries. No source writes
+   or synchronization are performed.
 4. **Later hardening:** add detailed time entries if needed, and cover accessibility,
    account/session changes, migration recovery, larger imports and responsive Overview layouts.
 
@@ -370,19 +360,19 @@ Still needed in later phases:
   before all six original cards; it collapses and expands and adds no navigation entry or module.
 - New and imported tasks share one local task model, use new DevHub IDs, survive source shutdown or
   source task deletion, and can be edited/deleted without touching SomethingQt.
-- Source import preserves every task field and source-only tag/subtask storage value without
-  truncation, records provenance, skips duplicates without overwriting local edits, and is
-  repeatable after cancellation.
+- Source import preserves task fields, full descriptions, tag names and all subtasks with source IDs
+  and positions, records task provenance, skips duplicates without overwriting local edits, and
+  reports copies already committed when cancellation or a later failure stops the import.
 - Every task and relation is scoped to one workspace and the active account; switching, archiving,
   locking and signing out do not leak stale task content or allow stale UI updates.
-- CRUD calls stay on the database owner's thread, and validation/conflict failures have user-visible
-  handling. Import remains a Phase 3 concern.
+- CRUD target writes stay on the database owner's thread, and validation/conflict failures have
+  user-visible handling.
 - Summary, Kanban, list and calendar are projections of the same persisted task records; existing
   Overview cards remain unchanged below the Planner.
 - Migrations are additive, transactional and rollback-safe, and documented implementation tests
   cover isolation, ownership, compatibility, cancellation and UI integration.
 
-## Phase 2 completion and Phase 3 handoff
+## Phase 3 completion
 
 The current app uses a Qt Quick main shell, Widgets feature pages in a secondary dialog, an
 account-scoped internal QSQLITE database with immutable embedded migrations, a cooperative
@@ -395,5 +385,7 @@ relations, filtering, sorting, pagination, completion rules, optimistic revision
 Phase 2 adds the embedded Planner panel, virtualized models, workspace-scoped view/collapse
 settings, and controller tests. Service calls currently run synchronously on the database owner's
 thread. Actual tracked time is a task total; detailed time entries remain unimplemented. GitHub
-links accept HTTPS github.com URLs, while Git branch references are stored as metadata. Phase 3
-import remains unimplemented.
+links accept HTTPS github.com URLs, while Git branch references are stored as metadata. The
+SomethingQt importer is an independent copy operation. Source tag IDs are not retained, and moving
+a source file changes its hashed profile identity. Batch writes are atomic per task, so cancellation
+or a later target failure leaves earlier completed task copies available.

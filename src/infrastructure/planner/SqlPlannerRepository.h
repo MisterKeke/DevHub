@@ -16,6 +16,10 @@ class SqlPlannerRepository final : public application::planner::IPlannerReposito
     [[nodiscard]] shared::common::Result<domain::planner::PlannerTask>
     createTask(domain::planner::PlannerTask task) override;
     [[nodiscard]] shared::common::Result<domain::planner::PlannerTask>
+    createImportedTask(domain::planner::PlannerTask task, bool allowAdditionalCopy) override;
+    [[nodiscard]] shared::common::Result<QHash<QString, int>>
+    importedSourceTaskCounts(const QString& workspaceId, const QString& sourceProfileIdentity) override;
+    [[nodiscard]] shared::common::Result<domain::planner::PlannerTask>
     getTask(const QString &workspaceId, const QString &taskId) override;
     [[nodiscard]] shared::common::Result<QVector<domain::planner::PlannerTask>>
     listTasks(const QString &workspaceId,
@@ -66,6 +70,8 @@ class SqlPlannerRepository final : public application::planner::IPlannerReposito
 
   private:
     [[nodiscard]] bool onOwnerThread() const;
+    [[nodiscard]] shared::common::Result<domain::planner::PlannerTask>
+    createTaskImpl(domain::planner::PlannerTask task, bool allowAdditionalCopy);
     database::InternalDatabaseManager &m_database;
     domain::account::AccountId m_accountId;
 };

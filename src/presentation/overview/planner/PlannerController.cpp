@@ -288,6 +288,7 @@ int PlannerController::countForDate(const QString& isoDate) const
 const PlannerTask* PlannerController::taskById(const QString& id) const { return m_tasks.taskById(id); }
 void PlannerController::setFailure(const QString& message) { m_error = message; emit changed(); }
 void PlannerController::clearError() { if (!m_error.isEmpty()) { m_error.clear(); emit changed(); } }
+void PlannerController::refresh() { reloadAfterMutation(); }
 
 bool PlannerController::saveTask(const QVariantMap& values)
 {

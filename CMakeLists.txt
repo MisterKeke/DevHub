@@ -253,6 +253,8 @@ add_library(devhub_planner STATIC
     src/domain/planner/PlannerRules.cpp
     src/application/planner/PlannerValidation.cpp
     src/application/planner/PlannerService.cpp
+    src/infrastructure/planner/SomethingQtImportReader.h
+    src/infrastructure/planner/SomethingQtImportReader.cpp
     src/infrastructure/planner/SqlPlannerRepository.cpp
 )
 target_include_directories(devhub_planner PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -327,6 +329,8 @@ add_executable(devhub WIN32
     src/presentation/overview/OverviewPage.cpp
     src/presentation/overview/planner/PlannerTaskModel.cpp
     src/presentation/overview/planner/PlannerController.cpp
+    src/presentation/overview/planner/PlannerImportController.h
+    src/presentation/overview/planner/PlannerImportController.cpp
     src/presentation/commands/CommandPaletteDialog.cpp
     src/presentation/settings/SettingsWindow.cpp
     src/presentation/settings/AssistantSettingsPanel.cpp

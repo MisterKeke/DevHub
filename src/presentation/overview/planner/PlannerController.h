@@ -80,6 +80,7 @@ public:
     Q_INVOKABLE bool shiftTaskOrder(const QString& taskId, int direction);
     Q_INVOKABLE bool createMilestone(const QString& title, const QString& dueDate);
     Q_INVOKABLE void clearError();
+    Q_INVOKABLE void refresh();
     void setSessionAllowed(bool allowed);
 signals:
     void changed();

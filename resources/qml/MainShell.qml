@@ -135,8 +135,7 @@ Rectangle {
                     Layout.fillWidth: true
                     visible: shellController.workspaceActionMessage.length > 0
                     text: shellController.workspaceActionMessage
-                    color: (shellController.workspaceActionTone === "error") ? root.error
-                        : (shellController.workspaceActionTone === "success") ? root.success : root.info
+                    color: shellController.workspaceActionTone === "error" ? root.error : shellController.workspaceActionTone === "success" ? root.success : root.info
                     font.pixelSize: 10
                     wrapMode: Text.WordWrap
                 }
