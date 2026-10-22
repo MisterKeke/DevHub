@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalSpy>
@@ -23,8 +24,12 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTreeView>
+#include <atomic>
+#include <chrono>
+#include <future>
 #include <limits>
 #include <QtEndian>
+#include <thread>
 #include <QtTest/QtTest>
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -332,7 +337,7 @@ class FeatureRegressionTest final : public QObject
         QVERIFY(!service.deleteBranch(repository, QStringLiteral("-D")));
         QVERIFY(!service.fetch(repository, QStringLiteral("-D")));
         QVERIFY(!service.pull(repository, QStringLiteral("-D"), QStringLiteral("victim"), QStringLiteral("merge")));
-        QVERIFY(!service.push(repository, QStringLiteral("-D"), QStringLiteral("victim"), false));
+        QVERIFY(!service.preparePush(repository, QStringLiteral("-D"), QStringLiteral("victim"), false));
         QVERIFY(!service.merge(repository, QStringLiteral("-D")));
         QVERIFY(!service.stashApply(repository, QStringLiteral("-D"), false));
         QCOMPARE(run({QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("refs/heads/victim")}), 0);
@@ -341,6 +346,304 @@ class FeatureRegressionTest final : public QObject
         QVERIFY(service.renameBranch(repository, QStringLiteral("safe-name"), QStringLiteral("renamed")));
         QVERIFY(service.checkout(repository, QStringLiteral("renamed")));
         QVERIFY(service.deleteBranch(repository, QStringLiteral("victim")));
+    }
+
+    void gitPushPreviewPinsFirstPublicationAndRejectsExpandedOrStalePlans()
+    {
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const QString git = QStandardPaths::findExecutable(QStringLiteral("git")); QVERIFY(!git.isEmpty());
+        const QString repository = root.filePath(QStringLiteral("repo"));
+        const QString bare = root.filePath(QStringLiteral("remote.git"));
+        const QString alternateBare = root.filePath(QStringLiteral("alternate.git"));
+        QVERIFY(QDir().mkpath(repository));
+        QVERIFY(QDir().mkpath(alternateBare));
+        const auto run = [git](const QString& directory, QStringList arguments) {
+            QProcess process; process.setProgram(git); process.setArguments(std::move(arguments));
+            process.setWorkingDirectory(directory); process.start();
+            return process.waitForStarted(3000) && process.waitForFinished(10000) && process.exitCode() == 0;
+        };
+        QVERIFY(run(repository, {QStringLiteral("init"), QStringLiteral("--quiet"),
+            QStringLiteral("--initial-branch=feature/local")}));
+        QVERIFY(run(bare, {QStringLiteral("init"), QStringLiteral("--bare"), QStringLiteral("--quiet")}));
+        QVERIFY(run(alternateBare, {QStringLiteral("init"), QStringLiteral("--bare"), QStringLiteral("--quiet")}));
+        QFile seed(QDir(repository).filePath(QStringLiteral("seed.txt")));
+        QVERIFY(seed.open(QIODevice::WriteOnly)); seed.write("fixture\n"); seed.close();
+        QVERIFY(run(repository, {QStringLiteral("add"), QStringLiteral("--"), QStringLiteral("seed.txt")}));
+        QVERIFY(run(repository, {QStringLiteral("-c"), QStringLiteral("user.name=Regression"),
+            QStringLiteral("-c"), QStringLiteral("user.email=regression@example.invalid"),
+            QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("first commit"), QStringLiteral("--quiet")}));
+        application::git::GitService service{application::git::GitCommandRunner(git)};
+        QVERIFY(!service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("published/server"), true));
+        QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("add"), QStringLiteral("origin"), bare}));
+
+        QFile dirty(QDir(repository).filePath(QStringLiteral("seed.txt")));
+        QVERIFY(dirty.open(QIODevice::Append)); dirty.write("uncommitted\n"); dirty.close();
+        auto first = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("published/server"), true);
+        QVERIFY2(first, qPrintable(first ? QString{} : first.error().userMessage));
+        QCOMPARE(first.value().localBranch, QStringLiteral("feature/local"));
+        QCOMPARE(first.value().targetBranch, QStringLiteral("published/server"));
+        QVERIFY(first.value().sourceCommit.size() == 40 || first.value().sourceCommit.size() == 64);
+        QVERIFY(first.value().upstreamChange);
+        QCOMPARE(first.value().remoteState, QStringLiteral("notQueried"));
+        QVERIFY(!first.value().outgoingCountAvailable);
+        auto published = service.executePush(repository, first.value());
+        QVERIFY2(published, qPrintable(published ? QString{} : published.error().userMessage));
+        QVERIFY(published.value().outcome == application::git::GitPushOutcome::Published);
+        QVERIFY(published.value().remotePublished);
+        QVERIFY(published.value().trackingConfigured);
+        QVERIFY(run(bare, {QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
+            QStringLiteral("refs/heads/published/server")}));
+        auto status = service.status(repository);
+        QVERIFY(status);
+        QVERIFY(!status.value().files.isEmpty()); // Dirty files remain outside the committed push.
+        auto existingUpstream = service.preparePush(repository);
+        QVERIFY(existingUpstream);
+        QCOMPARE(existingUpstream.value().upstream, QStringLiteral("origin/published/server"));
+
+        QFile second(QDir(repository).filePath(QStringLiteral("second.txt")));
+        QVERIFY(second.open(QIODevice::WriteOnly)); second.write("second\n"); second.close();
+        QVERIFY(run(repository, {QStringLiteral("add"), QStringLiteral("--"), QStringLiteral("second.txt")}));
+        QVERIFY(run(repository, {QStringLiteral("-c"), QStringLiteral("user.name=Regression"),
+            QStringLiteral("-c"), QStringLiteral("user.email=regression@example.invalid"),
+            QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("second commit"), QStringLiteral("--quiet")}));
+        auto staleSource = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false);
+        QVERIFY(staleSource);
+        QFile third(QDir(repository).filePath(QStringLiteral("third.txt")));
+        QVERIFY(third.open(QIODevice::WriteOnly)); third.write("third\n"); third.close();
+        QVERIFY(run(repository, {QStringLiteral("add"), QStringLiteral("--"), QStringLiteral("third.txt")}));
+        QVERIFY(run(repository, {QStringLiteral("-c"), QStringLiteral("user.name=Regression"),
+            QStringLiteral("-c"), QStringLiteral("user.email=regression@example.invalid"),
+            QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("third commit"), QStringLiteral("--quiet")}));
+        auto rejectedStaleSource = service.executePush(repository, staleSource.value());
+        QVERIFY(rejectedStaleSource);
+        QVERIFY(rejectedStaleSource.value().outcome == application::git::GitPushOutcome::PreviewChanged);
+
+        const QString hookPath = QDir(repository).filePath(QStringLiteral(".git/hooks/pre-push"));
+        auto writeHook = [&hookPath](const QByteArray& contents) {
+            QFile hook(hookPath);
+            if (!hook.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+            hook.write(contents); hook.close();
+            return hook.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        };
+        QVERIFY(writeHook("#!/bin/sh\ngit config --local user.name hook-updated\nexit 0\n"));
+        auto trackingPartial = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("tracking-failure"), true);
+        QVERIFY(trackingPartial);
+        auto partialResult = service.executePush(repository, trackingPartial.value());
+        QVERIFY(partialResult);
+        QVERIFY(partialResult.value().outcome == application::git::GitPushOutcome::PartialTrackingFailure);
+        QVERIFY(partialResult.value().remotePublished);
+        QVERIFY(run(bare, {QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
+            QStringLiteral("refs/heads/tracking-failure")}));
+        QVERIFY(writeHook("#!/bin/sh\nexit 1\n"));
+        auto hookRejected = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("hook-failure"), false);
+        QVERIFY(hookRejected);
+        auto hookResult = service.executePush(repository, hookRejected.value());
+        QVERIFY(hookResult);
+        QVERIFY(hookResult.value().outcome == application::git::GitPushOutcome::HookRejected);
+        QVERIFY(QFile::remove(hookPath));
+
+        auto changedDestination = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false);
+        QVERIFY(changedDestination);
+        QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("set-url"), QStringLiteral("--push"),
+            QStringLiteral("origin"), alternateBare}));
+        auto rejectedDestination = service.executePush(repository, changedDestination.value());
+        QVERIFY(rejectedDestination);
+        QVERIFY(rejectedDestination.value().outcome == application::git::GitPushOutcome::PreviewChanged);
+
+        const QString rewriteKey = QStringLiteral("url.\"%1\".insteadOf")
+            .arg(QDir::fromNativeSeparators(alternateBare));
+        QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"), QStringLiteral("--add"),
+            rewriteKey, QStringLiteral("push-alias:")}));
+        QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("set-url"), QStringLiteral("--push"),
+            QStringLiteral("origin"), QStringLiteral("push-alias:repo")}));
+        auto rewrittenDestination = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false);
+        QVERIFY(rewrittenDestination);
+        QVERIFY(rewrittenDestination.value().pushUrlForExecution.contains(QStringLiteral("alternate.git")));
+        QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("set-url"), QStringLiteral("--push"),
+            QStringLiteral("origin"), bare}));
+        QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"), QStringLiteral("--unset-all"),
+            rewriteKey}));
+
+        QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("set-url"), QStringLiteral("--push"),
+            QStringLiteral("--add"), QStringLiteral("origin"), bare}));
+        auto multipleDestinations = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false);
+        QVERIFY(!multipleDestinations);
+        QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("set-url"), QStringLiteral("--push"),
+            QStringLiteral("origin"), bare}));
+        QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"),
+            QStringLiteral("remote.origin.mirror"), QStringLiteral("true")}));
+        QVERIFY(!service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false));
+        QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"),
+            QStringLiteral("--unset"), QStringLiteral("remote.origin.mirror")}));
+        QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"),
+            QStringLiteral("push.followTags"), QStringLiteral("true")}));
+        QVERIFY(!service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false));
+        QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"),
+            QStringLiteral("--unset"), QStringLiteral("push.followTags")}));
+        QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"), QStringLiteral("--add"),
+            QStringLiteral("remote.origin.push"), QStringLiteral("refs/heads/*:refs/heads/*")}));
+        QVERIFY(!service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false));
+        QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"),
+            QStringLiteral("--unset-all"), QStringLiteral("remote.origin.push")}));
+        QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"),
+            QStringLiteral("push.recurseSubmodules"), QStringLiteral("on-demand")}));
+        QVERIFY(!service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false));
+        QVERIFY(run(repository, {QStringLiteral("config"), QStringLiteral("--local"),
+            QStringLiteral("--unset"), QStringLiteral("push.recurseSubmodules")}));
+
+        QVERIFY(run(repository, {QStringLiteral("checkout"), QStringLiteral("--detach"), QStringLiteral("HEAD")}));
+        QVERIFY(!service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("other-name"), false));
+        const QString unborn = root.filePath(QStringLiteral("unborn"));
+        QVERIFY(QDir().mkpath(unborn));
+        QVERIFY(run(unborn, {QStringLiteral("init"), QStringLiteral("--quiet"), QStringLiteral("--initial-branch=empty" )}));
+        QVERIFY(!service.preparePush(unborn, QStringLiteral("origin"), QStringLiteral("empty"), false));
+    }
+
+    void gitPushPorcelainResultsClassifyFailuresAndRedactCredentials()
+    {
+        application::git::GitPushPreview preview;
+        preview.sourceCommit = QString(40, QLatin1Char('a'));
+        preview.remote = QStringLiteral("origin");
+        preview.targetBranch = QStringLiteral("release/name");
+        auto classify = [&preview](QByteArray standardOutput, QByteArray standardError = {}, int exitCode = 1,
+                                   bool timedOut = false, bool cancelled = false, bool processStarted = true) {
+            application::git::GitCommandResult process;
+            process.standardOutput = std::move(standardOutput);
+            process.standardError = std::move(standardError);
+            process.exitCode = exitCode;
+            process.timedOut = timedOut;
+            process.cancelled = cancelled;
+            process.processStarted = processStarted;
+            return application::git::GitService::classifyPushResult(preview, process);
+        };
+        QVERIFY(classify({}, "fatal: Authentication failed for 'https://user:super-secret-token@example.invalid/repo'\n")
+            .outcome == application::git::GitPushOutcome::AuthenticationRequired);
+        const auto authentication = classify({}, "fatal: Authentication failed for 'https://user:super-secret-token@example.invalid/repo'\n");
+        QVERIFY(!authentication.diagnostic.contains(QStringLiteral("super-secret-token")));
+        QVERIFY(classify("! refs/heads/topic:refs/heads/release/name [rejected] (non-fast-forward)\n")
+            .outcome == application::git::GitPushOutcome::NonFastForward);
+        QVERIFY(classify("! refs/heads/topic:refs/heads/release/name [remote rejected] (pre-receive hook declined)\n")
+            .outcome == application::git::GitPushOutcome::HookRejected);
+        QVERIFY(classify("! refs/heads/topic:refs/heads/release/name [remote rejected] (protected branch)\n")
+            .outcome == application::git::GitPushOutcome::RemoteRejected);
+        QVERIFY(classify("= refs/heads/topic:refs/heads/release/name [up to date]\n", {}, 0)
+            .outcome == application::git::GitPushOutcome::AlreadyUpToDate);
+        const auto timedOut = classify({}, {}, -1, true, false, true);
+        QVERIFY(timedOut.outcome == application::git::GitPushOutcome::TimedOut);
+        QVERIFY(timedOut.completionUncertain);
+        const auto cancelledAfterStart = classify({}, {}, -1, false, true, true);
+        QVERIFY(cancelledAfterStart.outcome == application::git::GitPushOutcome::Cancelled);
+        QVERIFY(cancelledAfterStart.completionUncertain);
+        const auto cancelledBeforeStart = classify({}, {}, -1, false, true, false);
+        QVERIFY(cancelledBeforeStart.outcome == application::git::GitPushOutcome::Cancelled);
+        QVERIFY(!cancelledBeforeStart.completionUncertain);
+    }
+
+    void gitPushCancellationAfterRemoteUpdateIsReconciled()
+    {
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const QString git = QStandardPaths::findExecutable(QStringLiteral("git")); QVERIFY(!git.isEmpty());
+        const QString repository = root.filePath(QStringLiteral("repo"));
+        const QString bare = root.filePath(QStringLiteral("remote.git"));
+        QVERIFY(QDir().mkpath(repository));
+        QVERIFY(QDir().mkpath(bare));
+        const auto run = [git](const QString& directory, QStringList arguments) {
+            QProcess process; process.setProgram(git); process.setArguments(std::move(arguments));
+            process.setWorkingDirectory(directory); process.start();
+            return process.waitForStarted(3000) && process.waitForFinished(10000) && process.exitCode() == 0;
+        };
+        QVERIFY(run(repository, {QStringLiteral("init"), QStringLiteral("--quiet"),
+            QStringLiteral("--initial-branch=feature/cancel-test")}));
+        QVERIFY(run(bare, {QStringLiteral("init"), QStringLiteral("--bare"), QStringLiteral("--quiet")}));
+        QFile seed(QDir(repository).filePath(QStringLiteral("seed.txt")));
+        QVERIFY(seed.open(QIODevice::WriteOnly)); seed.write("seed\n"); seed.close();
+        QVERIFY(run(repository, {QStringLiteral("add"), QStringLiteral("--"), QStringLiteral("seed.txt")}));
+        QVERIFY(run(repository, {QStringLiteral("-c"), QStringLiteral("user.name=Regression"),
+            QStringLiteral("-c"), QStringLiteral("user.email=regression@example.invalid"),
+            QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("cancel test commit"), QStringLiteral("--quiet")}));
+        QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("add"), QStringLiteral("origin"), bare}));
+
+        const QString hookPath = QDir(bare).filePath(QStringLiteral("hooks/post-receive"));
+        QFile hook(hookPath);
+        QVERIFY(hook.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        hook.write("#!/bin/sh\ntouch \"$(dirname \"$0\")/received\"\nsleep 3\n");
+        hook.close();
+        QVERIFY(hook.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+
+        application::git::GitService service{application::git::GitCommandRunner(git)};
+        auto preview = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("cancelled/publication"), false);
+        QVERIFY2(preview, qPrintable(preview ? QString{} : preview.error().userMessage));
+        const QString received = QDir(bare).filePath(QStringLiteral("hooks/received"));
+        application::tasks::CancellationSource cancellation;
+        std::thread cancelAfterReceive([&] {
+            QElapsedTimer timer; timer.start();
+            while (!QFileInfo::exists(received) && timer.elapsed() < 10000)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            if (QFileInfo::exists(received)) cancellation.requestCancellation();
+        });
+        auto result = service.executePush(repository, preview.value(), cancellation.token());
+        cancelAfterReceive.join();
+        QVERIFY(cancellation.isCancellationRequested());
+        QVERIFY2(result, qPrintable(result ? QString{} : result.error().userMessage));
+        QCOMPARE(result.value().outcome, application::git::GitPushOutcome::Published);
+        QVERIFY(result.value().remotePublished);
+        QVERIFY(!result.value().completionUncertain);
+        QVERIFY(run(bare, {QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
+            QStringLiteral("refs/heads/cancelled/publication")}));
+    }
+
+    void gitPushSerializesAgainstOtherRepositoryMutations()
+    {
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const QString git = QStandardPaths::findExecutable(QStringLiteral("git")); QVERIFY(!git.isEmpty());
+        const QString repository = root.filePath(QStringLiteral("repo"));
+        const QString bare = root.filePath(QStringLiteral("remote.git"));
+        QVERIFY(QDir().mkpath(repository));
+        QVERIFY(QDir().mkpath(bare));
+        const auto run = [git](const QString& directory, QStringList arguments) {
+            QProcess process; process.setProgram(git); process.setArguments(std::move(arguments));
+            process.setWorkingDirectory(directory); process.start();
+            return process.waitForStarted(3000) && process.waitForFinished(10000) && process.exitCode() == 0;
+        };
+        QVERIFY(run(repository, {QStringLiteral("init"), QStringLiteral("--quiet"),
+            QStringLiteral("--initial-branch=feature/serialized")}));
+        QVERIFY(run(bare, {QStringLiteral("init"), QStringLiteral("--bare"), QStringLiteral("--quiet")}));
+        QFile seed(QDir(repository).filePath(QStringLiteral("seed.txt")));
+        QVERIFY(seed.open(QIODevice::WriteOnly)); seed.write("seed\n"); seed.close();
+        QVERIFY(run(repository, {QStringLiteral("add"), QStringLiteral("--"), QStringLiteral("seed.txt")}));
+        QVERIFY(run(repository, {QStringLiteral("-c"), QStringLiteral("user.name=Regression"),
+            QStringLiteral("-c"), QStringLiteral("user.email=regression@example.invalid"),
+            QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("serialized mutation commit"), QStringLiteral("--quiet")}));
+        QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("add"), QStringLiteral("origin"), bare}));
+        QFile pending(QDir(repository).filePath(QStringLiteral("pending.txt")));
+        QVERIFY(pending.open(QIODevice::WriteOnly)); pending.write("pending\n"); pending.close();
+
+        const QString hooks = QDir(repository).filePath(QStringLiteral(".git/hooks"));
+        const QString hookPath = QDir(hooks).filePath(QStringLiteral("pre-push"));
+        QFile hook(hookPath);
+        QVERIFY(hook.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        hook.write("#!/bin/sh\nhook_dir=$(dirname \"$0\")\ntouch \"$hook_dir/push-started\"\ni=0\nwhile [ ! -f \"$hook_dir/release-push\" ] && [ $i -lt 300 ]; do sleep 0.02; i=$((i+1)); done\n");
+        hook.close();
+        QVERIFY(hook.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+
+        application::git::GitService service{application::git::GitCommandRunner(git)};
+        auto preview = service.preparePush(repository, QStringLiteral("origin"), QStringLiteral("serialized"), false);
+        QVERIFY(preview);
+        auto pushing = std::async(std::launch::async, [&] { return service.executePush(repository, preview.value()); });
+        const QString started = QDir(hooks).filePath(QStringLiteral("push-started"));
+        QElapsedTimer timer; timer.start();
+        while (!QFileInfo::exists(started) && timer.elapsed() < 8000)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        QVERIFY(QFileInfo::exists(started));
+        auto staging = std::async(std::launch::async, [&] { return service.stage(repository, {QStringLiteral("pending.txt")}); });
+        QVERIFY(staging.wait_for(std::chrono::milliseconds(150)) == std::future_status::timeout);
+        QFile release(QDir(hooks).filePath(QStringLiteral("release-push")));
+        QVERIFY(release.open(QIODevice::WriteOnly)); release.write("go\n"); release.close();
+        const auto pushed = pushing.get();
+        const auto staged = staging.get();
+        QVERIFY(pushed);
+        QCOMPARE(pushed.value().outcome, application::git::GitPushOutcome::Published);
+        QVERIFY(staged);
     }
 
     void windowsManagedServiceStopsSpawnedChildren()

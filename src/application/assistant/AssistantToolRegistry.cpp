@@ -248,8 +248,11 @@ void AssistantToolRegistry::resolveActive(const QString& routeId, ToolResult res
     const QString key = dedupeKey(active.call);
     if (cancelWorker) {
         active.cancellation.cancel();
-        if (active.cancellation.mutationStarted->load()) {
-            result.data.insert(QStringLiteral("outcome"), QStringLiteral("uncertain"));
+        if (m_definitions.value(active.call.name).definition.effect == ToolEffect::ApprovedMutation) {
+            const bool mutationStarted = active.cancellation.mutationStarted->load();
+            result.data.insert(QStringLiteral("outcome"), mutationStarted
+                ? QStringLiteral("uncertain") : QStringLiteral("cancelled"));
+            result.data.insert(QStringLiteral("completionUncertain"), mutationStarted);
             result.data.insert(QStringLiteral("retryAutomatically"), false);
         }
         cacheTerminal(key, result);

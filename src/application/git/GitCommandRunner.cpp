@@ -19,12 +19,19 @@ GitCommandResult GitCommandRunner::run(const GitCommand& command, const tasks::C
     auto environment = QProcessEnvironment::systemEnvironment();
     environment.insert(QStringLiteral("GIT_TERMINAL_PROMPT"), QStringLiteral("0"));
     environment.insert(QStringLiteral("GCM_INTERACTIVE"), QStringLiteral("Never"));
+    environment.remove(QStringLiteral("GIT_ASKPASS"));
+    environment.remove(QStringLiteral("SSH_ASKPASS"));
+    environment.insert(QStringLiteral("SSH_ASKPASS_REQUIRE"), QStringLiteral("never"));
     process.setProcessEnvironment(environment);
+    if (cancellation.isCancellationRequested()) {
+        result.cancelled = true; result.durationMs = timer.elapsed(); return result;
+    }
     process.start();
     const qsizetype cap = command.diffPreview ? 8 * 1024 * 1024 : 16 * 1024 * 1024;
     if (!process.waitForStarted(3000)) {
         result.diagnostic = process.errorString(); result.durationMs = timer.elapsed(); return result;
     }
+    result.processStarted = true;
     QElapsedTimer deadline; deadline.start();
     auto collect = [&] {
         const QByteArray out = process.readAllStandardOutput();
@@ -58,6 +65,7 @@ GitCommandResult GitCommandRunner::run(const GitCommand& command, const tasks::C
     shared::security::RedactionService redactor;
     const QString safeError = redactor.redact(QString::fromUtf8(result.standardError));
     result.standardError = safeError.toUtf8();
+    result.diagnostic = redactor.redact(result.diagnostic);
     qInfo().noquote() << QStringLiteral("Git operation=%1 durationMs=%2 exitCode=%3 truncated=%4 timeout=%5 cancelled=%6")
         .arg(command.operation).arg(result.durationMs).arg(result.exitCode)
         .arg(result.outputTruncated).arg(result.timedOut).arg(result.cancelled);

@@ -36,6 +36,7 @@ struct GitCommandResult final {
     int exitStatus = 0;
     qint64 durationMs = 0;
     bool outputTruncated = false;
+    bool processStarted = false;
     bool timedOut = false;
     bool cancelled = false;
     QString diagnostic;
@@ -63,6 +64,8 @@ struct GitRepositoryState final {
     bool isRepository = false;
     bool detached = false;
     QString root;
+    QString gitDirectory;
+    QString commonDirectory;
     QString branch;
     QString objectId;
     QString upstream;
@@ -81,5 +84,58 @@ struct GitCommit final {
 };
 struct GitRemote final { QString name; QString fetchUrl; QString pushUrl; };
 struct GitDiff final { QByteArray bytes; bool binary = false; bool truncated = false; };
+
+// Immutable approval snapshot for one normal branch publication. The raw
+// configuration fingerprint is internal and must never be serialized to tools.
+struct GitPushPreview final {
+    QString repositoryRoot;
+    QString repositoryIdentity;
+    QString localBranch;
+    QString sourceCommit;
+    QString upstream;
+    QString remote;
+    QString effectivePushUrl;
+    // Kept only in the in-memory approved operation; never serialize this field.
+    QString pushUrlForExecution;
+    QString targetBranch;
+    QString remoteTrackingCommit;
+    QString trackingDescription;
+    QString remoteState = QStringLiteral("notQueried");
+    QVector<GitCommit> outgoingCommits;
+    int outgoingCommitCount = -1;
+    bool outgoingCommitsTruncated = false;
+    bool outgoingCountAvailable = false;
+    bool hasCachedRemoteTracking = false;
+    bool establishUpstream = false;
+    bool upstreamChange = false;
+    QByteArray configurationFingerprint;
+};
+
+enum class GitPushOutcome {
+    Published,
+    AlreadyUpToDate,
+    AuthenticationRequired,
+    NonFastForward,
+    HookRejected,
+    RemoteRejected,
+    TimedOut,
+    Cancelled,
+    PartialTrackingFailure,
+    Uncertain,
+    Failed,
+    PreviewChanged
+};
+
+struct GitPushResult final {
+    GitPushOutcome outcome = GitPushOutcome::Failed;
+    bool remotePublished = false;
+    bool trackingConfigured = false;
+    bool completionUncertain = false;
+    QString message;
+    QString diagnostic;
+    QString approvedSourceCommit;
+    QString remote;
+    QString targetBranch;
+};
 
 } // namespace devhub::application::git

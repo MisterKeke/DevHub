@@ -392,7 +392,9 @@ private slots:
         for (qsizetype i = advertised.size() - 1; i >= 0; --i) {
             const QString name = advertised.at(i).toObject().value(QStringLiteral("name")).toString();
             if (name == QStringLiteral("devhub_something_tasks_find")
-                || name == QStringLiteral("devhub_something_task_read")) advertised.removeAt(i);
+                || name == QStringLiteral("devhub_something_task_read")
+                || name == QStringLiteral("devhub_git_push_preview")
+                || name == QStringLiteral("devhub_git_push")) advertised.removeAt(i);
         }
         QCOMPARE(QJsonDocument::fromJson(file.readAll()).array(), advertised);
         const auto all = AssistantToolRuntime::experimentalToolSpecifications();
@@ -460,6 +462,114 @@ private slots:
             ? (scenario == "allow" ? (tool == "devhub_services_restart" ? 3 : 2) : 1) : 0);
         QCOMPARE(f.workspaceRepo.listCalls, tool == "devhub_project_open" ? (scenario == "allow" ? 4 : 1) : 0);
         for (const auto& message : f.h.controller.messages()) QVERIFY(!message.source.contains("PROPOSED_PRIVATE_CONTENT"));
+    }
+
+    void assistantGitPushBindsApprovalToPreparedStateAndConsumesItOnce()
+    {
+        MutationFixture f(QStringLiteral("0.162.0-alpha.17.2"));
+        const QString git = QStandardPaths::findExecutable(QStringLiteral("git")); QVERIFY(!git.isEmpty());
+        QTemporaryDir remoteRoot; QVERIFY(remoteRoot.isValid());
+        const QString bare = QDir(remoteRoot.path()).filePath(QStringLiteral("remote.git"));
+        QVERIFY(QDir().mkpath(bare));
+        const QString repository = f.h.scratch.path();
+        const auto run = [git](const QString& directory, QStringList arguments) {
+            QProcess process; process.setProgram(git); process.setArguments(std::move(arguments));
+            process.setWorkingDirectory(directory); process.start();
+            return process.waitForStarted(3000) && process.waitForFinished(10000) && process.exitCode() == 0;
+        };
+        QVERIFY(run(repository, {QStringLiteral("init"), QStringLiteral("--quiet")}));
+        QVERIFY(run(repository, {QStringLiteral("-c"), QStringLiteral("user.name=Assistant Test"),
+            QStringLiteral("-c"), QStringLiteral("user.email=assistant@example.invalid"),
+            QStringLiteral("commit"), QStringLiteral("--allow-empty"), QStringLiteral("-m"),
+            QStringLiteral("assistant push fixture"), QStringLiteral("--quiet")}));
+        QVERIFY(run(bare, {QStringLiteral("init"), QStringLiteral("--bare"), QStringLiteral("--quiet")}));
+        QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("add"), QStringLiteral("origin"), bare}));
+        QVERIFY(f.ready());
+        const QJsonObject previewArgs{{QStringLiteral("remote"), QStringLiteral("origin")},
+            {QStringLiteral("targetBranch"), QStringLiteral("assistant-release")},
+            {QStringLiteral("establishUpstream"), true}};
+        f.call(QStringLiteral("devhub_git_push_preview"), previewArgs, QStringLiteral("preview"), QStringLiteral("preview-call"));
+        QTRY_VERIFY_WITH_TIMEOUT(!f.response(QStringLiteral("preview")).isEmpty(), 10000);
+        const auto preview = f.response(QStringLiteral("preview"));
+        QVERIFY(preview.value(QStringLiteral("success")).toBool());
+        const auto previewData = preview.value(QStringLiteral("data")).toObject();
+        const QString operationId = previewData.value(QStringLiteral("preparedOperationId")).toString();
+        QVERIFY(!operationId.isEmpty());
+        QCOMPARE(previewData.value(QStringLiteral("remoteContacted")).toBool(), false);
+        QVERIFY(!previewData.contains(QStringLiteral("pushUrlForExecution")));
+
+        const QJsonObject pushArgs{{QStringLiteral("preparedOperationId"), operationId}};
+        f.call(QStringLiteral("devhub_git_push"), pushArgs, QStringLiteral("push"), QStringLiteral("push-call"));
+        f.call(QStringLiteral("devhub_git_push"), pushArgs, QStringLiteral("push-alias"), QStringLiteral("push-call"));
+        QTRY_COMPARE_WITH_TIMEOUT(f.runtime.approvals().pending().size(), 1, 5000);
+        const auto approval = f.runtime.approvals().pending().first();
+        QVERIFY(approval.preview.contains(previewData.value(QStringLiteral("sourceCommit")).toString()));
+        QVERIFY(approval.preview.contains(QStringLiteral("origin/assistant-release")));
+        QVERIFY(f.response(QStringLiteral("push")).isEmpty());
+        QVERIFY(f.runtime.approvals().decide(approval.id, true));
+        QTRY_VERIFY_WITH_TIMEOUT(!f.response(QStringLiteral("push")).isEmpty(), 15000);
+        QVERIFY(f.response(QStringLiteral("push")).value(QStringLiteral("success")).toBool());
+        QCOMPARE(f.response(QStringLiteral("push-alias")), f.response(QStringLiteral("push")));
+        QVERIFY(run(bare, {QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
+            QStringLiteral("refs/heads/assistant-release")}));
+        f.call(QStringLiteral("devhub_git_push"), pushArgs, QStringLiteral("replay"), QStringLiteral("new-push-call"));
+        QVERIFY(!f.response(QStringLiteral("replay")).value(QStringLiteral("success")).toBool());
+        QCOMPARE(f.runtime.approvals().pending().size(), 0);
+
+        auto expiryArgs = previewArgs;
+        expiryArgs.insert(QStringLiteral("targetBranch"), QStringLiteral("expired-approval"));
+        f.call(QStringLiteral("devhub_git_push_preview"), expiryArgs, QStringLiteral("expiry-preview"), QStringLiteral("expiry-preview-call"));
+        QTRY_VERIFY_WITH_TIMEOUT(!f.response(QStringLiteral("expiry-preview")).isEmpty(), 10000);
+        const QString expiryOperationId = f.response(QStringLiteral("expiry-preview")).value(QStringLiteral("data"))
+            .toObject().value(QStringLiteral("preparedOperationId")).toString();
+        f.call(QStringLiteral("devhub_git_push"), {{QStringLiteral("preparedOperationId"), expiryOperationId}},
+            QStringLiteral("expired-push"), QStringLiteral("expired-push-call"));
+        QTRY_COMPARE_WITH_TIMEOUT(f.runtime.approvals().pending().size(), 1, 5000);
+        f.runtime.approvals().expireNow(100000);
+        QTRY_VERIFY_WITH_TIMEOUT(!f.response(QStringLiteral("expired-push")).isEmpty(), 5000);
+        QVERIFY(!f.response(QStringLiteral("expired-push")).value(QStringLiteral("success")).toBool());
+        QVERIFY(!run(bare, {QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
+            QStringLiteral("refs/heads/expired-approval")}));
+
+        auto staleArgs = previewArgs;
+        staleArgs.insert(QStringLiteral("targetBranch"), QStringLiteral("stale-preview"));
+        f.call(QStringLiteral("devhub_git_push_preview"), staleArgs, QStringLiteral("stale-preview"), QStringLiteral("stale-preview-call"));
+        QTRY_VERIFY_WITH_TIMEOUT(!f.response(QStringLiteral("stale-preview")).isEmpty(), 10000);
+        const QString staleOperationId = f.response(QStringLiteral("stale-preview")).value(QStringLiteral("data"))
+            .toObject().value(QStringLiteral("preparedOperationId")).toString();
+        QVERIFY(run(repository, {QStringLiteral("-c"), QStringLiteral("user.name=Assistant Test"),
+            QStringLiteral("-c"), QStringLiteral("user.email=assistant@example.invalid"),
+            QStringLiteral("commit"), QStringLiteral("--allow-empty"), QStringLiteral("-m"),
+            QStringLiteral("changed after preview"), QStringLiteral("--quiet")}));
+        f.call(QStringLiteral("devhub_git_push"), {{QStringLiteral("preparedOperationId"), staleOperationId}},
+            QStringLiteral("stale-push"), QStringLiteral("stale-push-call"));
+        QTRY_COMPARE_WITH_TIMEOUT(f.runtime.approvals().pending().size(), 1, 5000);
+        QVERIFY(f.runtime.approvals().decide(f.runtime.approvals().pending().first().id, true));
+        QTRY_VERIFY_WITH_TIMEOUT(!f.response(QStringLiteral("stale-push")).isEmpty(), 15000);
+        QVERIFY(!f.response(QStringLiteral("stale-push")).value(QStringLiteral("success")).toBool());
+        QCOMPARE(f.response(QStringLiteral("stale-push")).value(QStringLiteral("errorCode")).toString(),
+            QStringLiteral("previewChanged"));
+        QVERIFY(!run(bare, {QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
+            QStringLiteral("refs/heads/stale-preview")}));
+
+        auto revokedArgs = previewArgs;
+        revokedArgs.insert(QStringLiteral("targetBranch"), QStringLiteral("revoked-scope"));
+        f.call(QStringLiteral("devhub_git_push_preview"), revokedArgs, QStringLiteral("revoked-preview"), QStringLiteral("revoked-preview-call"));
+        QTRY_VERIFY_WITH_TIMEOUT(!f.response(QStringLiteral("revoked-preview")).isEmpty(), 10000);
+        const QString revokedOperationId = f.response(QStringLiteral("revoked-preview")).value(QStringLiteral("data"))
+            .toObject().value(QStringLiteral("preparedOperationId")).toString();
+        f.call(QStringLiteral("devhub_git_push"), {{QStringLiteral("preparedOperationId"), revokedOperationId}},
+            QStringLiteral("revoked-push"), QStringLiteral("revoked-push-call"));
+        QTRY_COMPARE_WITH_TIMEOUT(f.runtime.approvals().pending().size(), 1, 5000);
+        f.h.controller.setSessionAllowed(false);
+        QTRY_VERIFY_WITH_TIMEOUT(!f.response(QStringLiteral("revoked-push")).isEmpty(), 5000);
+        QVERIFY(!f.response(QStringLiteral("revoked-push")).value(QStringLiteral("success")).toBool());
+        const auto revokedResult = f.response(QStringLiteral("revoked-push")).value(QStringLiteral("data")).toObject();
+        QCOMPARE(revokedResult.value(QStringLiteral("outcome")).toString(), QStringLiteral("cancelled"));
+        QCOMPARE(revokedResult.value(QStringLiteral("completionUncertain")).toBool(), false);
+        QCOMPARE(f.runtime.approvals().pending().size(), 0);
+        QVERIFY(!run(bare, {QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
+            QStringLiteral("refs/heads/revoked-scope")}));
     }
 
     void revalidateMutations_data() {
@@ -531,6 +641,7 @@ private slots:
             for (const auto& spec : AssistantToolRuntime::experimentalToolSpecifications()) {
                 const QString tool = spec.toObject().value("name").toString();
                 if (tool == "devhub_notes_edit" || tool == "devhub_project_open"
+                    || tool == "devhub_git_push_preview" || tool == "devhub_git_push"
                     || (tool.startsWith("devhub_services_") && tool != "devhub_services_list")) continue;
                 QTest::newRow(qPrintable(QString::fromLatin1(version) + '-' + tool)) << tool << QString::fromLatin1(version);
             }

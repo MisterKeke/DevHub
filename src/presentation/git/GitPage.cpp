@@ -15,6 +15,9 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QShowEvent>
+#include <atomic>
+#include <memory>
+#include <mutex>
 
 namespace devhub::presentation::git {
 namespace {
@@ -48,7 +51,9 @@ GitPage::GitPage(application::tasks::TaskScheduler& scheduler, QWidget* parent,
     auto* stageAll = new QPushButton(tr("Stage all"), this);
     auto* unstageSelected = new QPushButton(tr("Unstage selected"), this);
     auto* commitButton = new QPushButton(tr("Commit…"), this);
-    m_mutationButtons = {stageSelected, stageAll, unstageSelected, commitButton};
+    m_push = new QPushButton(tr("Push"), this);
+    m_publishBranch = new QPushButton(tr("Publish Branch…"), this);
+    m_mutationButtons = {stageSelected, stageAll, unstageSelected, commitButton, m_push, m_publishBranch};
     for (auto* button : m_mutationButtons) mutationActions->addWidget(button);
     mutationActions->addStretch(); layout->addLayout(mutationActions);
     auto* previewActions = new QHBoxLayout();
@@ -99,6 +104,8 @@ GitPage::GitPage(application::tasks::TaskScheduler& scheduler, QWidget* parent,
         }
         runMutation(QStringLiteral("commit"), {summary});
     });
+    connect(m_push, &QPushButton::clicked, this, [this] { requestPushPreview(false); });
+    connect(m_publishBranch, &QPushButton::clicked, this, [this] { requestPushPreview(true); });
     connect(workingDiff, &QPushButton::clicked, this, [this] { showDiff({}, false); });
     connect(stagedDiff, &QPushButton::clicked, this, [this] { showDiff({}, true); });
     connect(m_cancel, &QPushButton::clicked, this, [this] { m_activeTask.cancel(); });
@@ -136,6 +143,7 @@ void GitPage::setWorkspacePath(QString path, std::optional<QUuid> workspaceId) {
     m_loadMore->hide();
     m_partialErrors->clear();
     m_partialErrors->hide();
+    m_operationFeedback.clear();
     m_state->setText(m_path.isEmpty() ? tr("Select a workspace to inspect its repository.") : tr("Workspace selected. Reading Git status…"));
     if (!m_path.isEmpty()) refresh();
 }
@@ -147,6 +155,184 @@ void GitPage::showEvent(QShowEvent* event) {
 void GitPage::setBusy(bool busy) {
     m_refresh->setEnabled(!busy); m_cancel->setEnabled(busy);
     for (auto* button : m_mutationButtons) button->setEnabled(!busy && !m_path.isEmpty());
+}
+QString GitPage::pushPreviewText(const application::git::GitPushPreview& preview) const {
+    QStringList lines{
+        tr("Repository: %1").arg(preview.repositoryRoot),
+        tr("Branch: %1").arg(preview.localBranch),
+        tr("Approved commit: %1").arg(preview.sourceCommit),
+        tr("Configured remote: %1").arg(preview.remote),
+        tr("Effective push URL: %1").arg(preview.effectivePushUrl),
+        tr("Target branch: %1").arg(preview.targetBranch),
+        tr("Tracking: %1").arg(preview.trackingDescription),
+        tr("Remote state: %1").arg(preview.hasCachedRemoteTracking
+            ? tr("cached remote-tracking data; not refreshed and no remote was contacted")
+            : tr("not queried; outgoing commit count is unavailable")),
+        tr("Uncommitted files are not included in this push.")};
+    if (preview.outgoingCountAvailable)
+        lines.append(tr("Outgoing commits: %1").arg(preview.outgoingCommitCount));
+    if (!preview.outgoingCommits.isEmpty()) {
+        lines.append(tr("Recent outgoing commits:"));
+        for (const auto& commit : preview.outgoingCommits)
+            lines.append(QStringLiteral("  %1  %2").arg(commit.abbreviatedObjectId, commit.subject));
+        if (preview.outgoingCommitsTruncated) lines.append(tr("  … additional commits omitted"));
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+void GitPage::requestPushPreview(bool publishBranch) {
+    if (m_path.isEmpty()) return;
+    application::git::GitExecutableLocator locator;
+    const auto executable = locator.locate();
+    if (!executable) { m_state->setText(executable.error().userMessage); return; }
+    const QString path = m_path, executablePath = executable.value().path;
+    const quint64 generation = ++m_statusGeneration;
+    application::tasks::TaskRequest request;
+    request.moduleKey = QStringLiteral("git-push-preview");
+    request.workspaceId = m_workspaceId;
+    request.generation = generation;
+    setBusy(true);
+    m_state->setText(publishBranch ? tr("Loading configured remotes…") : tr("Preparing push preview…"));
+    if (!publishBranch) {
+        preparePush({}, {}, false, generation);
+        return;
+    }
+    m_activeTask = m_scheduler.submit<QStringList>(request,
+        [path, executablePath](const application::tasks::TaskContext& context) {
+            application::git::GitService service{application::git::GitCommandRunner(executablePath)};
+            return service.configuredRemoteNames(path, context.cancellationToken);
+        }, [this, generation, path, executablePath](shared::common::TaskOutcome<QStringList> outcome) {
+            if (generation != m_statusGeneration) return;
+            setBusy(false);
+            if (std::holds_alternative<shared::common::OperationCancelled>(outcome)) {
+                m_state->setText(tr("Publish preview cancelled.")); return;
+            }
+            auto result = std::get<shared::common::Result<QStringList>>(std::move(outcome));
+            if (!result) {
+                m_state->setText(result.error().userMessage);
+                if (!m_operationFeedback.isEmpty()) { m_partialErrors->setText(m_operationFeedback); m_partialErrors->show(); }
+                return;
+            }
+            if (result.value().isEmpty()) {
+                m_state->setText(tr("This repository has no configured remotes. Add one before publishing a branch."));
+                return;
+            }
+            bool accepted = false;
+            const QString remote = QInputDialog::getItem(this, tr("Publish Branch"),
+                tr("Choose a configured remote:"), result.value(), 0, false, &accepted);
+            if (!accepted || remote.isEmpty()) { m_state->setText(tr("Publish cancelled before execution.")); return; }
+            const QString target = QInputDialog::getText(this, tr("Publish Branch"),
+                tr("Target branch on %1 (enter explicitly):").arg(remote), QLineEdit::Normal, {}, &accepted).trimmed();
+            if (!accepted) { m_state->setText(tr("Publish cancelled before execution.")); return; }
+            if (target.isEmpty()) { m_state->setText(tr("Enter the target branch name explicitly.")); return; }
+            const auto trackingChoice = QMessageBox::question(this, tr("Set upstream tracking"),
+                tr("After publication, set the current local branch to track %1/%2?").arg(remote, target),
+                QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel, QMessageBox::No);
+            if (trackingChoice == QMessageBox::Cancel) { m_state->setText(tr("Publish cancelled before execution.")); return; }
+            preparePush(remote, target, trackingChoice == QMessageBox::Yes, generation);
+        });
+}
+void GitPage::preparePush(QString remote, QString targetBranch, bool establishUpstream, quint64 generation) {
+    if (m_path.isEmpty() || generation != m_statusGeneration) return;
+    application::git::GitExecutableLocator locator;
+    const auto executable = locator.locate();
+    if (!executable) { setBusy(false); m_state->setText(executable.error().userMessage); return; }
+    const QString path = m_path, executablePath = executable.value().path;
+    application::tasks::TaskRequest request;
+    request.moduleKey = QStringLiteral("git-push-preview");
+    request.workspaceId = m_workspaceId;
+    request.generation = generation;
+    setBusy(true);
+    m_state->setText(tr("Preparing push preview…"));
+    m_activeTask = m_scheduler.submit<application::git::GitPushPreview>(request,
+        [path, executablePath, remote = std::move(remote), targetBranch = std::move(targetBranch), establishUpstream]
+        (const application::tasks::TaskContext& context) {
+            application::git::GitService service{application::git::GitCommandRunner(executablePath)};
+            return service.preparePush(path, remote, targetBranch, establishUpstream, context.cancellationToken);
+        }, [this, generation](shared::common::TaskOutcome<application::git::GitPushPreview> outcome) {
+            if (generation != m_statusGeneration) return;
+            setBusy(false);
+            if (std::holds_alternative<shared::common::OperationCancelled>(outcome)) {
+                m_state->setText(tr("Push preview cancelled.")); return;
+            }
+            auto result = std::get<shared::common::Result<application::git::GitPushPreview>>(std::move(outcome));
+            if (!result) {
+                m_operationFeedback = result.error().userMessage;
+                m_partialErrors->setText(m_operationFeedback); m_partialErrors->show();
+                m_state->setText(tr("Push preview could not be prepared.")); return;
+            }
+            const auto preview = std::move(result).value();
+            if (QMessageBox::question(this, tr("Review Git push"), pushPreviewText(preview),
+                    QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes) {
+                m_state->setText(tr("Push cancelled before execution.")); return;
+            }
+            executePush(preview);
+        });
+}
+void GitPage::executePush(const application::git::GitPushPreview& preview) {
+    if (m_path.isEmpty()) return;
+    application::git::GitExecutableLocator locator;
+    const auto executable = locator.locate();
+    if (!executable) { m_state->setText(executable.error().userMessage); return; }
+    const QString path = m_path, executablePath = executable.value().path;
+    const quint64 generation = ++m_statusGeneration;
+    application::tasks::TaskRequest request;
+    request.moduleKey = QStringLiteral("git-mutation");
+    request.workspaceId = m_workspaceId;
+    request.generation = generation;
+    const auto mutationStarted = std::make_shared<std::atomic_bool>(false);
+    const auto completedPush = std::make_shared<std::optional<application::git::GitPushResult>>();
+    const auto completedPushMutex = std::make_shared<std::mutex>();
+    setBusy(true);
+    m_state->setText(tr("Pushing approved commit %1 to %2/%3…").arg(
+        preview.sourceCommit.left(12), preview.remote, preview.targetBranch));
+    m_activeTask = m_scheduler.submit<application::git::GitPushResult>(request,
+        [path, executablePath, preview, mutationStarted, completedPush, completedPushMutex](const application::tasks::TaskContext& context) {
+            context.reportProgress(QStringLiteral("Publishing approved Git commit"), 10);
+            application::git::GitService service{application::git::GitCommandRunner(executablePath)};
+            auto result = service.executePush(path, preview, context.cancellationToken,
+                [mutationStarted] { mutationStarted->store(true); });
+            if (result) {
+                std::lock_guard<std::mutex> lock(*completedPushMutex);
+                *completedPush = result.value();
+            }
+            return result;
+        }, [this, generation, mutationStarted, completedPush, completedPushMutex](shared::common::TaskOutcome<application::git::GitPushResult> outcome) {
+            if (generation != m_statusGeneration) return;
+            setBusy(false);
+            std::optional<application::git::GitPushResult> observed;
+            {
+                std::lock_guard<std::mutex> lock(*completedPushMutex);
+                observed = *completedPush;
+            }
+            application::git::GitPushResult pushResult;
+            bool hasPushResult = false;
+            if (std::holds_alternative<shared::common::OperationCancelled>(outcome)) {
+                if (observed) { pushResult = *observed; hasPushResult = true; }
+                else m_operationFeedback = mutationStarted->load()
+                        ? tr("Push cancellation was requested after Git started. The remote may have accepted the commit; inspect the destination and create a fresh preview before retrying.")
+                        : tr("Push was cancelled before Git started contacting the remote.");
+            } else {
+                auto result = std::get<shared::common::Result<application::git::GitPushResult>>(std::move(outcome));
+                if (!result) {
+                    m_operationFeedback = result.error().userMessage;
+                    emit operationFailed(tr("Git push failed"), m_operationFeedback);
+                }
+                else {
+                    pushResult = result.value(); hasPushResult = true;
+                }
+            }
+            if (hasPushResult) {
+                m_operationFeedback = pushResult.message;
+                if (!pushResult.diagnostic.isEmpty()) m_operationFeedback += QStringLiteral("\n") + pushResult.diagnostic;
+                if (pushResult.outcome != application::git::GitPushOutcome::Published
+                    && pushResult.outcome != application::git::GitPushOutcome::AlreadyUpToDate)
+                    emit operationFailed(tr("Git push did not complete"), m_operationFeedback);
+            }
+            m_partialErrors->setText(m_operationFeedback);
+            m_partialErrors->show();
+            m_state->setText(tr("Push operation finished; repository status is refreshing."));
+            refresh();
+        });
 }
 void GitPage::runMutation(QString operation, QStringList arguments) {
     if (m_path.isEmpty()) return;
@@ -205,8 +391,7 @@ void GitPage::refresh() {
     m_loadMore->setText(tr("Load older commits"));
     m_loadMore->setEnabled(false);
     m_loadMore->hide();
-    m_partialErrors->clear();
-    m_partialErrors->hide();
+    if (m_operationFeedback.isEmpty()) { m_partialErrors->clear(); m_partialErrors->hide(); }
     const QString path = m_path; const auto exePath = executable.value().path;
     application::tasks::TaskRequest request; request.moduleKey = QStringLiteral("git-read");
     const quint64 generation = ++m_statusGeneration;
@@ -238,12 +423,17 @@ void GitPage::refresh() {
                 m_state->setText(tr("Git refresh cancelled.")); return;
             }
             auto result = std::get<shared::common::Result<GitPageSnapshot>>(std::move(outcome));
-            if (!result) { m_state->setText(result.error().userMessage); return; }
+            if (!result) {
+                m_state->setText(result.error().userMessage);
+                if (!m_operationFeedback.isEmpty()) { m_partialErrors->setText(m_operationFeedback); m_partialErrors->show(); }
+                return;
+            }
             GitPageSnapshot snapshot = std::move(result).value();
             m_status->clear(); m_history->clear(); m_branches->clear(); m_diff->clear();
             m_partialErrors->clear(); m_partialErrors->hide();
             if (!snapshot.status.isRepository) {
                 m_state->setText(tr("This workspace is not a Git repository."));
+                if (!m_operationFeedback.isEmpty()) { m_partialErrors->setText(m_operationFeedback); m_partialErrors->show(); }
                 emit overviewUpdated(tr("This folder is not a Git repository."), {}, tr("Not a repo"), QStringLiteral("warning"));
                 return;
             }
@@ -278,6 +468,7 @@ void GitPage::refresh() {
             if (!snapshot.historyError.isEmpty()) partialErrors.append(tr("History: %1").arg(snapshot.historyError));
             if (!snapshot.branchesError.isEmpty()) partialErrors.append(tr("Local branches: %1").arg(snapshot.branchesError));
             if (!snapshot.remoteBranchesError.isEmpty()) partialErrors.append(tr("Remote branches: %1").arg(snapshot.remoteBranchesError));
+            if (!m_operationFeedback.isEmpty()) partialErrors.append(m_operationFeedback);
             if (!partialErrors.isEmpty()) {
                 m_partialErrors->setText(partialErrors.join(QStringLiteral(" · ")));
                 m_partialErrors->show();

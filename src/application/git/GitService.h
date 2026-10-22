@@ -3,6 +3,8 @@
 #include "GitTypes.h"
 #include "../../shared/common/Result.h"
 
+#include <functional>
+
 namespace devhub::application::git {
 class GitService final {
 public:
@@ -29,8 +31,16 @@ public:
         const tasks::CancellationToken& cancellation = {}) const;
     [[nodiscard]] shared::common::Result<GitCommandResult> pull(const QString& directory, const QString& remote,
         const QString& branch, const QString& explicitStrategy, const tasks::CancellationToken& cancellation = {}) const;
-    [[nodiscard]] shared::common::Result<GitCommandResult> push(const QString& directory, const QString& remote,
-        const QString& branch, bool setUpstream, const tasks::CancellationToken& cancellation = {}) const;
+    [[nodiscard]] shared::common::Result<QStringList> configuredRemoteNames(const QString& directory,
+        const tasks::CancellationToken& cancellation = {}) const;
+    [[nodiscard]] shared::common::Result<GitPushPreview> preparePush(const QString& directory,
+        const QString& remote = {}, const QString& targetBranch = {}, bool establishUpstream = false,
+        const tasks::CancellationToken& cancellation = {}) const;
+    [[nodiscard]] shared::common::Result<GitPushResult> executePush(const QString& directory,
+        const GitPushPreview& approvedPreview, const tasks::CancellationToken& cancellation = {},
+        std::function<void()> mutationStarted = {}) const;
+    [[nodiscard]] static GitPushResult classifyPushResult(const GitPushPreview& preview,
+        const GitCommandResult& processResult);
     [[nodiscard]] shared::common::Result<GitCommandResult> checkout(const QString& directory, const QString& branch,
         const tasks::CancellationToken& cancellation = {}) const;
     [[nodiscard]] shared::common::Result<GitCommandResult> createBranch(const QString& directory, const QString& branch,
@@ -50,6 +60,8 @@ public:
     [[nodiscard]] shared::common::Result<GitCommandResult> abortMerge(const QString& directory,
         const tasks::CancellationToken& cancellation = {}) const;
 private:
+    [[nodiscard]] shared::common::Result<GitPushResult> reconcileInterruptedPush(const GitPushPreview& preview,
+        const GitCommandResult& interruptedResult) const;
     [[nodiscard]] shared::common::Result<GitCommandResult> mutate(const QString& directory,
         QString operation, QStringList arguments, const tasks::CancellationToken& cancellation = {}) const;
     GitCommandRunner m_runner;

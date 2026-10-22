@@ -12,6 +12,11 @@
 #include "../workspaces/WorkspaceManager.h"
 #include "../git/GitService.h"
 
+#include <QHash>
+#include <QQueue>
+#include <QSet>
+#include <QTimer>
+
 namespace devhub::application::assistant {
 
 // Application composition for scoped reads and Phase 9 approved mutations.
@@ -47,6 +52,16 @@ public:
         // Synchronous shared workflow: revalidate after transition prompts,
         // call committed after activation succeeds and before scope changes.
         std::function<bool(const QString&, std::function<bool()>, std::function<void()>)> openWorkspace;
+    };
+    struct PreparedGitPush final {
+        git::GitPushPreview preview;
+        QString accountId;
+        QString scopeId;
+        QString workspaceId;
+        QString workspaceRoot;
+        quint64 accessGeneration = 0;
+        quint64 processGeneration = 0;
+        qint64 expiresAtMonotonicMs = 0;
     };
     void setMutationIntegration(MutationIntegration integration) { m_mutations = std::move(integration); }
     [[nodiscard]] AssistantApprovalCoordinator& approvals() { return m_approvals; }
@@ -84,6 +99,9 @@ private:
         std::function<void(ToolResult)> done);
     void reportActivity(const QString& wireName, bool active, bool success = false);
     void updateSomethingTasksConnectionStatus(QString status);
+    [[nodiscard]] bool workspaceStillRegistered(const QString& workspaceId, const QString& root);
+    void expirePreparedGitPushes();
+    void clearPreparedGitPushes();
 
     ICodexClient& m_client;
     AssistantController& m_controller;
@@ -96,6 +114,8 @@ private:
     settings::SettingsService* m_settings = nullptr;
     AssistantToolRegistry m_registry;
     AssistantApprovalCoordinator m_approvals;
+    QHash<QString, PreparedGitPush> m_preparedGitPushes;
+    QTimer m_pushExpiryTimer;
     MutationIntegration m_mutations;
     QString m_registryFingerprint;
     QString m_somethingTasksProfilePath;
