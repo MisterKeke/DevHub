@@ -638,10 +638,13 @@ shared::common::Result<GitPushResult> GitService::executePush(const QString& dir
     }
 
     const QString refspec = approvedPreview.sourceCommit + QStringLiteral(":refs/heads/") + approvedPreview.targetBranch;
+    // The repository must be the first positional argument: with --repo alone,
+    // Git treats the refspec as a repository and its commit ID as an SSH host.
     GitCommand command{QStringLiteral("push"),
         {QStringLiteral("push"), QStringLiteral("--porcelain"), QStringLiteral("--no-follow-tags"),
-         QStringLiteral("--recurse-submodules=no"), QStringLiteral("--repo=") + current.value().pushUrlForExecution,
-         refspec}, approvedPreview.repositoryRoot, std::chrono::milliseconds(300000), true};
+         QStringLiteral("--recurse-submodules=no"), QStringLiteral("--"),
+         current.value().pushUrlForExecution, refspec}, approvedPreview.repositoryRoot,
+        std::chrono::milliseconds(300000), true};
     if (mutationStarted) mutationStarted();
     const auto pushed = m_runner.run(command, cancellation);
     GitPushResult result = classifyPushResult(approvedPreview, pushed);

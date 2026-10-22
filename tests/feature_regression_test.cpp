@@ -24,6 +24,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTreeView>
+#include <QUrl>
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -497,6 +498,71 @@ class FeatureRegressionTest final : public QObject
         QVERIFY(QDir().mkpath(unborn));
         QVERIFY(run(unborn, {QStringLiteral("init"), QStringLiteral("--quiet"), QStringLiteral("--initial-branch=empty" )}));
         QVERIFY(!service.preparePush(unborn, QStringLiteral("origin"), QStringLiteral("empty"), false));
+    }
+
+    void gitPushUsesApprovedDestinationBeforeCommitRefspec_data()
+    {
+        QTest::addColumn<bool>("useFileUrl");
+        QTest::newRow("local path with spaces") << false;
+        QTest::newRow("file URL with spaces") << true;
+    }
+
+    void gitPushUsesApprovedDestinationBeforeCommitRefspec()
+    {
+        QFETCH(bool, useFileUrl);
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const QString git = QStandardPaths::findExecutable(QStringLiteral("git")); QVERIFY(!git.isEmpty());
+        const QString repository = root.filePath(QStringLiteral("working repository"));
+        const QString fetchBare = root.filePath(QStringLiteral("fetch destination.git"));
+        const QString pushBare = root.filePath(QStringLiteral("approved push destination.git"));
+        QVERIFY(QDir().mkpath(repository));
+        const auto run = [git](const QString& directory, QStringList arguments, QByteArray* output = nullptr) {
+            QProcess process; process.setProgram(git); process.setArguments(std::move(arguments));
+            process.setWorkingDirectory(directory); process.start();
+            const bool success = process.waitForStarted(3000) && process.waitForFinished(10000)
+                && process.exitCode() == 0;
+            if (output) *output = process.readAllStandardOutput().trimmed();
+            return success;
+        };
+        QVERIFY(run(repository, {QStringLiteral("init"), QStringLiteral("--quiet"),
+            QStringLiteral("--initial-branch=feature/local")}));
+        QVERIFY(run(root.path(), {QStringLiteral("init"), QStringLiteral("--bare"), QStringLiteral("--quiet"), fetchBare}));
+        QVERIFY(run(root.path(), {QStringLiteral("init"), QStringLiteral("--bare"), QStringLiteral("--quiet"), pushBare}));
+        QVERIFY(run(repository, {QStringLiteral("-c"), QStringLiteral("user.name=Regression"),
+            QStringLiteral("-c"), QStringLiteral("user.email=regression@example.invalid"),
+            QStringLiteral("commit"), QStringLiteral("--allow-empty"), QStringLiteral("-m"),
+            QStringLiteral("approved publication"), QStringLiteral("--quiet")}));
+        // A distinct fetch URL catches fallback to the remote's fetch destination.
+        QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("add"), QStringLiteral("reviewed"), fetchBare}));
+        const QString pushUrl = useFileUrl ? QUrl::fromLocalFile(pushBare).toString(QUrl::FullyEncoded) : pushBare;
+        QVERIFY(run(repository, {QStringLiteral("remote"), QStringLiteral("set-url"), QStringLiteral("--push"),
+            QStringLiteral("reviewed"), pushUrl}));
+
+        application::git::GitService service{application::git::GitCommandRunner(git)};
+        auto preview = service.preparePush(repository, QStringLiteral("reviewed"), QStringLiteral("published/server"), true);
+        QVERIFY2(preview, qPrintable(preview ? QString{} : preview.error().userMessage));
+        QCOMPARE(preview.value().pushUrlForExecution, pushUrl);
+        auto published = service.executePush(repository, preview.value());
+        QVERIFY2(published, qPrintable(published ? QString{} : published.error().userMessage));
+        QVERIFY2(published.value().outcome == application::git::GitPushOutcome::Published,
+            qPrintable(published.value().message + QLatin1Char('\n') + published.value().diagnostic));
+        QVERIFY(published.value().remotePublished);
+        QVERIFY(published.value().trackingConfigured);
+        QByteArray remoteCommit;
+        QVERIFY(run(pushBare, {QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+            QStringLiteral("refs/heads/published/server")}, &remoteCommit));
+        QCOMPARE(QString::fromLatin1(remoteCommit), preview.value().sourceCommit);
+        QVERIFY(!run(fetchBare, {QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
+            QStringLiteral("refs/heads/published/server")}));
+
+        auto existingUpstream = service.preparePush(repository);
+        QVERIFY(existingUpstream);
+        QCOMPARE(existingUpstream.value().remote, QStringLiteral("reviewed"));
+        QCOMPARE(existingUpstream.value().targetBranch, QStringLiteral("published/server"));
+        auto repeated = service.executePush(repository, existingUpstream.value());
+        QVERIFY(repeated);
+        QVERIFY2(repeated.value().outcome == application::git::GitPushOutcome::AlreadyUpToDate,
+            qPrintable(repeated.value().message + QLatin1Char('\n') + repeated.value().diagnostic));
     }
 
     void gitPushPorcelainResultsClassifyFailuresAndRedactCredentials()
