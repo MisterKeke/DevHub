@@ -18,6 +18,18 @@ using devhub::domain::errors::ErrorCategory;
 class AssistantControllerTest final : public QObject {
     Q_OBJECT
 private slots:
+    void newChatClearsTaskDataDisclosure() {
+        Harness h; QVERIFY(h.readyController());
+        const auto previous = h.controller.conversation().id;
+        h.controller.setTaskDataDisclosureGrant(true);
+        QSignalSpy changed(&h.controller, &AssistantController::taskDataDisclosureChanged);
+        h.controller.newChat();
+        QVERIFY(h.controller.conversation().id != previous);
+        QVERIFY(!h.controller.taskDataDisclosureGranted());
+        QCOMPARE(changed.size(), 1);
+        QCOMPARE(changed.first().first().toBool(), false);
+    }
+
     void reconnectReconcilesExistingTranscript_data() {
         QTest::addColumn<bool>("persist"); QTest::addColumn<bool>("uncertain");
         QTest::newRow("session-only uncertain") << false << true;

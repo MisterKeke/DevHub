@@ -109,7 +109,6 @@ set_tests_properties(devhub.assistant-conversation-repository PROPERTIES
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(devhub_assistant_settings_tests assistant_settings_test.cpp
-    ../src/application/settings/SettingsService.cpp
     ../src/presentation/settings/SettingsWindow.cpp
     ../src/presentation/settings/AssistantSettingsPanel.cpp
     ../src/presentation/theme/ThemeTokens.cpp
@@ -131,11 +130,26 @@ set_tests_properties(devhub.assistant-tools PROPERTIES TIMEOUT 45
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(devhub_assistant_tool_runtime_tests assistant_tool_runtime_test.cpp)
-target_link_libraries(devhub_assistant_tool_runtime_tests PRIVATE devhub_assistant Qt6::Test project_warnings)
+target_link_libraries(devhub_assistant_tool_runtime_tests PRIVATE devhub_assistant Qt6::Sql Qt6::Test project_warnings)
 add_test(NAME devhub.assistant-tool-runtime COMMAND devhub_assistant_tool_runtime_tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-tool-runtime-tests.txt,txt")
 set_tests_properties(devhub.assistant-tool-runtime PROPERTIES TIMEOUT 45
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins;TMP=${CMAKE_CURRENT_BINARY_DIR};TEMP=${CMAKE_CURRENT_BINARY_DIR}"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
+qt_add_executable(devhub_something_tasks_response_tests something_tasks_response_test.cpp)
+target_link_libraries(devhub_something_tasks_response_tests PRIVATE devhub_assistant Qt6::Test project_warnings)
+add_test(NAME devhub.something-tasks-response COMMAND devhub_something_tasks_response_tests)
+set_tests_properties(devhub.something-tasks-response PROPERTIES TIMEOUT 30
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
+qt_add_executable(devhub_something_tasks_reader_tests something_tasks_reader_test.cpp)
+target_link_libraries(devhub_something_tasks_reader_tests PRIVATE devhub_assistant Qt6::Sql Qt6::Test project_warnings)
+add_test(NAME devhub.something-tasks-reader COMMAND devhub_something_tasks_reader_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/something-tasks-reader-tests.txt,txt")
+set_tests_properties(devhub.something-tasks-reader PROPERTIES TIMEOUT 45
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(devhub_file_browser_ui_tests
@@ -247,7 +261,6 @@ qt_add_executable(devhub_feature_tests
     feature_regression_test.cpp
     ../src/presentation/databases/DatabasePage.cpp
     ../src/presentation/databases/DatabaseTableModel.cpp
-    ../src/application/settings/SettingsService.cpp
     ../src/application/support/SupportBundleBuilder.cpp
 )
 target_link_libraries(devhub_feature_tests PRIVATE devhub_services devhub_database devhub_assistant

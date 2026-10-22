@@ -471,6 +471,7 @@ void AssistantController::newChat()
 }
 void AssistantController::resetConversation(bool retainAssociation)
 {
+    setTaskDataDisclosureGrant(false);
     if (retainAssociation && m_threadOwned && !m_binding.threadId.isEmpty() && !m_messages.isEmpty()) {
         AssistantConversationMetadata previous;
         previous.conversation = m_conversation; previous.binding = m_binding;
@@ -520,6 +521,7 @@ void AssistantController::setContext(AssistantContext context)
 {
     if (context == m_selectedContext) return;
     if (m_notesDisclosureGranted || m_filesDisclosureGranted) setToolDisclosureGrants(false, false);
+    if (m_taskDataDisclosureGranted) setTaskDataDisclosureGrant(false);
     if (!m_messages.isEmpty() && !sameContextBinding(context, m_conversation.context)) revokeAccess();
     m_selectedContext = std::move(context);
     if (m_messages.isEmpty()) m_conversation.context = m_selectedContext;
@@ -528,6 +530,7 @@ void AssistantController::setContext(AssistantContext context)
 }
 void AssistantController::setPersistenceContext(QString accountId, bool restoreEnabled)
 {
+    if (!m_accountId.isEmpty() && m_accountId != accountId) revokeAccess();
     if (m_accountId != accountId) { m_restoreAttempted = false; m_autoRestoreSuppressed = false; }
     m_accountId = std::move(accountId); m_restoreEnabled = restoreEnabled;
     maybeRestoreConversation();
@@ -555,6 +558,7 @@ void AssistantController::setSessionAllowed(bool allowed, bool clearTranscript)
 void AssistantController::revokeAccess()
 {
     setToolDisclosureGrants(false, false);
+    setTaskDataDisclosureGrant(false);
     ++m_accessGeneration;
     emit accessRevoked(m_accessGeneration);
 }
@@ -567,12 +571,20 @@ void AssistantController::setToolDisclosureGrants(bool notes, bool files)
     emit toolDisclosureChanged(notes, files);
 }
 
+void AssistantController::setTaskDataDisclosureGrant(bool granted)
+{
+    if (m_taskDataDisclosureGranted == granted) return;
+    m_taskDataDisclosureGranted = granted;
+    emit taskDataDisclosureChanged(granted);
+}
+
 void AssistantController::reportToolActivity(QString toolName, bool active, bool success)
 {
     static const QSet<QString> safeTools{QStringLiteral("git.status"), QStringLiteral("git.branches"),
         QStringLiteral("git.log"), QStringLiteral("workspace.metadata"), QStringLiteral("services.list"),
         QStringLiteral("notes.read"), QStringLiteral("notes.search"), QStringLiteral("files.read"),
-        QStringLiteral("files.search")};
+        QStringLiteral("files.search"), QStringLiteral("something_tasks.find"),
+        QStringLiteral("something_tasks.read")};
     if (safeTools.contains(toolName)) emit toolActivityChanged(std::move(toolName), active, success);
 }
 void AssistantController::stopBackendAfterInterrupt()

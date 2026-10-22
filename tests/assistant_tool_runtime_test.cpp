@@ -3,6 +3,7 @@
 #include "application/git/GitExecutableLocator.h"
 #include "application/git/GitService.h"
 #include "support/AssistantHarness.h"
+#include "support/SyntheticSomethingProfile.h"
 #include "application/services/ServiceCoordinator.h"
 #include "application/workspaces/IWorkspaceRepository.h"
 #include "application/workspaces/WorkspaceValidation.h"
@@ -253,10 +254,154 @@ class AssistantToolRuntimeTest final : public QObject
 {
     Q_OBJECT
 private slots:
+    void revokedTaskLookupsDoNotPublishLateStatus_data() {
+        QTest::addColumn<QString>("tool");
+        QTest::addColumn<QString>("transition");
+        for (const auto* tool : {"devhub_something_tasks_find", "devhub_something_task_read"})
+            for (const auto* transition : {"chat", "workspace", "profile", "grant-roundtrip", "lock", "stop", "finished"})
+                QTest::newRow(qPrintable(QString::fromLatin1(tool) + QLatin1Char('-') + QString::fromLatin1(transition)))
+                    << QString::fromLatin1(tool) << QString::fromLatin1(transition);
+    }
+
+    void revokedTaskLookupsDoNotPublishLateStatus() {
+        QFETCH(QString, tool); QFETCH(QString, transition);
+        MutationFixture f(QStringLiteral("0.162.0-alpha.17.2")); QVERIFY(f.ready());
+        f.scheduler.setGlobalConcurrencyLimit(1);
+        f.runtime.setSomethingTasksProfilePath(QDir(f.h.scratch.path()).filePath(QStringLiteral("old-profile.sqlite")));
+        f.h.controller.setTaskDataDisclosureGrant(true);
+        QSignalSpy lookup(&f.runtime, &AssistantToolRuntime::somethingTasksLookupStatusChanged);
+        QSignalSpy connection(&f.runtime, &AssistantToolRuntime::somethingTasksConnectionChanged);
+
+        auto entered = std::make_shared<QSemaphore>();
+        auto release = std::make_shared<QSemaphore>();
+        tasks::TaskRequest blocker; blocker.moduleKey = QStringLiteral("something-status-blocker");
+        const auto handle = f.scheduler.submit<int>(blocker, [entered, release](const tasks::TaskContext&) {
+            entered->release(); release->tryAcquire(1, 5000);
+            return shared::common::Result<int>::success(0);
+        }, [](auto) {});
+        Q_UNUSED(handle);
+        // Release even if a test assertion exits early.
+        struct ReleaseGuard { std::shared_ptr<QSemaphore> semaphore; ~ReleaseGuard() { semaphore->release(); } } guard{release};
+        QTRY_VERIFY_WITH_TIMEOUT(entered->available() > 0, 1000);
+        const QJsonObject args = tool == QStringLiteral("devhub_something_tasks_find")
+            ? QJsonObject{{QStringLiteral("tags"), QJsonArray{QStringLiteral("OldWorkspaceTag")}}}
+            : QJsonObject{{QStringLiteral("taskId"), QStringLiteral("9007199254740993")}};
+        f.call(tool, args);
+        QCOMPARE(f.runtime.registry().activeCount(), 1);
+        if (transition == QStringLiteral("chat")) {
+            const auto previous = f.h.controller.conversation().id;
+            f.h.controller.newChat(); f.h.finish();
+            QVERIFY(previous != f.h.controller.conversation().id);
+        } else if (transition == QStringLiteral("workspace")) f.context.activate(f.workspaceRepo.rows.last());
+        else if (transition == QStringLiteral("profile"))
+            f.runtime.setSomethingTasksProfilePath(QDir(f.h.scratch.path()).filePath(QStringLiteral("new-profile.sqlite")));
+        else if (transition == QStringLiteral("grant-roundtrip")) {
+            f.h.controller.setTaskDataDisclosureGrant(false);
+            f.h.controller.setTaskDataDisclosureGrant(true);
+        } else if (transition == QStringLiteral("lock")) f.h.controller.setSessionAllowed(false, true);
+        else if (transition == QStringLiteral("stop")) f.h.controller.stopTurn();
+        else f.h.finish();
+        QCOMPARE(f.runtime.registry().activeCount(), 0);
+        const auto resolved = f.response();
+        QVERIFY(!resolved.isEmpty()); QVERIFY(!resolved.value(QStringLiteral("success")).toBool());
+        const auto lookupCount = lookup.size();
+        const auto connectionCount = connection.size();
+        const auto status = f.runtime.somethingTasksConnectionStatus();
+        release->release();
+        QTRY_COMPARE_WITH_TIMEOUT(f.scheduler.activeTaskCount(), 0, 3000);
+        QCoreApplication::processEvents();
+        QCOMPARE(f.response(), resolved);
+        QCOMPARE(lookup.size(), lookupCount);
+        QCOMPARE(connection.size(), connectionCount);
+        QCOMPARE(f.runtime.somethingTasksConnectionStatus(), status);
+    }
+
+    void failedTaskSchedulingNeverReportsRetrieved_data() {
+        QTest::addColumn<QString>("tool");
+        QTest::newRow("find") << QStringLiteral("devhub_something_tasks_find");
+        QTest::newRow("read") << QStringLiteral("devhub_something_task_read");
+    }
+
+    void failedTaskSchedulingNeverReportsRetrieved() {
+        QFETCH(QString, tool);
+        MutationFixture f(QStringLiteral("0.162.0-alpha.17.2")); QVERIFY(f.ready());
+        f.runtime.setSomethingTasksProfilePath(QDir(f.h.scratch.path()).filePath(QStringLiteral("synthetic-missing.sqlite")));
+        f.h.controller.setTaskDataDisclosureGrant(true);
+        f.scheduler.stopAcceptingAndCancel();
+        QSignalSpy lookup(&f.runtime, &AssistantToolRuntime::somethingTasksLookupStatusChanged);
+        f.call(tool, tool == QStringLiteral("devhub_something_tasks_find")
+            ? QJsonObject{{QStringLiteral("tags"), QJsonArray{QStringLiteral("DevHub")}}}
+            : QJsonObject{{QStringLiteral("taskId"), QStringLiteral("1")}});
+        QTRY_VERIFY(!f.response().isEmpty());
+        QVERIFY(!f.response().value(QStringLiteral("success")).toBool());
+        QCOMPARE(lookup.size(), 1);
+        QVERIFY(lookup.first().first().toString().contains(QStringLiteral("failed"), Qt::CaseInsensitive));
+        QVERIFY(!lookup.first().first().toString().contains(QStringLiteral("Retrieved")));
+    }
+
+    void taskDataDisclosureRevocationRejectsAndDiscardsResults() {
+        QList<QPair<QString, ToolResult>> resolved;
+        AssistantToolRegistry registry([&](const QString& route, const ToolResult& result) {
+            resolved.append({route, result});
+        });
+        std::function<void(ToolResult)> finish;
+        int entered = 0;
+        ToolDefinition definition;
+        definition.name = QStringLiteral("devhub_something_tasks_find");
+        definition.description = QStringLiteral("Read synthetic task data for a registry contract test.");
+        definition.allowedArguments = {QStringLiteral("tags")};
+        definition.requiresWorkspace = true;
+        definition.requiresTaskDataReadDisclosure = true;
+        definition.validateArguments = [](const QJsonObject& input, QJsonObject* normalized) {
+            *normalized = input; return true;
+        };
+        QVERIFY(registry.registerTool(definition, [&](const ToolCall&, const ToolCancellation&,
+            std::function<void(ToolResult)> done) { ++entered; finish = std::move(done); }));
+
+        ToolCall denied;
+        denied.routeId = QStringLiteral("denied-route"); denied.callId = QStringLiteral("denied-call");
+        denied.name = definition.name;
+        denied.scope = ToolScope(QStringLiteral("scope-a"), QStringLiteral("account-a"), QStringLiteral("workspace-a"),
+            QStringLiteral("C:/workspace"), 1, 1, true, {}, false, false, false);
+        QVERIFY(registry.invoke(denied));
+        QCOMPARE(entered, 0);
+        QCOMPARE(resolved.size(), 1);
+        QCOMPARE(resolved.last().second.errorCode, QStringLiteral("scope_denied"));
+
+        ToolCall allowed;
+        allowed.routeId = QStringLiteral("allowed-route"); allowed.callId = QStringLiteral("allowed-call");
+        allowed.name = definition.name;
+        allowed.scope = ToolScope(QStringLiteral("scope-b"), QStringLiteral("account-a"), QStringLiteral("workspace-a"),
+            QStringLiteral("C:/workspace"), 2, 1, true, {}, false, false, true);
+        QVERIFY(registry.invoke(allowed));
+        QCOMPARE(entered, 1);
+        QVERIFY(bool(finish));
+        registry.cancelAll(QStringLiteral("task_data_disclosure_changed"));
+        QCOMPARE(resolved.size(), 2);
+        QCOMPARE(resolved.last().first, QStringLiteral("allowed-route"));
+        QCOMPARE(resolved.last().second.errorCode, QStringLiteral("task_data_disclosure_changed"));
+        ToolResult late; late.success = true; late.data.insert(QStringLiteral("title"), QStringLiteral("stale task title"));
+        finish(std::move(late));
+        QCOMPARE(resolved.size(), 2);
+    }
+
     void advertisedInventoryMatchesNativeAlphaEvidence() {
         QFile file(QFINDTESTDATA("fixtures/codex/0.162.0-alpha.17.2/phase9-tool-specifications.json"));
         QVERIFY(file.open(QIODevice::ReadOnly));
-        QCOMPARE(QJsonDocument::fromJson(file.readAll()).array(), AssistantToolRuntime::experimentalToolSpecifications());
+        QJsonArray advertised = AssistantToolRuntime::experimentalToolSpecifications();
+        for (qsizetype i = advertised.size() - 1; i >= 0; --i) {
+            const QString name = advertised.at(i).toObject().value(QStringLiteral("name")).toString();
+            if (name == QStringLiteral("devhub_something_tasks_find")
+                || name == QStringLiteral("devhub_something_task_read")) advertised.removeAt(i);
+        }
+        QCOMPARE(QJsonDocument::fromJson(file.readAll()).array(), advertised);
+        const auto all = AssistantToolRuntime::experimentalToolSpecifications();
+        QStringList taskTools;
+        for (const auto& item : all) {
+            const QString name = item.toObject().value(QStringLiteral("name")).toString();
+            if (name.startsWith(QStringLiteral("devhub_something_task"))) taskTools.append(name);
+        }
+        QCOMPARE(taskTools, QStringList({QStringLiteral("devhub_something_tasks_find"), QStringLiteral("devhub_something_task_read")}));
     }
     void selectedMutations_data() {
         QTest::addColumn<QString>("tool"); QTest::addColumn<QString>("version"); QTest::addColumn<QString>("scenario");
@@ -418,11 +563,22 @@ private slots:
             QVERIFY(run({"init", "--quiet"}));
             QVERIFY(run({"-c", "user.name=DevHub test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture", "--quiet"}));
         }
+        devhub::tests::assistant::SyntheticProfile profile;
+        const bool taskTool = tool.startsWith(QStringLiteral("devhub_something_task"));
+        if (taskTool) {
+            QVERIFY(profile.created);
+            QVERIFY(profile.addTask(9007199254740993LL, QStringLiteral("Synthetic DevHub task")));
+            QVERIFY(profile.addTag(9007199254740993LL, QStringLiteral("DevHub")));
+        }
         tasks::TaskScheduler scheduler(h.ids);
         AssistantToolRuntime runtime(h.client, h.controller, scheduler, manager, workspaceContext, serviceRepo, coordinator, noteRepo);
         h.controller.setPersistenceContext(accountId.toString(), false);
         h.controller.setContext({workspaceId.toString(), workspace.displayName(), root});
         QVERIFY(h.readyController()); QVERIFY(h.sendAndAccept()); h.controller.setToolDisclosureGrants(true, true);
+        if (taskTool) {
+            runtime.setSomethingTasksProfilePath(profile.path);
+            h.controller.setTaskDataDisclosureGrant(true);
+        }
         QSignalSpy activity(&h.controller, &AssistantController::toolActivityChanged);
         GitInvocationObserver gitCalls;
         QJsonObject args;
@@ -431,6 +587,8 @@ private slots:
         if (tool == "devhub_notes_search") args = {{"query", "private"}};
         if (tool == "devhub_files_read") args = {{"path", "note.md"}};
         if (tool == "devhub_files_search") args = {{"query", "note"}};
+        if (tool == "devhub_something_tasks_find") args = {{"tags", QJsonArray{QStringLiteral("DevHub")}}};
+        if (tool == "devhub_something_task_read") args = {{"taskId", QStringLiteral("9007199254740993")}};
         const auto deliver = [&](QString id, QString callId, const QString& name, QJsonObject arguments) {
             h.transport.deliver({{"id", id}, {"method", "item/tool/call"}, {"params", QJsonObject{
                 {"threadId", "thread-1"}, {"turnId", "turn-1"}, {"callId", callId}, {"tool", name}, {"arguments", arguments}}}});
@@ -448,6 +606,20 @@ private slots:
         deliver("in-flight-alias", "same-call", tool, args);
         QTRY_VERIFY_WITH_TIMEOUT(!response("first").isEmpty(), 5000);
         QVERIFY(response("first").value("success").toBool());
+        if (taskTool) {
+            const auto wireResponse = response("first");
+            const auto text = wireResponse.value(QStringLiteral("contentItems")).toArray().first().toObject()
+                .value(QStringLiteral("text")).toString();
+            const auto body = QJsonDocument::fromJson(text.toUtf8()).object();
+            QVERIFY(body.value(QStringLiteral("success")).toBool());
+            const auto data = body.value(QStringLiteral("data")).toObject();
+            QCOMPARE(data.value(QStringLiteral("source")).toString(), QStringLiteral("SomethingQt"));
+            const auto task = tool == QStringLiteral("devhub_something_tasks_find")
+                ? data.value(QStringLiteral("tasks")).toArray().first().toObject()
+                : data.value(QStringLiteral("task")).toObject();
+            QCOMPARE(task.value(QStringLiteral("taskId")).toString(), QStringLiteral("9007199254740993"));
+            QCOMPARE(task.value(QStringLiteral("title")).toString(), QStringLiteral("Synthetic DevHub task"));
+        }
         QCOMPARE(response("in-flight-alias"), response("first"));
         deliver("completed-alias", "same-call", tool, args);
         QCOMPARE(response("completed-alias"), response("first"));
@@ -636,7 +808,7 @@ private slots:
         AssistantToolRuntime runtime(client, controller, scheduler, manager, workspaceContext,
             serviceRepo, coordinator, noteRepo);
         QVERIFY(runtime.enabledForTestedWireProfile());
-        QCOMPARE(client.specifications.size(), 14);
+        QCOMPARE(client.specifications, AssistantToolRuntime::experimentalToolSpecifications());
         client.call(11, QStringLiteral("devhub_workspace_metadata"));
         QTRY_COMPARE_WITH_TIMEOUT(client.replies.size(), 1, 1000);
         QCOMPARE(workspaceRepo.listCalls, 1);

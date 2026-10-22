@@ -27,7 +27,7 @@ public:
     ToolScope(QString scopeId, QString accountId, QString workspaceId, QString workspaceRoot,
               quint64 accessGeneration, quint64 processGeneration, bool authorized,
               QStringList explicitlySelectedNoteIds = {}, bool notesReadGrant = false,
-              bool filesReadGrant = false);
+              bool filesReadGrant = false, bool taskDataReadGrant = false);
     [[nodiscard]] const QString& scopeId() const { return m_scopeId; }
     [[nodiscard]] const QString& accountId() const { return m_accountId; }
     [[nodiscard]] const QString& workspaceId() const { return m_workspaceId; }
@@ -39,6 +39,7 @@ public:
     [[nodiscard]] bool allowsNoteRead(const QString& noteId) const
     { return m_authorized && (m_notesReadGrant || m_explicitlySelectedNoteIds.contains(noteId)); }
     [[nodiscard]] bool filesReadAllowed() const { return m_authorized && m_filesReadGrant; }
+    [[nodiscard]] bool taskDataReadAllowed() const { return m_authorized && m_taskDataReadGrant; }
 private:
     QString m_scopeId, m_accountId, m_workspaceId, m_workspaceRoot;
     quint64 m_accessGeneration = 0, m_processGeneration = 0;
@@ -46,6 +47,7 @@ private:
     QStringList m_explicitlySelectedNoteIds;
     bool m_notesReadGrant = false;
     bool m_filesReadGrant = false;
+    bool m_taskDataReadGrant = false;
 };
 
 struct ToolDefinition final {
@@ -59,6 +61,7 @@ struct ToolDefinition final {
     bool requiresWorkspace = false;
     bool requiresNoteReadDisclosure = false;
     bool requiresFileReadDisclosure = false;
+    bool requiresTaskDataReadDisclosure = false;
     std::function<bool(const QJsonObject& input, QJsonObject* normalized)> validateArguments;
 };
 

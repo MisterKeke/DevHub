@@ -48,7 +48,7 @@ namespace devhub::presentation::workspaces { class WorkspaceListModel; }
 namespace devhub::presentation::widgets { class CurrentPageStack; }
 namespace devhub::presentation::notes { class NotesPage; }
 namespace devhub::presentation::assistant { class AssistantPage; }
-namespace devhub::application::assistant { class AssistantController; class ICodexExecutableProbe; }
+namespace devhub::application::assistant { class AssistantController; class AssistantToolRuntime; class ICodexExecutableProbe; }
 namespace devhub::presentation::databases { class DatabasePage; }
 namespace devhub::application::overview { class OverviewStateComposer; }
 namespace devhub::application::commands { class CommandRegistry; }
@@ -103,6 +103,7 @@ public:
                application::support::SupportBundleBuilder& supportBundleBuilder,
                const shared::security::RedactionService& redactor,
                application::assistant::AssistantController& assistantController,
+               application::assistant::AssistantToolRuntime& assistantToolRuntime,
                application::assistant::ICodexExecutableProbe& assistantSetupProbe,
                application::lifecycle::ShutdownCoordinator& shutdownCoordinator,
                QWidget* parent = nullptr);
@@ -182,6 +183,7 @@ private:
     application::services::ServiceCoordinator& m_serviceCoordinator;
     application::settings::SettingsService& m_settingsService;
     application::assistant::AssistantController& m_assistantController;
+    application::assistant::AssistantToolRuntime& m_assistantToolRuntime;
     application::assistant::ICodexExecutableProbe& m_assistantSetupProbe;
     application::lifecycle::ShutdownCoordinator& m_shutdownCoordinator;
     presentation::theme::ThemeManager& m_themeManager;

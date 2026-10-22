@@ -38,6 +38,9 @@ SettingsService::SettingsService(ISettingsRepository& repository) : m_repository
         string(QStringLiteral("assistant/executable"), QStringLiteral("Native Codex executable override"), QStringLiteral("Assistant"), {}, false, SettingSensitivity::Sensitive),
         string(QStringLiteral("assistant/model"), QStringLiteral("Preferred text model"), QStringLiteral("Assistant"), {}, false, SettingSensitivity::Sensitive),
         boolean(QStringLiteral("assistant/restoreConversation"), QStringLiteral("Restore last DevHub conversation"), QStringLiteral("Assistant"), true),
+        string(QStringLiteral("assistant/somethingQtProfilePath"), QStringLiteral("SomethingQt task profile database"), QStringLiteral("Assistant"), {}, false, SettingSensitivity::Sensitive),
+        string(QStringLiteral("assistant/somethingQtWorkspaceTag"), QStringLiteral("SomethingQt default workspace tag"), QStringLiteral("Assistant"), {}),
+        boolean(QStringLiteral("assistant/somethingQtRestrictWorkspaceTag"), QStringLiteral("Restrict SomethingQt tasks to the workspace tag"), QStringLiteral("Assistant"), false),
         integer(QStringLiteral("workspaces/scanLimitMs"), QStringLiteral("Workspace scan limit (ms)"), QStringLiteral("Workspaces"), 5000, 100, 60000, SettingScope::Global, true),
         integer(QStringLiteral("logs/maxLines"), QStringLiteral("Maximum cached log lines"), QStringLiteral("Logs"), 10000, 100, 200000, SettingScope::Global, true),
         integer(QStringLiteral("logs/maxBytes"), QStringLiteral("Maximum cached log bytes"), QStringLiteral("Logs"), 4194304, 65536, 67108864, SettingScope::Global, true),
@@ -93,6 +96,24 @@ SettingsService::SettingsService(ISettingsRepository& repository) : m_repository
         };
     for (auto& item : m_descriptors) if (item.id == QStringLiteral("workspaces/scanLimitMs"))
         item.scope = SettingScope::Workspace;
+    for (auto& item : m_descriptors) if (item.id == QStringLiteral("assistant/somethingQtWorkspaceTag")
+        || item.id == QStringLiteral("assistant/somethingQtRestrictWorkspaceTag"))
+        item.scope = SettingScope::Workspace;
+    for (auto& item : m_descriptors) if (item.id == QStringLiteral("assistant/somethingQtProfilePath"))
+        item.validate = [](const QVariant& value) {
+            if (value.metaType().id() != QMetaType::QString || value.toString().size() > 2048) return false;
+            const QString path = value.toString();
+            if (path.isEmpty()) return true;
+            for (const auto ch : path) if (ch.isNull() || ch.category() == QChar::Other_Control) return false;
+            return QFileInfo(path).isAbsolute();
+        };
+    for (auto& item : m_descriptors) if (item.id == QStringLiteral("assistant/somethingQtWorkspaceTag"))
+        item.validate = [](const QVariant& value) {
+            if (value.metaType().id() != QMetaType::QString || value.toString().toUcs4().size() > 64) return false;
+            const QString tag = value.toString();
+            for (const auto ch : tag) if (ch.isNull() || ch.category() == QChar::Other_Control) return false;
+            return true;
+        };
 }
 
 SettingDescriptor SettingsService::descriptor(const QString& id) const

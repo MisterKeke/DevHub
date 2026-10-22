@@ -1,6 +1,7 @@
 #include "AssistantPage.h"
 #include "application/assistant/AssistantApprovalCoordinator.h"
 #include "application/assistant/AssistantToolRuntime.h"
+#include "application/settings/SettingsService.h"
 #include "presentation/widgets/SafeMarkdownBrowser.h"
 #include "presentation/theme/ThemePalette.h"
 #include "presentation/theme/ThemeTokens.h"
@@ -11,10 +12,13 @@
 #include <QClipboard>
 #include <QCheckBox>
 #include <QDesktopServices>
+#include <QDir>
+#include <QFileDialog>
 #include <QFrame>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
@@ -30,7 +34,20 @@
 
 namespace devhub::presentation::assistant {
 using namespace application::assistant;
-AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) : QWidget(parent), m_controller(controller)
+AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent)
+    : AssistantPage(controller, nullptr, nullptr, parent)
+{
+}
+
+AssistantPage::AssistantPage(AssistantController& controller, AssistantToolRuntime& toolRuntime,
+    application::settings::SettingsService& settings, QWidget* parent)
+    : AssistantPage(controller, &toolRuntime, &settings, parent)
+{
+}
+
+AssistantPage::AssistantPage(AssistantController& controller, AssistantToolRuntime* toolRuntime,
+    application::settings::SettingsService* settings, QWidget* parent)
+    : QWidget(parent), m_controller(controller), m_toolRuntime(toolRuntime), m_settings(settings)
 {
     setObjectName(QStringLiteral("assistantPage"));
     auto* root = new QVBoxLayout(this); root->setContentsMargins(24, 20, 24, 20); root->setSpacing(12);
@@ -68,6 +85,52 @@ AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) :
     disclosureRow->addWidget(m_allowNotes); disclosureRow->addWidget(m_allowFiles); disclosureRow->addWidget(m_toolActivity, 1);
     contextLayout->addLayout(disclosureRow);
     root->addWidget(contextCard);
+
+    auto* somethingCard = new QFrame(this); somethingCard->setObjectName(QStringLiteral("assistantSomethingTasksCard"));
+    somethingCard->setFrameShape(QFrame::StyledPanel);
+    auto* somethingLayout = new QVBoxLayout(somethingCard); somethingLayout->setContentsMargins(12, 8, 12, 8); somethingLayout->setSpacing(6);
+    auto* somethingTitle = new QLabel(tr("SomethingQt tasks (read-only)"), somethingCard);
+    somethingTitle->setObjectName(QStringLiteral("assistantSomethingTasksTitle"));
+    somethingLayout->addWidget(somethingTitle);
+    auto* disclosureText = new QLabel(tr("When enabled, retrieved task titles, descriptions, tags, and subtasks are sent to the assistant."), somethingCard);
+    disclosureText->setWordWrap(true); disclosureText->setTextFormat(Qt::PlainText);
+    somethingLayout->addWidget(disclosureText);
+    auto* profileRow = new QHBoxLayout;
+    m_somethingProfileIdentity = new QLabel(somethingCard); m_somethingProfileIdentity->setObjectName(QStringLiteral("assistantSomethingProfileIdentity"));
+    m_somethingProfileIdentity->setTextFormat(Qt::PlainText);
+    m_somethingProfilePath = new QLineEdit(somethingCard); m_somethingProfilePath->setObjectName(QStringLiteral("assistantSomethingProfilePath"));
+    m_somethingProfilePath->setReadOnly(true);
+    m_somethingProfilePath->setPlaceholderText(tr("Choose an existing SomethingQt profile database"));
+    m_chooseSomethingProfile = new QPushButton(tr("Choose profile…"), somethingCard);
+    m_chooseSomethingProfile->setObjectName(QStringLiteral("assistantChooseSomethingProfile"));
+    m_checkSomethingConnection = new QPushButton(tr("Check connection"), somethingCard);
+    m_checkSomethingConnection->setObjectName(QStringLiteral("assistantCheckSomethingConnection"));
+    profileRow->addWidget(m_somethingProfileIdentity);
+    profileRow->addWidget(m_somethingProfilePath, 1);
+    profileRow->addWidget(m_chooseSomethingProfile);
+    profileRow->addWidget(m_checkSomethingConnection);
+    somethingLayout->addLayout(profileRow);
+    auto* connectionStatusRow = new QHBoxLayout;
+    m_somethingConnectionStatus = new QLabel(somethingCard); m_somethingConnectionStatus->setObjectName(QStringLiteral("assistantSomethingConnectionStatus"));
+    m_somethingConnectionStatus->setTextFormat(Qt::PlainText); m_somethingConnectionStatus->setWordWrap(true);
+    m_somethingLookupStatus = new QLabel(somethingCard); m_somethingLookupStatus->setObjectName(QStringLiteral("assistantSomethingLookupStatus"));
+    m_somethingLookupStatus->setTextFormat(Qt::PlainText); m_somethingLookupStatus->setWordWrap(true);
+    connectionStatusRow->addWidget(m_somethingConnectionStatus, 1); connectionStatusRow->addWidget(m_somethingLookupStatus, 2);
+    somethingLayout->addLayout(connectionStatusRow);
+    auto* workspaceTagsRow = new QHBoxLayout;
+    m_workspaceTaskTag = new QLineEdit(somethingCard); m_workspaceTaskTag->setObjectName(QStringLiteral("assistantSomethingWorkspaceTag"));
+    m_workspaceTaskTag->setMaxLength(64); m_workspaceTaskTag->setPlaceholderText(tr("Default tag for this workspace"));
+    m_restrictWorkspaceTaskTag = new QCheckBox(tr("Restrict task reads to this tag"), somethingCard);
+    m_restrictWorkspaceTaskTag->setObjectName(QStringLiteral("assistantRestrictSomethingWorkspaceTag"));
+    m_allowTaskData = new QCheckBox(tr("Allow task data for this chat"), somethingCard);
+    m_allowTaskData->setObjectName(QStringLiteral("assistantAllowTaskData"));
+    m_allowTaskData->setToolTip(tr("This grant is separate from note and file text disclosure and is cleared when this Assistant scope is revoked."));
+    workspaceTagsRow->addWidget(m_workspaceTaskTag, 1);
+    workspaceTagsRow->addWidget(m_restrictWorkspaceTaskTag);
+    workspaceTagsRow->addWidget(m_allowTaskData);
+    somethingLayout->addLayout(workspaceTagsRow);
+    root->addWidget(somethingCard);
+    if (!m_toolRuntime || !m_settings) somethingCard->hide();
     auto* uncertainAction = new QLabel(this); uncertainAction->setObjectName(QStringLiteral("assistantUncertainAction"));
     uncertainAction->setTextFormat(Qt::PlainText); uncertainAction->setWordWrap(true); uncertainAction->hide(); root->addWidget(uncertainAction);
     connect(&controller, &AssistantController::toolMutationUncertain, uncertainAction, [uncertainAction](const QString& name) {
@@ -128,6 +191,63 @@ AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) :
         const QSignalBlocker notesBlock(m_allowNotes), filesBlock(m_allowFiles);
         m_allowNotes->setChecked(notes); m_allowFiles->setChecked(files); refreshState();
     });
+    m_allowTaskData->setChecked(controller.taskDataDisclosureGranted());
+    connect(m_allowTaskData, &QCheckBox::toggled, &controller, &AssistantController::setTaskDataDisclosureGrant);
+    connect(&controller, &AssistantController::taskDataDisclosureChanged, this, [this](bool granted) {
+        const QSignalBlocker blocker(m_allowTaskData);
+        m_allowTaskData->setChecked(granted);
+    });
+    if (m_toolRuntime && m_settings) {
+    connect(m_chooseSomethingProfile, &QPushButton::clicked, this, [this] {
+        QString suggested;
+        const QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
+        if (!localAppData.isEmpty()) suggested = QDir(localAppData).filePath(
+            QStringLiteral("Something/Something/profiles/default/something.sqlite"));
+        const QString startPath = m_toolRuntime->somethingTasksProfilePath().isEmpty()
+            ? suggested : m_toolRuntime->somethingTasksProfilePath();
+        const QString selected = QFileDialog::getOpenFileName(this, tr("Choose SomethingQt profile database"),
+            startPath, tr("SQLite databases (*.sqlite *.sqlite3 *.db);;All files (*)"));
+        if (selected.isEmpty()) return;
+        const auto saved = m_settings->setValue(QStringLiteral("assistant/somethingQtProfilePath"), selected);
+        if (!saved) {
+            m_somethingConnectionStatus->setText(tr("Could not save the profile selection: %1").arg(saved.error().userMessage));
+            return;
+        }
+        m_toolRuntime->setSomethingTasksProfilePath(selected);
+        m_somethingLookupStatus->clear();
+        refreshSomethingTasks();
+    });
+    connect(m_checkSomethingConnection, &QPushButton::clicked,
+        m_toolRuntime, &AssistantToolRuntime::checkSomethingTasksConnection);
+    connect(m_toolRuntime, &AssistantToolRuntime::somethingTasksConnectionChanged, this,
+        [this](const QString& identity, const QString& status) {
+            const QString previousPath = m_somethingProfilePath->text();
+            m_somethingProfileIdentity->setText(tr("Source profile: %1").arg(identity));
+            m_somethingConnectionStatus->setText(status);
+            m_checkSomethingConnection->setEnabled(identity != QStringLiteral("Not configured"));
+            refreshSomethingTasks();
+            if (m_somethingProfilePath->text() != previousPath) m_somethingLookupStatus->clear();
+        });
+    connect(m_toolRuntime, &AssistantToolRuntime::somethingTasksLookupStatusChanged,
+        m_somethingLookupStatus, &QLabel::setText);
+    auto saveWorkspaceTagSettings = [this] {
+        if (m_workspaceTaskTag->text().toUcs4().size() > 64) return;
+        if (!m_toolRuntime->setWorkspaceTaskTagSettings(m_workspaceTaskTag->text(),
+            m_restrictWorkspaceTaskTag->isChecked())) {
+            m_somethingLookupStatus->setText(m_restrictWorkspaceTaskTag->isChecked()
+                ? tr("Enter a workspace tag before enabling the restriction.")
+                : tr("Workspace task-tag settings could not be saved."));
+            const QSignalBlocker blocker(m_restrictWorkspaceTaskTag);
+            m_restrictWorkspaceTaskTag->setChecked(m_toolRuntime->workspaceTaskTagRestricted());
+            return;
+        }
+        m_somethingLookupStatus->setText(tr("Workspace tag settings saved."));
+    };
+    connect(m_workspaceTaskTag, &QLineEdit::editingFinished, this, saveWorkspaceTagSettings);
+    connect(m_restrictWorkspaceTaskTag, &QCheckBox::toggled, this, [saveWorkspaceTagSettings] { saveWorkspaceTagSettings(); });
+    connect(&controller, &AssistantController::stateChanged, this, &AssistantPage::refreshSomethingTasks);
+    }
+    refreshSomethingTasks();
     connect(&controller, &AssistantController::toolActivityChanged, this,
         [this](const QString& tool, bool active, bool success) {
             if (active) { if (!m_activeTools.contains(tool)) m_activeTools.append(tool); }
@@ -149,6 +269,7 @@ AssistantPage::AssistantPage(AssistantController& controller, QWidget* parent) :
     });
     for (const auto& value : controller.messages()) addMessage(value.id);
     refreshState();
+    refreshSomethingTasks();
     refreshApprovals();
 }
 void AssistantPage::hideEvent(QHideEvent* event) {
@@ -187,6 +308,28 @@ void AssistantPage::refreshApprovals() {
 }
 void AssistantPage::activate() { m_controller.open(); m_composer->setFocus(); }
 void AssistantPage::clearDraft() { m_composer->clear(); m_preedit = false; }
+
+void AssistantPage::refreshSomethingTasks()
+{
+    if (!m_toolRuntime || !m_settings) return;
+    const QString path = m_toolRuntime->somethingTasksProfilePath();
+    const QString identity = m_toolRuntime->somethingTasksProfileIdentity();
+    m_somethingProfileIdentity->setText(tr("Source profile: %1").arg(identity));
+    if (m_somethingProfilePath->text() != path) m_somethingProfilePath->setText(path);
+    m_somethingConnectionStatus->setText(m_toolRuntime->somethingTasksConnectionStatus());
+    const QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
+    const QString suggested = localAppData.isEmpty() ? tr("Suggested profile path is unavailable")
+        : QDir(localAppData).filePath(QStringLiteral("Something/Something/profiles/default/something.sqlite"));
+    m_somethingProfilePath->setPlaceholderText(tr("Suggested: %1").arg(suggested));
+    m_checkSomethingConnection->setEnabled(!path.isEmpty());
+    const bool hasWorkspace = !m_toolRuntime->activeWorkspaceId().isEmpty();
+    m_allowTaskData->setEnabled(!path.isEmpty() && hasWorkspace && m_controller.accessAllowed());
+    m_workspaceTaskTag->setEnabled(hasWorkspace);
+    m_restrictWorkspaceTaskTag->setEnabled(hasWorkspace);
+    if (!m_workspaceTaskTag->hasFocus()) m_workspaceTaskTag->setText(m_toolRuntime->workspaceTaskTagDefault());
+    const QSignalBlocker blocker(m_restrictWorkspaceTaskTag);
+    m_restrictWorkspaceTaskTag->setChecked(m_toolRuntime->workspaceTaskTagRestricted());
+}
 bool AssistantPage::eventFilter(QObject* watched, QEvent* event)
 {
     if (watched == m_composer) {

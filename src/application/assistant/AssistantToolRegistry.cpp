@@ -24,12 +24,13 @@ ToolResult failure(QString code)
 
 ToolScope::ToolScope(QString scopeId, QString accountId, QString workspaceId, QString workspaceRoot,
                      quint64 accessGeneration, quint64 processGeneration, bool authorized,
-                     QStringList explicitlySelectedNoteIds, bool notesReadGrant, bool filesReadGrant)
+                     QStringList explicitlySelectedNoteIds, bool notesReadGrant, bool filesReadGrant,
+                     bool taskDataReadGrant)
     : m_scopeId(std::move(scopeId)), m_accountId(std::move(accountId)), m_workspaceId(std::move(workspaceId)),
       m_workspaceRoot(std::move(workspaceRoot)), m_accessGeneration(accessGeneration),
       m_processGeneration(processGeneration), m_authorized(authorized),
       m_explicitlySelectedNoteIds(std::move(explicitlySelectedNoteIds)), m_notesReadGrant(notesReadGrant),
-      m_filesReadGrant(filesReadGrant) {}
+      m_filesReadGrant(filesReadGrant), m_taskDataReadGrant(taskDataReadGrant) {}
 
 QByteArray ToolResult::compactJson() const
 {
@@ -151,6 +152,9 @@ bool AssistantToolRegistry::invoke(ToolCall call)
         resolveRoute(call.routeId, call.scope.processGeneration(), failure(QStringLiteral("scope_denied"))); return true;
     }
     if (entry->definition.requiresFileReadDisclosure && !call.scope.filesReadAllowed()) {
+        resolveRoute(call.routeId, call.scope.processGeneration(), failure(QStringLiteral("scope_denied"))); return true;
+    }
+    if (entry->definition.requiresTaskDataReadDisclosure && !call.scope.taskDataReadAllowed()) {
         resolveRoute(call.routeId, call.scope.processGeneration(), failure(QStringLiteral("scope_denied"))); return true;
     }
     const QString key = dedupeKey(call);

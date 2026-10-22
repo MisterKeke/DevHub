@@ -37,6 +37,9 @@ QString descriptionFor(const QString& id)
     if (id == QStringLiteral("assistant/executable")) return QObject::tr("Set a specific Codex executable, or leave blank to use the detected default.");
     if (id == QStringLiteral("assistant/model")) return QObject::tr("Choose a preferred text model for new Assistant turns.");
     if (id == QStringLiteral("assistant/restoreConversation")) return QObject::tr("Reopen your last DevHub conversation when you return to Assistant.");
+    if (id == QStringLiteral("assistant/somethingQtProfilePath")) return QObject::tr("Choose an existing SomethingQt profile database. The Assistant page offers a file picker and an explicit connection check; the suggested default path may not exist on this computer.");
+    if (id == QStringLiteral("assistant/somethingQtWorkspaceTag")) return QObject::tr("Convenience default used when a task search omits its tag. It does not restrict task access by itself.");
+    if (id == QStringLiteral("assistant/somethingQtRestrictWorkspaceTag")) return QObject::tr("When enabled, searches and detail reads are limited to tasks that also have the configured workspace tag.");
     if (id == QStringLiteral("workspaces/scanLimitMs")) return QObject::tr("Limit how long workspace detection spends scanning each folder.");
     if (id == QStringLiteral("logs/maxLines")) return QObject::tr("Maximum number of log lines kept in memory.");
     if (id == QStringLiteral("logs/maxBytes")) return QObject::tr("Maximum log data kept in memory across sources.");

@@ -50,8 +50,10 @@ public:
     [[nodiscard]] bool accessAllowed() const noexcept { return m_allowed && !m_shuttingDown; }
     [[nodiscard]] const QString& accountId() const noexcept { return m_accountId; }
     void setToolDisclosureGrants(bool notes, bool files);
+    void setTaskDataDisclosureGrant(bool granted);
     [[nodiscard]] bool notesDisclosureGranted() const noexcept { return m_notesDisclosureGranted; }
     [[nodiscard]] bool filesDisclosureGranted() const noexcept { return m_filesDisclosureGranted; }
+    [[nodiscard]] bool taskDataDisclosureGranted() const noexcept { return m_taskDataDisclosureGranted; }
     void reportToolActivity(QString toolName, bool active, bool success = false);
     void setApprovalCoordinator(AssistantApprovalCoordinator* coordinator);
     [[nodiscard]] AssistantApprovalCoordinator* approvals() const { return m_approvals; }
@@ -84,6 +86,7 @@ signals:
     void accessRevoked(quint64 generation);
     void shutdownFinished();
     void toolDisclosureChanged(bool notes, bool files);
+    void taskDataDisclosureChanged(bool granted);
     void toolActivityChanged(QString toolName, bool active, bool success);
     void approvalCoordinatorChanged();
     void toolMutationUncertain(QString toolName);
@@ -171,6 +174,7 @@ private:
     bool m_shutdownComplete = false;
     bool m_notesDisclosureGranted = false;
     bool m_filesDisclosureGranted = false;
+    bool m_taskDataDisclosureGranted = false;
     quint64 m_accessGeneration = 0;
     std::function<void()> m_shutdownCompletion;
 };
