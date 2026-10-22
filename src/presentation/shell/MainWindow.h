@@ -54,10 +54,12 @@ namespace devhub::application::overview { class OverviewStateComposer; }
 namespace devhub::application::commands { class CommandRegistry; }
 namespace devhub::application::commands { class CachedSearchProvider; }
 namespace devhub::application::settings { class SettingsService; }
+namespace devhub::application::planner { class PlannerService; }
 namespace devhub::application::lifecycle { class ShutdownCoordinator; }
 namespace devhub::application::support { class SupportBundleBuilder; }
 namespace devhub::presentation::theme { class ThemeManager; }
 namespace devhub::presentation::overview { class OverviewPage; }
+namespace devhub::presentation::overview::planner { class PlannerController; }
 namespace devhub::presentation::commands { class CommandPaletteDialog; }
 namespace devhub::presentation::notifications { class ToastManager; }
 
@@ -96,6 +98,7 @@ public:
                application::files::ITrashService& trashService,
                application::files::IExternalEditorLauncher& editorLauncher,
                application::settings::SettingsService& settingsService,
+               application::planner::PlannerService& plannerService,
                presentation::theme::ThemeManager& themeManager,
                application::events::ApplicationEventHub& eventHub,
                application::notifications::INotificationRepository& notificationRepository,
@@ -209,6 +212,7 @@ private:
     application::overview::OverviewStateComposer* m_overviewComposer = nullptr;
     application::commands::CommandRegistry* m_commandRegistry = nullptr;
     devhub::presentation::overview::OverviewPage* m_overviewPage = nullptr;
+    devhub::presentation::overview::planner::PlannerController* m_plannerController = nullptr;
     devhub::presentation::commands::CommandPaletteDialog* m_commandPalette = nullptr;
     application::commands::CachedSearchProvider* m_workspaceSearchProvider = nullptr;
     application::commands::CachedSearchProvider* m_servicesSearchProvider = nullptr;

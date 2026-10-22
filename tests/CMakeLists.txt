@@ -220,6 +220,20 @@ set_tests_properties(devhub.planner PROPERTIES
     TIMEOUT 45
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}")
+
+qt_add_executable(devhub_planner_ui_tests
+    planner_ui_test.cpp
+    ../src/presentation/overview/planner/PlannerController.cpp
+    ../src/presentation/overview/planner/PlannerTaskModel.cpp
+    ../resources/database_migrations.qrc
+)
+target_link_libraries(devhub_planner_ui_tests PRIVATE
+    devhub_planner devhub_workspaces devhub_settings Qt6::Core Qt6::Qml Qt6::Sql Qt6::Test project_options project_warnings)
+add_test(NAME devhub.planner-ui COMMAND devhub_planner_ui_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/planner-ui-tests.txt,txt")
+set_tests_properties(devhub.planner-ui PROPERTIES TIMEOUT 60
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}")
 set_tests_properties(devhub.database-migrations PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}"

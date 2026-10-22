@@ -22,6 +22,7 @@
 #include "../../application/assistant/AssistantToolRuntime.h"
 #include "../files/FileBrowserPage.h"
 #include "../overview/OverviewPage.h"
+#include "../overview/planner/PlannerController.h"
 #include "../commands/CommandPaletteDialog.h"
 #include "../settings/SettingsWindow.h"
 #include "../notifications/NotificationCenterDialog.h"
@@ -143,6 +144,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
                        application::files::ITrashService& trashService,
                        application::files::IExternalEditorLauncher& editorLauncher,
                        application::settings::SettingsService& settingsService,
+                       application::planner::PlannerService& plannerService,
                        presentation::theme::ThemeManager& themeManager,
                        application::events::ApplicationEventHub& eventHub,
                        application::notifications::INotificationRepository& notificationRepository,
@@ -439,6 +441,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     m_pageHost->setObjectName(QStringLiteral("mainPageHost"));
     m_overviewComposer = new application::overview::OverviewStateComposer(this);
     m_overviewPage = new devhub::presentation::overview::OverviewPage(*m_commandRegistry, m_pageHost);
+    m_plannerController = new devhub::presentation::overview::planner::PlannerController(
+        plannerService, m_settingsService, m_workspaceContext, this);
     m_pageHost->addWidget(m_overviewPage);
     auto* gitPage = new devhub::presentation::git::GitPage(m_scheduler, m_pageHost, &m_settingsService);
     m_pageHost->addWidget(gitPage);
@@ -800,6 +804,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             this, &MainWindow::updateSessionPage);
     connect(&m_session, &application::authentication::SessionController::stateChanged, this,
             [this](application::authentication::SessionState state) {
+                using State = application::authentication::SessionState;
+                m_plannerController->setSessionAllowed(state == State::SignedIn);
                 if (state == application::authentication::SessionState::Locking && m_notesPage)
                     (void)m_notesPage->flushPendingSave();
             });
@@ -900,6 +906,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     quickView->rootContext()->setContextProperty(QStringLiteral("shellController"), this);
     quickView->rootContext()->setContextProperty(QStringLiteral("workspaceModel"), m_workspaceModel);
     quickView->rootContext()->setContextProperty(QStringLiteral("themeController"), &m_themeManager);
+    quickView->rootContext()->setContextProperty(QStringLiteral("plannerController"), m_plannerController);
     quickView->setSource(QUrl(QStringLiteral("qrc:/qt/qml/DevHub/MainShell.qml")));
     m_quickShell = QWidget::createWindowContainer(quickView, m_rootPages);
     m_quickShell->setObjectName(QStringLiteral("quickMainShell"));

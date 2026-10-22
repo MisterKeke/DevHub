@@ -325,6 +325,8 @@ add_executable(devhub WIN32
     src/presentation/assistant/AssistantPage.cpp
     src/presentation/shell/MainWindow.cpp
     src/presentation/overview/OverviewPage.cpp
+    src/presentation/overview/planner/PlannerTaskModel.cpp
+    src/presentation/overview/planner/PlannerController.cpp
     src/presentation/commands/CommandPaletteDialog.cpp
     src/presentation/settings/SettingsWindow.cpp
     src/presentation/settings/AssistantSettingsPanel.cpp
@@ -391,6 +393,7 @@ target_link_libraries(devhub PRIVATE
 set_source_files_properties(
     resources/qml/Authentication.qml PROPERTIES QT_RESOURCE_ALIAS Authentication.qml)
 set_source_files_properties(resources/qml/MainShell.qml PROPERTIES QT_RESOURCE_ALIAS MainShell.qml)
+set_source_files_properties(resources/qml/PlannerPanel.qml PROPERTIES QT_RESOURCE_ALIAS PlannerPanel.qml)
 set_source_files_properties(resources/qml/Theme.qml PROPERTIES
     QT_RESOURCE_ALIAS Theme.qml QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(resources/qml/BrandMark.qml PROPERTIES QT_RESOURCE_ALIAS BrandMark.qml)
@@ -406,6 +409,7 @@ qt_add_qml_module(devhub
     QML_FILES
         resources/qml/Authentication.qml
         resources/qml/MainShell.qml
+        resources/qml/PlannerPanel.qml
         resources/qml/Theme.qml
         resources/qml/BrandMark.qml
         resources/qml/DarkField.qml

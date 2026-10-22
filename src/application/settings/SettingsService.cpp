@@ -30,6 +30,8 @@ SettingsService::SettingsService(ISettingsRepository& repository) : m_repository
     m_descriptors = {
         boolean(QStringLiteral("general/restoreLastPage"), QStringLiteral("Reopen the last page at startup"), QStringLiteral("General"), true),
         boolean(QStringLiteral("general/restoreWindowGeometry"), QStringLiteral("Restore window size and position"), QStringLiteral("General"), true),
+        boolean(QStringLiteral("planner/collapsed"), QStringLiteral("Collapse Workspace Planner"), QStringLiteral("Workspace Planner"), false),
+        string(QStringLiteral("planner/view"), QStringLiteral("Workspace Planner view"), QStringLiteral("Workspace Planner"), QStringLiteral("board")),
         integer(QStringLiteral("security/inactivityTimeoutMinutes"), QStringLiteral("Inactivity lock timeout (minutes)"), QStringLiteral("Account and Security"), 15, 1, 240, SettingScope::Global, true),
         boolean(QStringLiteral("security/keepSessionDefault"), QStringLiteral("Keep session signed in by default"), QStringLiteral("Account and Security"), false, SettingScope::Global, true),
         boolean(QStringLiteral("appearance/reducedMotion"), QStringLiteral("Reduce motion"), QStringLiteral("Appearance"), false),
@@ -96,6 +98,13 @@ SettingsService::SettingsService(ISettingsRepository& repository) : m_repository
         };
     for (auto& item : m_descriptors) if (item.id == QStringLiteral("workspaces/scanLimitMs"))
         item.scope = SettingScope::Workspace;
+    for (auto& item : m_descriptors) if (item.id == QStringLiteral("planner/collapsed")
+        || item.id == QStringLiteral("planner/view")) item.scope = SettingScope::Workspace;
+    for (auto& item : m_descriptors) if (item.id == QStringLiteral("planner/view"))
+        item.validate = [](const QVariant& value) {
+            return value.metaType().id() == QMetaType::QString
+                && QStringList{QStringLiteral("board"), QStringLiteral("list"), QStringLiteral("calendar")}.contains(value.toString());
+        };
     for (auto& item : m_descriptors) if (item.id == QStringLiteral("assistant/somethingQtWorkspaceTag")
         || item.id == QStringLiteral("assistant/somethingQtRestrictWorkspaceTag"))
         item.scope = SettingScope::Workspace;

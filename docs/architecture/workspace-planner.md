@@ -1,15 +1,14 @@
 # Workspace Planner architecture
 
-**Status:** Phase 1 backend implemented · **Reviewed:** 2026-10-22
-**Scope:** Architecture, local Planner storage and services. Overview UI and SomethingQt import are future work.
+**Status:** Phases 1 and 2 implemented · **Reviewed:** 2026-10-22
+**Scope:** Local Planner storage, services, and embedded Overview UI. SomethingQt import is Phase 3.
 
 ## 1. Feature scope and non-goals
 
 Workspace Planner is a local, workspace-owned task manager stored in DevHub's internal SQLite
-database. DevHub-created and SomethingQt-imported tasks use one local task model and the same CRUD
-rules. The planned experience has a summary, Kanban board, list and calendar views, task editing,
-SomethingQt import, and later development metadata: branch and GitHub links, dependencies,
-milestones and time entries.
+database. The embedded Overview panel provides a summary, Kanban board, list and calendar views,
+task editing, and development metadata. SomethingQt import is planned for Phase 3; no source import
+or synchronization is part of the current implementation.
 
 The Planner belongs directly on the existing Overview, after the “Workspace Overview” heading and
 before the existing Git, Services, Ports, Logs, Database and Notes cards. It can collapse and
@@ -35,12 +34,10 @@ gets card data from `MainWindow::overviewSections()`, which adapts an
 selecting Overview returns to the QML shell. Thus the visible Overview is QML, not
 `OverviewPage`.
 
-The Planner should be rendered by a QML panel inserted in the existing `MainShell.qml` Overview
-column between the heading row and the current `GridLayout`. Keep the card grid and its six
-sections in place. A standalone `WorkspacePlannerPanel.qml` is a useful component, but it is a
-child of the Overview, not a page or navigable module. It should use the existing shell's
-`Flickable` for vertical scrolling and the semantic colors and sizing exposed by
-`themeController`.
+The Planner is rendered by `resources/qml/PlannerPanel.qml`, inserted in the existing
+`MainShell.qml` Overview column between the heading row and the current `GridLayout`. The six
+existing cards remain below it. The panel is an Overview child, not a page or navigable module, and
+uses the shell's vertical `Flickable` and semantic colors exposed by `themeController`.
 
 The Widgets `OverviewPage` constructs its six card frames once, updates their values from
 `setSnapshot()`, and rebuilds only the responsive grid when its width crosses the 700- and
@@ -230,23 +227,18 @@ the authorization for import; the user explicitly starts import from the Planner
 
 ## 6. UI integration strategy
 
-In `MainShell.qml`, place a `WorkspacePlannerPanel` directly after the heading/status row and before
-the existing card `GridLayout`. Use a titled panel with a collapse/expand control. Expanded state
-contains a compact summary and board/list/calendar selector, task controls and the source import
-action. Keep the existing card model and grid below it; the parent `Flickable` will grow with the
-Planner's implicit height and continue scrolling the full Overview.
+`PlannerPanel` is placed after the Overview heading and before the existing card `GridLayout`. It
+provides collapse/expand, summary, board/list/calendar views, filters, task editing and an explicit
+status selector.
 
-Expose `WorkspacePlannerController` and a GUI-thread `PlannerTaskListModel` to QML. The controller
-owns only presentation state, workspace binding and async command dispatch. List roles should carry
-task IDs, local revision, title, status, due date, priority, tags and a summary of subtasks; opening
-the editor fetches a complete DTO. Board drag/drop calls a status/order command. List and calendar
-are projections of the same filtered workspace task snapshot. Task edits and status changes use
-the local revision for optimistic conflict detection. Import preview/result shows source, total,
-new, duplicate, failed and cancelled counts without placing task content in diagnostics.
+`PlannerController` and `PlannerTaskModel` are exposed beside `shellController`; the controller
+binds to the active workspace and uses `PlannerService` for CRUD. List roles back virtualized QML
+views. Status and ordering changes persist through service calls. Board drag-and-drop is deferred;
+accessible up/down controls change order explicitly.
 
-Do not let QML open SQL connections or perform filesystem/database work. Keep `Text` rendering
-plain text for task content; validate external URLs before offering a link action. Use semantic
-palette properties from `themeController`, not a second color system.
+The import button remains disabled with a Phase 3 explanation. QML does not open SQL connections;
+task content is plain text and URLs are validated by the service. Theme colors come from
+`themeController`.
 
 ## 7. Workspace and account isolation
 
@@ -256,14 +248,10 @@ or foreign-account workspaces for writes. The primary key is local and global, w
 summary, board, calendar, tag and import-dedup queries are workspace filtered. Composite
 workspace foreign keys enforce same-workspace links.
 
-On workspace change, increment the Planner generation, cancel jobs using the old
-`WorkspaceContext` token, clear the prior model immediately and ignore any late completion whose
-workspace ID/generation no longer matches. On archive, use the existing scheduler block/cancel
-path before persisting the archive flag; do not delete task data. On lock/sign-out/account change,
-disable Planner actions, cancel import and CRUD jobs, close/clear the editor and cache, and publish
-only results that still match the active session generation. If task connections are independent
-worker connections, cancellation must be checked before each write/commit so a session transition
-cannot publish or continue a stale operation.
+On workspace change, clear the previous task model before loading the new workspace. Current
+Planner service calls are synchronous on the database owner's thread, so no stale read completion
+can publish after a switch. Archive retains task rows with the workspace registration. On
+lock/sign-out, clear the in-memory task model; the locked-session page hides Planner content.
 
 ## 8. Threading and concurrency strategy
 
@@ -272,13 +260,11 @@ threads. `InternalDatabaseManager::database()` is valid only on its owning threa
 Overview and service repositories use that main-thread connection. Moving it to `TaskScheduler`
 workers would violate Qt SQL affinity.
 
-The Phase 1 `SqlPlannerRepository` is synchronous and checks that each operation runs on
-`InternalDatabaseManager`'s owning thread. This matches current repository conventions and avoids
-passing a Qt SQL connection into a worker. There is no Planner UI in this phase, so no background
-job is started. When a UI/controller is added, use `TaskScheduler` with a workspace ID, generation
-and cancellation token, and open a separate uniquely named database connection inside each worker
-thread. Return detached task values; mutate model and QML state only in the GUI-thread completion.
-Keep write transactions short and handle busy errors.
+The `SqlPlannerRepository` checks that each operation runs on `InternalDatabaseManager`'s owning
+thread. `PlannerController` currently uses synchronous service calls on that thread. Workspace
+switches clear and reload the model in order, so there are no queued Planner reads to invalidate.
+If workloads make Planner operations slow, move them to `TaskScheduler` with a separate, uniquely
+named database connection opened in each worker thread and return detached task values.
 
 For a large import, preview the source count and stream rows into bounded batches rather than
 loading all tasks into memory. Commit completed batches; check cancellation between source rows and
@@ -369,11 +355,13 @@ Still needed in later phases:
    milestone values, validation and status rules, account/workspace-scoped SQLite repository,
    application service, optimistic task/milestone revisions, relations, filtering/search/sorting/
    pagination, and SQLite-backed tests. No UI or importer was added.
-2. **Phase 2 — Overview UI and import:** add the controller/model and collapsible QML panel to the
-   visible Overview, then the independent read-only SomethingQt import flow with schema validation,
-   new local IDs, source provenance, duplicate detection, preview, progress, cancellation and
-   resumable batches. Do not modify SomethingQt or synchronize writes back to it.
-3. **Later hardening:** add detailed time entries if needed, and cover UI lifecycle, accessibility,
+2. **Phase 2 — Overview UI (implemented):** add the controller/model and collapsible QML panel to
+   the visible Overview, with board/list/calendar, task editing, filters and persistent ordering.
+   Drag-and-drop remains deferred in favor of explicit persisted status/order controls.
+3. **Phase 3 — SomethingQt import:** add the independent read-only import flow with schema
+   validation, new local IDs, source provenance, duplicate detection, preview, progress,
+   cancellation and resumable batches. Do not modify SomethingQt or synchronize writes back to it.
+4. **Later hardening:** add detailed time entries if needed, and cover accessibility,
    account/session changes, migration recovery, larger imports and responsive Overview layouts.
 
 ## 14. Overall product acceptance criteria
@@ -387,24 +375,25 @@ Still needed in later phases:
   repeatable after cancellation.
 - Every task and relation is scoped to one workspace and the active account; switching, archiving,
   locking and signing out do not leak stale task content or allow stale UI updates.
-- CRUD/import is asynchronous from the UI, SQL connections stay on their creating threads, and
-  failures/conflicts have actionable user-visible handling.
+- CRUD calls stay on the database owner's thread, and validation/conflict failures have user-visible
+  handling. Import remains a Phase 3 concern.
 - Summary, Kanban, list and calendar are projections of the same persisted task records; existing
   Overview cards remain unchanged below the Planner.
 - Migrations are additive, transactional and rollback-safe, and documented implementation tests
   cover isolation, ownership, compatibility, cancellation and UI integration.
 
-## Phase 1 completion and Phase 2 handoff
+## Phase 2 completion and Phase 3 handoff
 
 The current app uses a Qt Quick main shell, Widgets feature pages in a secondary dialog, an
 account-scoped internal QSQLITE database with immutable embedded migrations, a cooperative
-`TaskScheduler`, and workspace-aware cancellation/archive lifecycle. Workspace Planner should
-enter the visible Overview as a QML child panel, with C++ application services and models exposed
-through the existing shell; it should not enter `CurrentPageStack` or replace the six cards.
+`TaskScheduler`, and workspace-aware cancellation/archive lifecycle. Workspace Planner now appears
+in the visible Overview as a QML child panel, with C++ application services and models exposed
+through the existing shell; it does not enter `CurrentPageStack` or replace the six cards.
 
-Phase 1 added only the backend scope: local domain models and validation, migration 0009, account
-and workspace-scoped CRUD, task/subtask/tag/milestone/dependency operations, filtering/search/
-sorting/pagination, completion rules, optimistic revisions and temporary-SQLite tests. UI, async
-controller/model integration and SomethingQt import remain for Phase 2. Actual tracked time is a
-task total; optional detailed time entries remain unimplemented. GitHub links currently accept
-HTTPS github.com URLs, while Git branch references are stored as metadata without Git actions.
+Phase 1 supplies local models and validation, migration 0009, account/workspace-scoped CRUD,
+relations, filtering, sorting, pagination, completion rules, optimistic revisions and SQLite tests.
+Phase 2 adds the embedded Planner panel, virtualized models, workspace-scoped view/collapse
+settings, and controller tests. Service calls currently run synchronously on the database owner's
+thread. Actual tracked time is a task total; detailed time entries remain unimplemented. GitHub
+links accept HTTPS github.com URLs, while Git branch references are stored as metadata. Phase 3
+import remains unimplemented.

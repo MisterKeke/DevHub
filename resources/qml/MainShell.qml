@@ -135,9 +135,10 @@ Rectangle {
                     Layout.fillWidth: true
                     visible: shellController.workspaceActionMessage.length > 0
                     text: shellController.workspaceActionMessage
-                    color: shellController.workspaceActionTone === "error" ? root.error
-                        : shellController.workspaceActionTone === "success" ? root.success : root.info
-                    font.pixelSize: 10; wrapMode: Text.WordWrap
+                    color: (shellController.workspaceActionTone === "error") ? root.error
+                        : (shellController.workspaceActionTone === "success") ? root.success : root.info
+                    font.pixelSize: 10
+                    wrapMode: Text.WordWrap
                 }
                 ShellButton {
                     Layout.fillWidth: true
@@ -260,6 +261,11 @@ Rectangle {
                                 Text { id: workspaceState; text: shellController.shellWorkspaceId.length > 0 ? qsTr("Workspace active") : qsTr("No workspace selected"); color: root.secondary; font.pixelSize: 10 }
                             }
                         }
+                    }
+                    PlannerPanel {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 24
+                        Layout.rightMargin: 24
                     }
                     GridLayout {
                         Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24; Layout.bottomMargin: 24
