@@ -10,5 +10,6 @@
         <file alias="0008_workspace_archiving.sql">database/migrations/0008_workspace_archiving.sql</file>
         <file alias="0009_workspace_planner.sql">database/migrations/0009_workspace_planner.sql</file>
         <file alias="0010_planner_import_copies.sql">database/migrations/0010_planner_import_copies.sql</file>
+        <file alias="0011_planner_time_entries_and_indexes.sql">database/migrations/0011_planner_time_entries_and_indexes.sql</file>
     </qresource>
 </RCC>

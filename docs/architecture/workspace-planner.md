@@ -1,7 +1,7 @@
 # Workspace Planner architecture
 
-**Status:** Phases 1–3 implemented · **Reviewed:** 2026-10-22
-**Scope:** Local Planner storage, embedded Overview UI, and independent SomethingQt task import.
+**Status:** Phases 1–4 implemented · **Reviewed:** 2026-10-23
+**Scope:** Local Planner storage, embedded Overview UI, independent SomethingQt task import, and developer planning metadata.
 
 ## 1. Feature scope and non-goals
 
@@ -141,8 +141,10 @@ All workspace-owned rows cascade only when the workspace row is permanently dele
 continues to set `archived_at_utc`, preserving task data for restore. Repository queries and
 mutations additionally scope through the signed-in account. DevHub task UUIDs come from the
 existing `IIdGenerator`; SomethingQt IDs are never primary keys. User text is not truncated.
-`due_date` and `start_date` use `YYYY-MM-DD`. Actual tracked minutes are stored as an editable
-total; detailed `planner_time_entries` are not part of this phase.
+`due_date` and `start_date` use `YYYY-MM-DD`. Actual tracked minutes are the aggregate of manual
+time entries; users edit the history rather than changing the aggregate directly. Migration 0011
+adds `planner_time_entries` and indexes for time history, branch, origin, milestone, due-date and
+priority filters.
 
 Dependency insertion checks the graph and inserts inside one SQL transaction. Removing a
 milestone clears task references and removes the milestone in one transaction. Local task updates
@@ -240,6 +242,28 @@ destination workspace selection, explicit duplicate-copy confirmation, progress 
 QML does not open SQL connections. Source reading is asynchronous; each target task is committed
 atomically on the database owner's thread after rechecking session and workspace authorization.
 
+### Phase 4 developer planning controls
+
+The task editor keeps Planner notes separate from the original task description and supports
+existing local Git branch associations, estimates, milestone assignment, GitHub Issue/PR URLs,
+subtasks and dependency edits. Branch names are read asynchronously through the existing
+`GitService` and `TaskScheduler`. Opening a branch selects it in the existing Git module; it never
+checks out or creates a branch. A deleted association remains visible as missing and can be removed.
+GitHub links accept only HTTPS `github.com/<owner>/<repo>/issues/<number>` or `/pull/<number>` paths,
+and open only after the user chooses the corresponding button.
+
+Milestones support workspace-scoped create, edit, completion and deletion. Progress is calculated
+from associated task completion in SQLite so it is not distorted by active task filters.
+Dependency details include prerequisites and dependent tasks; incomplete prerequisites set the
+blocked indicator, and the repository rejects self-links, cycles, missing tasks and cross-workspace
+links. SQL filters cover milestone, branch, blocked state, overdue state, local/imported origin,
+status, priority, completion, tags and search.
+
+Manual time entries store duration, optional note and UTC record time. Adding or removing an entry
+updates the task's tracked-minute aggregate and revision transactionally. History survives restart.
+An active timer is deferred because Phase 4 requires safe monotonic timing, shutdown and crash
+recovery semantics; no timer is presented in the UI.
+
 ## 7. Workspace and account isolation
 
 Every application request, query and controller state carries an explicit active workspace ID.
@@ -305,11 +329,13 @@ Use the existing Qt Test and CTest conventions, including temporary SQLite datab
 `devhub_planner_tests`, `devhub_database_tests`, `devhub_somethingqt_import_tests`, and the existing
 `devhub_something_tasks_reader_tests` includes:
 
-- fresh migration to schema 10, v9 provenance upgrade, and foreign-key integrity;
+- fresh migration to schema 11, v9 provenance upgrade, and foreign-key integrity;
 - workspace/account isolation and archive/restore retention;
 - CRUD, Unicode and a large description, tag replacement, subtask ordering, search and pagination;
 - completion/status transitions, board ordering, revision conflicts and stale workspace reads;
-- milestones, dependency cycles, self/cross-workspace dependency rejection;
+- milestone CRUD/progress, dependency cycles, self/cross-workspace dependency rejection, and blocked-state changes;
+- Git branch metadata and deleted-branch display, GitHub URL validation, manual time-entry history and restart persistence;
+- SQL filters for branch, milestone, blocked, overdue, origin, status and priority;
 - failed target transaction rollback, independent imported copies, 64-bit source IDs/revisions,
   long descriptions, 75 subtasks, Unicode tags, live WAL reads, source deletion independence and
   task-boundary cancellation;
@@ -351,8 +377,10 @@ Use the existing Qt Test and CTest conventions, including temporary SQLite datab
    reader, paged filtering, complete task previews, workspace-scoped duplicate detection, explicit
    independent copies, per-task atomic writes and cancellation at task boundaries. No source writes
    or synchronization are performed.
-4. **Later hardening:** add detailed time entries if needed, and cover accessibility,
-   account/session changes, migration recovery, larger imports and responsive Overview layouts.
+4. **Phase 4 — developer planning features (implemented):** migration 0011, reusable Git branch
+   lookup and safe Git navigation, validated GitHub links, milestone progress and management,
+   dependency detail/blocking, manual time-entry history, separate Planner notes and SQL metadata
+   filters. Active timers remain deferred.
 
 ## 14. Overall product acceptance criteria
 
@@ -372,7 +400,9 @@ Use the existing Qt Test and CTest conventions, including temporary SQLite datab
 - Migrations are additive, transactional and rollback-safe, and documented implementation tests
   cover isolation, ownership, compatibility, cancellation and UI integration.
 
-## Phase 3 completion
+## Phase 3 completion (historical)
+
+This section records the state at the end of Phase 3; Phase 4 implementation follows below.
 
 The current app uses a Qt Quick main shell, Widgets feature pages in a secondary dialog, an
 account-scoped internal QSQLITE database with immutable embedded migrations, a cooperative
@@ -384,8 +414,32 @@ Phase 1 supplies local models and validation, migration 0009, account/workspace-
 relations, filtering, sorting, pagination, completion rules, optimistic revisions and SQLite tests.
 Phase 2 adds the embedded Planner panel, virtualized models, workspace-scoped view/collapse
 settings, and controller tests. Service calls currently run synchronously on the database owner's
-thread. Actual tracked time is a task total; detailed time entries remain unimplemented. GitHub
-links accept HTTPS github.com URLs, while Git branch references are stored as metadata. The
-SomethingQt importer is an independent copy operation. Source tag IDs are not retained, and moving
+thread. At that point actual tracked time was a task total and branch references were free-form
+metadata. The SomethingQt importer is an independent copy operation. Source tag IDs are not retained, and moving
 a source file changes its hashed profile identity. Batch writes are atomic per task, so cancellation
 or a later target failure leaves earlier completed task copies available.
+
+## Phase 4 completion
+
+Migration 0011 adds manual time-entry history with task/workspace foreign keys and query indexes.
+Branch selection reads local branches through `GitService`; opening an association highlights the
+branch in the existing Git module without checkout. Missing branches remain visible. GitHub link
+validation distinguishes Issue and Pull Request paths and only opens supported HTTPS GitHub URLs
+after an explicit action.
+
+Milestones now have full create/edit/delete/status UI and database-calculated progress. Dependency
+details show prerequisites and dependent tasks; blocked state updates as prerequisites complete.
+Manual time entries update tracked totals transactionally and survive application restart. Planner
+notes remain separate from descriptions, including on imported SomethingQt tasks. SQLite filtering
+now covers milestone, branch, blocked, overdue, origin, status, priority, completion, tags and search.
+
+No active timer was added. A running timer would need defined shutdown and crash recovery behavior;
+Phase 4 delivers manual entries and persistent history without counting unobserved time.
+
+Verification on 2026-10-23: the Debug build completed all 423 Ninja steps. The focused CTest run
+passed all five targets: `devhub.database-migrations`, `devhub.planner`, `devhub.planner-ui`,
+`devhub.somethingqt-import`, and `devhub.qml-runtime`. The full 26-target suite passed 24 targets
+with temporary files redirected into the build tree. The remaining broad Git integration target
+`devhub.feature-regressions` could not complete in this environment: sandboxed Git for Windows
+reported `NtCreateDirectoryObject` access denied during local push fixtures, and its elevated rerun
+timed out at 90 seconds. `devhub.assistant-tool-runtime` passed when rerun elevated.

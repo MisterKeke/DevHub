@@ -32,7 +32,7 @@ class PlannerTest final : public QObject
         QVERIFY2(opened, opened ? "" : qPrintable(opened.error().technicalMessage));
         const auto migrated = m_database->migrate();
         QVERIFY2(migrated, migrated ? "" : qPrintable(migrated.error().technicalMessage));
-        QCOMPARE(m_database->currentSchemaVersion(), 10);
+        QCOMPARE(m_database->currentSchemaVersion(), 11);
         QSqlQuery query(m_database->database());
         QVERIFY(query.exec(
             QStringLiteral(
@@ -76,9 +76,9 @@ class PlannerTest final : public QObject
         QVERIFY(query.exec(QStringLiteral(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN "
             "('planner_tasks','planner_tags','planner_task_tags','planner_subtasks','planner_"
-            "milestones','planner_task_dependencies','planner_import_records')")));
+            "milestones','planner_task_dependencies','planner_import_records','planner_time_entries')")));
         QVERIFY(query.next());
-        QCOMPARE(query.value(0).toInt(), 7);
+        QCOMPARE(query.value(0).toInt(), 8);
         QVERIFY(query.exec(QStringLiteral("PRAGMA foreign_key_check")));
         QVERIFY(!query.next());
         QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM sqlite_master WHERE type='index' "
@@ -258,6 +258,149 @@ class PlannerTest final : public QObject
         QVERIFY(dependencies.value().dependencyIds.isEmpty());
     }
 
+    void timeEntriesMilestoneProgressAndDevelopmentFiltersSurviveRestart()
+    {
+        domain::planner::PlannerMilestone milestoneDraft;
+        milestoneDraft.title = QStringLiteral("Phase 4 delivery");
+        milestoneDraft.description = QStringLiteral("Developer planning metadata");
+        milestoneDraft.dueDate = QDate::currentDate().addDays(14);
+        const auto milestone = m_service->createMilestone(m_workspaceA, milestoneDraft);
+        QVERIFY(milestone);
+
+        domain::planner::PlannerTask prerequisiteDraft;
+        prerequisiteDraft.title = QStringLiteral("Branch work");
+        prerequisiteDraft.dueDate = QDate::currentDate().addDays(-1);
+        prerequisiteDraft.gitBranch = QStringLiteral("feature/phase-four");
+        prerequisiteDraft.milestoneId = milestone.value().id;
+        prerequisiteDraft.notes = QStringLiteral("Planner-only notes");
+        const auto prerequisite = m_service->createTask(m_workspaceA, prerequisiteDraft);
+        QVERIFY(prerequisite);
+
+        domain::planner::PlannerTask dependentDraft;
+        dependentDraft.title = QStringLiteral("Imported dependent");
+        dependentDraft.priority = QStringLiteral("high");
+        dependentDraft.sourceType = QStringLiteral("somethingqt");
+        dependentDraft.sourceProfileIdentity = QStringLiteral("source-profile");
+        dependentDraft.sourceTaskId = QStringLiteral("9007199254740995");
+        dependentDraft.milestoneId = milestone.value().id;
+        const auto dependent = m_service->createTask(m_workspaceA, dependentDraft);
+        QVERIFY(dependent);
+        QVERIFY(m_service->addDependency(m_workspaceA, dependent.value().id,
+                                         prerequisite.value().id, dependent.value().revision));
+
+        auto blocked = m_service->getTask(m_workspaceA, dependent.value().id);
+        QVERIFY(blocked);
+        QVERIFY(blocked.value().blockedByDependency);
+        QCOMPARE(blocked.value().incompletePrerequisiteTitles, QStringList{QStringLiteral("Branch work")});
+        QCOMPARE(blocked.value().prerequisiteTitles, QStringList{QStringLiteral("Branch work")});
+        QCOMPARE(m_service->getTask(m_workspaceA, prerequisite.value().id).value().dependentTaskTitles,
+                 QStringList{QStringLiteral("Imported dependent")});
+
+        auto addFirst = m_service->addTimeEntry(m_workspaceA, prerequisite.value().id, 35,
+                                                QStringLiteral("Investigated branch"), 1);
+        QVERIFY(addFirst);
+        QVERIFY(m_service->addTimeEntry(m_workspaceA, prerequisite.value().id, 10,
+                                        QStringLiteral("Fixed tests"), 2));
+        auto timed = m_service->getTask(m_workspaceA, prerequisite.value().id);
+        QVERIFY(timed);
+        QCOMPARE(timed.value().actualTrackedMinutes, qint64(45));
+        auto entries = m_service->listTimeEntries(m_workspaceA, prerequisite.value().id);
+        QVERIFY(entries);
+        QCOMPARE(entries.value().size(), 2);
+        QString entry35Id;
+        bool foundTen = false;
+        for (const auto& entry : entries.value()) {
+            if (entry.durationMinutes == 35) entry35Id = entry.id;
+            if (entry.durationMinutes == 10) foundTen = true;
+        }
+        QVERIFY(!entry35Id.isEmpty());
+        QVERIFY(foundTen);
+
+        domain::planner::PlannerTaskFilter filter;
+        filter.blocked = true;
+        auto filtered = m_service->listTasks(m_workspaceA, filter);
+        QVERIFY(filtered);
+        QCOMPARE(filtered.value().size(), 1);
+        QCOMPARE(filtered.value().first().id, dependent.value().id);
+        filter.blocked = false;
+        filtered = m_service->listTasks(m_workspaceA, filter);
+        QVERIFY(filtered);
+        QCOMPARE(filtered.value().size(), 1);
+        QCOMPARE(filtered.value().first().id, prerequisite.value().id);
+        filter.blocked.reset();
+        filter.gitBranch = QStringLiteral("feature/phase-four");
+        filtered = m_service->listTasks(m_workspaceA, filter);
+        QVERIFY(filtered);
+        QCOMPARE(filtered.value().size(), 1);
+        filter.gitBranch.clear();
+        filter.milestoneId = milestone.value().id;
+        filtered = m_service->listTasks(m_workspaceA, filter);
+        QVERIFY(filtered);
+        QCOMPARE(filtered.value().size(), 2);
+        filter.milestoneId.clear();
+        filter.overdue = true;
+        filtered = m_service->listTasks(m_workspaceA, filter);
+        QVERIFY(filtered);
+        QCOMPARE(filtered.value().size(), 1);
+        QCOMPARE(filtered.value().first().id, prerequisite.value().id);
+        filter.overdue.reset();
+        filter.sourceType = QStringLiteral("somethingqt");
+        filtered = m_service->listTasks(m_workspaceA, filter);
+        QVERIFY(filtered);
+        QCOMPARE(filtered.value().size(), 1);
+        QCOMPARE(filtered.value().first().id, dependent.value().id);
+        filter.sourceType.clear();
+        filter.priority = QStringLiteral("high");
+        filtered = m_service->listTasks(m_workspaceA, filter);
+        QVERIFY(filtered);
+        QCOMPARE(filtered.value().size(), 1);
+        QCOMPARE(filtered.value().first().id, dependent.value().id);
+
+        auto milestoneRows = m_service->listMilestones(m_workspaceA);
+        QVERIFY(milestoneRows);
+        QCOMPARE(milestoneRows.value().first().taskCount, 2);
+        QCOMPARE(milestoneRows.value().first().completedTaskCount, 0);
+
+        const QString databasePath = m_database->databaseFilePath();
+        m_service.reset();
+        m_repository.reset();
+        QVERIFY(m_database->close());
+        m_database.reset(new infrastructure::database::InternalDatabaseManager(
+            databasePath, m_temporary->filePath(QStringLiteral("backups"))));
+        QVERIFY(m_database->open());
+        QVERIFY(m_database->migrate());
+        auto account = domain::account::AccountId::fromString(m_accountId);
+        QVERIFY(account);
+        m_repository = std::make_unique<infrastructure::planner::SqlPlannerRepository>(
+            *m_database, std::move(account).value());
+        m_service = std::make_unique<application::planner::PlannerService>(
+            *m_repository, m_validation, m_ids, m_clock);
+        timed = m_service->getTask(m_workspaceA, prerequisite.value().id);
+        QVERIFY(timed);
+        QCOMPARE(timed.value().actualTrackedMinutes, qint64(45));
+        QCOMPARE(m_service->listTimeEntries(m_workspaceA, prerequisite.value().id).value().size(), 2);
+
+        auto done = m_service->setCompleted(m_workspaceA, prerequisite.value().id,
+                                            timed.value().revision, true);
+        QVERIFY(done);
+        milestoneRows = m_service->listMilestones(m_workspaceA);
+        QVERIFY(milestoneRows);
+        QCOMPARE(milestoneRows.value().first().completedTaskCount, 1);
+        blocked = m_service->getTask(m_workspaceA, dependent.value().id);
+        QVERIFY(blocked);
+        QVERIFY(!blocked.value().blockedByDependency);
+        QVERIFY(m_service->removeTimeEntry(m_workspaceA, prerequisite.value().id,
+                                           entry35Id, done.value().revision));
+        timed = m_service->getTask(m_workspaceA, prerequisite.value().id);
+        QVERIFY(timed);
+        QCOMPARE(timed.value().actualTrackedMinutes, qint64(10));
+
+        QVERIFY(m_validation.validateGitHubIssueUrl(QStringLiteral("https://github.com/org/repo/issues/42")));
+        QVERIFY(!m_validation.validateGitHubIssueUrl(QStringLiteral("https://github.com/org/repo/pull/42")));
+        QVERIFY(m_validation.validateGitHubPullRequestUrl(QStringLiteral("https://github.com/org/repo/pull/42")));
+        QVERIFY(!m_validation.validateGitHubUrl(QStringLiteral("http://github.com/org/repo/issues/42")));
+    }
+
     void importProvenanceKeepsWideIdentifiersAndArchiveRetainsData()
     {
         domain::planner::PlannerTask imported;
@@ -323,7 +466,7 @@ class PlannerTest final : public QObject
         archive.addBindValue(m_workspaceA);
         archive.addBindValue(m_accountId);
         QVERIFY(archive.exec());
-        QCOMPARE(m_database->currentSchemaVersion(), 10);
+        QCOMPARE(m_database->currentSchemaVersion(), 11);
     }
 
     void importedTaskFailureRollsBackTaskTagsSubtasksAndProvenance()
@@ -387,12 +530,14 @@ class PlannerTest final : public QObject
         auto edited = imported.value();
         edited.title = QStringLiteral("Edited after source deletion");
         edited.description.append(QStringLiteral(" local"));
+        edited.notes = QStringLiteral("Separate Planner developer note");
         const auto localEdit = m_service->updateTask(edited, 1);
         QVERIFY(localEdit);
         const auto persistedCopy = m_service->getTask(m_workspaceA, imported.value().id);
         QVERIFY(persistedCopy);
         QCOMPARE(persistedCopy.value().title, QStringLiteral("Edited after source deletion"));
         QCOMPARE(persistedCopy.value().description, longDescription + QStringLiteral(" local"));
+        QCOMPARE(persistedCopy.value().notes, QStringLiteral("Separate Planner developer note"));
 
         QVERIFY(source.addTask(7002, QStringLiteral("Cancel boundary one")));
         QVERIFY(source.addTask(7003, QStringLiteral("Cancel boundary two")));

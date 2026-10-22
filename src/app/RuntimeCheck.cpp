@@ -129,6 +129,14 @@ class RuntimePlanner final : public QObject
     Q_PROPERTY(QString nearestDeadline MEMBER deadlineValue CONSTANT)
     Q_PROPERTY(QString selectedDate MEMBER selectedDateValue CONSTANT)
     Q_PROPERTY(QVariantList milestones MEMBER milestoneValues CONSTANT)
+    Q_PROPERTY(QVariantList branchOptions MEMBER branchOptionValues CONSTANT)
+    Q_PROPERTY(bool branchLoading MEMBER branchLoadingValue CONSTANT)
+    Q_PROPERTY(QString branchStatus MEMBER branchStatusValue CONSTANT)
+    Q_PROPERTY(QString milestoneFilter MEMBER milestoneFilterValue CONSTANT)
+    Q_PROPERTY(QString gitBranchFilter MEMBER gitBranchFilterValue CONSTANT)
+    Q_PROPERTY(int blockedFilter MEMBER blockedFilterValue CONSTANT)
+    Q_PROPERTY(int overdueFilter MEMBER overdueFilterValue CONSTANT)
+    Q_PROPERTY(QString originFilter MEMBER originFilterValue CONSTANT)
 public:
     RuntimePlanner()
     {
@@ -147,6 +155,14 @@ public:
     QString deadlineValue = QStringLiteral("No upcoming deadline");
     QString selectedDateValue;
     QVariantList milestoneValues;
+    QVariantList branchOptionValues;
+    bool branchLoadingValue = false;
+    QString branchStatusValue;
+    QString milestoneFilterValue;
+    QString gitBranchFilterValue;
+    int blockedFilterValue = -1;
+    int overdueFilterValue = -1;
+    QString originFilterValue;
     QStandardItemModel empty;
     QAbstractItemModel* tasks() { return &empty; }
     QAbstractItemModel* listModel() { return &empty; }
@@ -164,6 +180,11 @@ public:
     Q_INVOKABLE void setPriorityFilter(const QString&) {}
     Q_INVOKABLE void setCompletionFilter(int) {}
     Q_INVOKABLE void setTagFilter(const QString&) {}
+    Q_INVOKABLE void setMilestoneFilter(const QString&) {}
+    Q_INVOKABLE void setGitBranchFilter(const QString&) {}
+    Q_INVOKABLE void setBlockedFilter(int) {}
+    Q_INVOKABLE void setOverdueFilter(int) {}
+    Q_INVOKABLE void setOriginFilter(const QString&) {}
     Q_INVOKABLE void setSelectedDate(const QString&) {}
     Q_INVOKABLE void sortList(const QString&, bool) {}
     Q_INVOKABLE bool saveTask(const QVariantMap&) { return false; }
@@ -171,8 +192,19 @@ public:
     Q_INVOKABLE bool setTaskCompleted(const QString&, bool) { return false; }
     Q_INVOKABLE bool moveTask(const QString&, const QString&) { return false; }
     Q_INVOKABLE bool shiftTaskOrder(const QString&, int) { return false; }
+    Q_INVOKABLE QVariantList timeEntries(const QString&) const { return {}; }
+    Q_INVOKABLE bool addTimeEntry(const QString&, const QString&, const QString&) { return false; }
+    Q_INVOKABLE bool removeTimeEntry(const QString&, const QString&) { return false; }
+    Q_INVOKABLE bool removeMilestone(const QString&) { return false; }
+    Q_INVOKABLE bool saveMilestone(const QVariantMap&) { return false; }
+    Q_INVOKABLE bool branchExists(const QString&) const { return false; }
+    Q_INVOKABLE QVariantList branchOptionsForTask(const QString&) const { return {}; }
+    Q_INVOKABLE void openGitBranch(const QString&) {}
+    Q_INVOKABLE bool openGitHubUrl(const QString&) { return false; }
     Q_INVOKABLE bool createMilestone(const QString&, const QString&) { return false; }
     Q_INVOKABLE void clearError() {}
+signals:
+    void changed();
 };
 
 bool hasObjectName(QQuickItem* item, const QString& objectName)

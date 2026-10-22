@@ -19,7 +19,9 @@ public:
         BlockedReasonRole, SourceTypeRole, SourceProfileIdentityRole, SourceTaskIdRole,
         SourceRevisionRole, SourceCreatedAtRole, SourceUpdatedAtRole, ImportedAtRole,
         TagsRole, SubtasksRole, DependencyIdsRole, OverdueRole, SubtaskCountRole,
-        CompletedSubtaskCountRole, CreatedAtRole, UpdatedAtRole
+        CompletedSubtaskCountRole, CreatedAtRole, UpdatedAtRole, BlockedByDependencyRole,
+        IncompletePrerequisiteTitlesRole, DependentTaskIdsRole, PrerequisiteTitlesRole,
+        DependentTaskTitlesRole, BlockedRole
     };
     explicit PlannerTaskModel(QObject* parent = nullptr);
     int rowCount(const QModelIndex& parent = {}) const override;

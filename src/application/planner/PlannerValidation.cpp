@@ -2,6 +2,7 @@
 
 #include "../../domain/errors/AppError.h"
 
+#include <QRegularExpression>
 #include <QUrl>
 
 namespace devhub::application::planner
@@ -32,11 +33,35 @@ Result<void> PlannerValidation::validateGitHubUrl(const QString &value) const
     const QUrl url(value);
     if (!url.isValid() || url.scheme() != QStringLiteral("https") ||
         url.host().compare(QStringLiteral("github.com"), Qt::CaseInsensitive) != 0 ||
-        url.path().isEmpty() || !url.userInfo().isEmpty() || !url.fragment().isEmpty())
+        !url.userInfo().isEmpty() || (url.port(-1) != -1 && url.port() != 443) ||
+        !QRegularExpression(QStringLiteral("^/[^/]+/[^/]+/(issues|pull)/[1-9][0-9]*/?$"))
+             .match(url.path()).hasMatch())
     {
         return invalid(QStringLiteral("Enter a valid HTTPS GitHub issue or pull request URL."),
                        QStringLiteral("validate Planner GitHub link"));
     }
+    return Result<void>::success();
+}
+
+Result<void> PlannerValidation::validateGitHubIssueUrl(const QString &value) const
+{
+    auto valid = validateGitHubUrl(value);
+    if (!valid || value.isEmpty()) return valid;
+    if (!QRegularExpression(QStringLiteral("^/[^/]+/[^/]+/issues/[1-9][0-9]*/?$"))
+             .match(QUrl(value).path()).hasMatch())
+        return invalid(QStringLiteral("Enter a GitHub Issue URL ending in /issues/<number>."),
+                       QStringLiteral("validate Planner GitHub issue link"));
+    return Result<void>::success();
+}
+
+Result<void> PlannerValidation::validateGitHubPullRequestUrl(const QString &value) const
+{
+    auto valid = validateGitHubUrl(value);
+    if (!valid || value.isEmpty()) return valid;
+    if (!QRegularExpression(QStringLiteral("^/[^/]+/[^/]+/pull/[1-9][0-9]*/?$"))
+             .match(QUrl(value).path()).hasMatch())
+        return invalid(QStringLiteral("Enter a GitHub Pull Request URL ending in /pull/<number>."),
+                       QStringLiteral("validate Planner GitHub pull request link"));
     return Result<void>::success();
 }
 
@@ -92,10 +117,10 @@ Result<void> PlannerValidation::validateTask(const domain::planner::PlannerTask 
         return invalid(QStringLiteral("The Git branch name contains an invalid control character."),
                        QStringLiteral("validate Planner branch"));
     }
-    auto issue = validateGitHubUrl(task.githubIssueUrl);
+    auto issue = validateGitHubIssueUrl(task.githubIssueUrl);
     if (!issue)
         return issue;
-    return validateGitHubUrl(task.githubPullRequestUrl);
+    return validateGitHubPullRequestUrl(task.githubPullRequestUrl);
 }
 
 Result<void>
@@ -112,6 +137,14 @@ PlannerValidation::validateMilestone(const domain::planner::PlannerMilestone &mi
     return Result<void>::success();
 }
 
+Result<void> PlannerValidation::validateTimeEntry(const domain::planner::PlannerTimeEntry &entry) const
+{
+    if (entry.workspaceId.isEmpty() || entry.taskId.isEmpty() || entry.durationMinutes <= 0)
+        return invalid(QStringLiteral("A time entry needs a task and a duration greater than zero minutes."),
+                       QStringLiteral("validate Planner time entry"));
+    return Result<void>::success();
+}
+
 Result<void>
 PlannerValidation::validateFilter(const domain::planner::PlannerTaskFilter &filter) const
 {
@@ -120,6 +153,10 @@ PlannerValidation::validateFilter(const domain::planner::PlannerTaskFilter &filt
             QStringLiteral(
                 "Planner list pages must contain 1 to 200 tasks and use a non-negative offset."),
             QStringLiteral("validate Planner task page"));
+    if (!filter.sourceType.isEmpty() && filter.sourceType != QStringLiteral("local")
+        && filter.sourceType != QStringLiteral("somethingqt"))
+        return invalid(QStringLiteral("Choose local or imported task origin."),
+                       QStringLiteral("validate Planner task origin filter"));
     return Result<void>::success();
 }
 

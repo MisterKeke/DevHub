@@ -185,6 +185,34 @@ Result<void> PlannerService::reorderSubtasks(const QString &workspaceId, const Q
     return m_repository.reorderSubtasks(workspaceId, taskId, subtaskIds, expectedRevision);
 }
 
+Result<domain::planner::PlannerTimeEntry> PlannerService::addTimeEntry(
+    QString workspaceId, QString taskId, qint64 durationMinutes, QString note,
+    qint64 expectedRevision)
+{
+    domain::planner::PlannerTimeEntry entry;
+    entry.workspaceId = std::move(workspaceId);
+    entry.taskId = std::move(taskId);
+    entry.durationMinutes = durationMinutes;
+    entry.note = std::move(note);
+    entry.id = m_ids.create().toString(QUuid::WithoutBraces);
+    entry.recordedAtUtc = nowUtc(m_clock);
+    auto validation = m_validation.validateTimeEntry(entry);
+    if (!validation) return Result<domain::planner::PlannerTimeEntry>::failure(validation.error());
+    return m_repository.addTimeEntry(std::move(entry), expectedRevision);
+}
+
+Result<QVector<domain::planner::PlannerTimeEntry>> PlannerService::listTimeEntries(
+    const QString &workspaceId, const QString &taskId)
+{
+    return m_repository.listTimeEntries(workspaceId, taskId);
+}
+
+Result<void> PlannerService::removeTimeEntry(const QString &workspaceId, const QString &taskId,
+                                             const QString &entryId, qint64 expectedRevision)
+{
+    return m_repository.removeTimeEntry(workspaceId, taskId, entryId, expectedRevision);
+}
+
 Result<PlannerMilestone> PlannerService::createMilestone(QString workspaceId,
                                                          PlannerMilestone milestone)
 {

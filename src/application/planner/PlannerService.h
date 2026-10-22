@@ -58,6 +58,20 @@ class PlannerService final
                                                                const QString &taskId,
                                                                const QStringList &subtaskIds,
                                                                qint64 expectedRevision);
+    [[nodiscard]] shared::common::Result<domain::planner::PlannerTimeEntry>
+    addTimeEntry(QString workspaceId, QString taskId, qint64 durationMinutes, QString note,
+                 qint64 expectedRevision);
+    [[nodiscard]] shared::common::Result<QVector<domain::planner::PlannerTimeEntry>>
+    listTimeEntries(const QString &workspaceId, const QString &taskId);
+    [[nodiscard]] shared::common::Result<void>
+    removeTimeEntry(const QString &workspaceId, const QString &taskId, const QString &entryId,
+                    qint64 expectedRevision);
+    [[nodiscard]] shared::common::Result<void> validateGitHubUrl(const QString &url) const
+    { return m_validation.validateGitHubUrl(url); }
+    [[nodiscard]] shared::common::Result<void> validateGitHubIssueUrl(const QString &url) const
+    { return m_validation.validateGitHubIssueUrl(url); }
+    [[nodiscard]] shared::common::Result<void> validateGitHubPullRequestUrl(const QString &url) const
+    { return m_validation.validateGitHubPullRequestUrl(url); }
     [[nodiscard]] shared::common::Result<domain::planner::PlannerMilestone>
     createMilestone(QString workspaceId, domain::planner::PlannerMilestone milestone);
     [[nodiscard]] shared::common::Result<QVector<domain::planner::PlannerMilestone>>

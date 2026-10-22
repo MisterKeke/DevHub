@@ -92,7 +92,6 @@ private slots:
             {QStringLiteral("dueDate"), QDate::currentDate().addDays(4).toString(Qt::ISODate)},
             {QStringLiteral("startDate"), QDate::currentDate().toString(Qt::ISODate)},
             {QStringLiteral("estimatedMinutes"), 90}, {QStringLiteral("actualTrackedMinutes"), 12},
-            {QStringLiteral("gitBranch"), QStringLiteral("feature/planner-ui")},
             {QStringLiteral("tags"), QStringLiteral("ui, phase2")},
             {QStringLiteral("subtasks"), QVariantList{QVariantMap{{QStringLiteral("title"), QStringLiteral("Build the panel")}, {QStringLiteral("completed"), false}}}}};
         QVERIFY2(m_controller->saveTask(draft), qPrintable(m_controller->error()));
@@ -175,6 +174,92 @@ private slots:
         QVERIFY(!m_controller->hasWorkspace());
         m_controller->setSessionAllowed(true);
         QCOMPARE(m_controller->totalCount(), 1);
+    }
+
+    void deletedBranchAssociationIsVisibleAndSafeToRetain()
+    {
+        domain::planner::PlannerTask draft;
+        draft.title = QStringLiteral("Task on removed branch");
+        draft.gitBranch = QStringLiteral("feature/deleted-branch");
+        const auto created = m_service->createTask(m_workspaceA, draft);
+        QVERIFY(created);
+        m_controller->refresh();
+        const auto detail = m_controller->taskDetails(created.value().id);
+        QCOMPARE(detail.value(QStringLiteral("gitBranch")).toString(), QStringLiteral("feature/deleted-branch"));
+        QVERIFY(!detail.value(QStringLiteral("gitBranchExists")).toBool());
+        const auto options = m_controller->branchOptionsForTask(created.value().id);
+        bool foundMissing = false;
+        for (const auto& value : options) {
+            const auto option = value.toMap();
+            if (option.value(QStringLiteral("name")).toString() == QStringLiteral("feature/deleted-branch")) {
+                foundMissing = true;
+                QVERIFY(!option.value(QStringLiteral("exists")).toBool());
+                QVERIFY(option.value(QStringLiteral("displayName")).toString().contains(QStringLiteral("missing")));
+            }
+        }
+        QVERIFY(foundMissing);
+        auto edited = detail;
+        edited.insert(QStringLiteral("notes"), QStringLiteral("Keep metadata after branch deletion"));
+        QVERIFY2(m_controller->saveTask(edited), qPrintable(m_controller->error()));
+        QCOMPARE(m_controller->taskDetails(created.value().id).value(QStringLiteral("gitBranch")).toString(),
+                 QStringLiteral("feature/deleted-branch"));
+        QCOMPARE(m_controller->taskDetails(created.value().id).value(QStringLiteral("notes")).toString(),
+                 QStringLiteral("Keep metadata after branch deletion"));
+    }
+
+    void milestoneTimeAndMetadataFiltersUseControllerCommands()
+    {
+        using namespace presentation::overview::planner;
+        QVERIFY(m_controller->saveMilestone({{QStringLiteral("title"), QStringLiteral("Controller milestone")},
+            {QStringLiteral("description"), QStringLiteral("Workspace scoped")},
+            {QStringLiteral("dueDate"), QDate::currentDate().addDays(10).toString(Qt::ISODate)}}));
+        QCOMPARE(m_controller->milestones().size(), 1);
+        const QString milestoneId = m_controller->milestones().first().toMap().value(QStringLiteral("id")).toString();
+        QVERIFY(m_controller->saveTask({{QStringLiteral("title"), QStringLiteral("Controller task")},
+            {QStringLiteral("priority"), QStringLiteral("high")},
+            {QStringLiteral("dueDate"), QDate::currentDate().addDays(-1).toString(Qt::ISODate)},
+            {QStringLiteral("milestoneId"), milestoneId}, {QStringLiteral("gitBranch"), QString{}}}));
+        const QString taskId = m_controller->tasks()->index(0, 0).data(PlannerTaskModel::IdRole).toString();
+        QVERIFY(m_controller->addTimeEntry(taskId, QStringLiteral("25"), QStringLiteral("Implementation")));
+        auto detail = m_controller->taskDetails(taskId);
+        QCOMPARE(detail.value(QStringLiteral("actualTrackedMinutes")).toLongLong(), qint64(25));
+        const auto entries = m_controller->timeEntries(taskId);
+        QCOMPARE(entries.size(), 1);
+        QVERIFY(m_controller->removeTimeEntry(taskId, entries.first().toMap().value(QStringLiteral("id")).toString()));
+        QCOMPARE(m_controller->taskDetails(taskId).value(QStringLiteral("actualTrackedMinutes")).toLongLong(), qint64(0));
+
+        m_controller->setMilestoneFilter(milestoneId);
+        QTRY_COMPARE(m_controller->totalCount(), 1);
+        m_controller->setMilestoneFilter(QString{});
+        m_controller->setGitBranchFilter(QStringLiteral("feature/no-match"));
+        QTRY_COMPARE(m_controller->totalCount(), 0);
+        m_controller->setGitBranchFilter(QString{});
+        m_controller->setBlockedFilter(1);
+        QTRY_COMPARE(m_controller->totalCount(), 0);
+        QVERIFY(m_controller->taskDetails(taskId).contains(QStringLiteral("title")));
+        QVERIFY(m_controller->setTaskCompleted(taskId, true));
+        QVERIFY(m_controller->setTaskCompleted(taskId, false));
+        m_controller->setBlockedFilter(-1);
+        m_controller->setOverdueFilter(1);
+        QTRY_COMPARE(m_controller->totalCount(), 1);
+        m_controller->setOverdueFilter(-1);
+        m_controller->setOriginFilter(QStringLiteral("local"));
+        QTRY_COMPARE(m_controller->totalCount(), 1);
+        m_controller->setPriorityFilter(QStringLiteral("low"));
+        QTRY_COMPARE(m_controller->totalCount(), 0);
+        m_controller->setPriorityFilter(QString{});
+        QTRY_COMPARE(m_controller->totalCount(), 1);
+
+        QVERIFY(m_controller->setTaskCompleted(taskId, true));
+        QCOMPARE(m_controller->milestones().first().toMap().value(QStringLiteral("completedTaskCount")).toInt(), 1);
+        QVERIFY(m_controller->saveMilestone({{QStringLiteral("id"), milestoneId},
+            {QStringLiteral("title"), QStringLiteral("Edited milestone")},
+            {QStringLiteral("description"), QStringLiteral("Edited details")},
+            {QStringLiteral("completed"), true}}));
+        QCOMPARE(m_controller->milestones().first().toMap().value(QStringLiteral("title")).toString(),
+                 QStringLiteral("Edited milestone"));
+        QVERIFY(m_controller->removeMilestone(milestoneId));
+        QVERIFY(m_controller->taskDetails(taskId).value(QStringLiteral("milestoneId")).toString().isEmpty());
     }
 
     void taskAndPlannerPresentationSettingsPersistAfterReopen()

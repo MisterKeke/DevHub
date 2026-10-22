@@ -2,11 +2,16 @@
 
 #include "../../../application/settings/SettingsService.h"
 #include "../../../application/workspaces/WorkspaceContext.h"
+#include "../../../application/git/GitExecutableLocator.h"
+#include "../../../application/git/GitService.h"
 #include "../../../domain/planner/PlannerRules.h"
 
 #include <QDate>
+#include <QDesktopServices>
 #include <QQmlEngine>
+#include <QUrl>
 #include <QSet>
+#include <QRegularExpression>
 #include <algorithm>
 
 namespace devhub::presentation::overview::planner {
@@ -49,9 +54,10 @@ QString errorText(const auto& result)
 
 PlannerController::PlannerController(application::planner::PlannerService& service,
     application::settings::SettingsService& settings,
-    application::workspaces::WorkspaceContext& workspaceContext, QObject* parent)
+    application::workspaces::WorkspaceContext& workspaceContext, QObject* parent,
+    application::tasks::TaskScheduler* scheduler)
     : QObject(parent), m_service(service), m_settings(settings), m_workspaceContext(workspaceContext),
-      m_tasks(), m_list(), m_calendar(), m_undated()
+      m_scheduler(scheduler), m_tasks(), m_list(), m_calendar(), m_undated()
 {
     // These models are value members (or QObject children) owned by this controller.
     // In particular, boardModel() returns a model through an invokable; Qt otherwise
@@ -73,23 +79,35 @@ PlannerController::PlannerController(application::planner::PlannerService& servi
     }
     connect(&m_workspaceContext, &application::workspaces::WorkspaceContext::workspaceChanged,
             this, &PlannerController::workspaceChanged);
+    m_filterReloadTimer.setSingleShot(true);
+    m_filterReloadTimer.setInterval(160);
+    connect(&m_filterReloadTimer, &QTimer::timeout, this, &PlannerController::reloadAfterMutation);
     if (m_workspaceContext.activeWorkspace()) {
         loadWorkspace(m_workspaceContext.activeWorkspace()->id().toString(),
                       m_workspaceContext.activeWorkspace()->displayName());
+        m_workspacePath = m_workspaceContext.activeWorkspace()->path().canonicalPath();
+        loadBranches();
     }
 }
 
 std::optional<PlannerStatus> PlannerController::parseStatus(const QString& value)
 { return domain::planner::plannerStatusFromName(value); }
 
-void PlannerController::workspaceChanged(const QString& id, const QString&)
+void PlannerController::workspaceChanged(const QString& id, const QString& absolutePath)
 {
+    m_branchTask.cancel();
+    m_localBranches.clear();
+    m_branchOptions.clear();
+    m_branchStatus.clear();
+    m_workspacePath = absolutePath;
     const auto active = m_workspaceContext.activeWorkspace();
     loadWorkspace(id, id.isEmpty() || !active ? QString{} : active->displayName());
+    loadBranches();
 }
 
 void PlannerController::loadWorkspace(const QString& id, const QString& name)
 {
+    m_filterReloadTimer.stop();
     ++m_loadGeneration;
     m_tasks.clear();
     m_milestones.clear();
@@ -107,6 +125,7 @@ void PlannerController::loadWorkspace(const QString& id, const QString& name)
 
 void PlannerController::reloadAfterMutation()
 {
+    m_filterReloadTimer.stop();
     if (m_workspaceId.isEmpty() || !m_sessionAllowed) { m_tasks.clear(); emit changed(); return; }
     const QString workspace = m_workspaceId;
     const auto generation = m_loadGeneration;
@@ -114,6 +133,16 @@ void PlannerController::reloadAfterMutation()
     emit changed();
     QVector<PlannerTask> all;
     PlannerTaskFilter filter;
+    filter.searchText = m_searchText.trimmed();
+    if (!m_statusFilter.isEmpty()) filter.status = parseStatus(m_statusFilter);
+    if (!m_priorityFilter.isEmpty()) filter.priority = m_priorityFilter;
+    if (m_completionFilter >= 0) filter.completed = m_completionFilter == 1;
+    filter.milestoneId = m_milestoneFilter;
+    filter.gitBranch = m_gitBranchFilter;
+    filter.sourceType = m_originFilter;
+    if (m_blockedFilter >= 0) filter.blocked = m_blockedFilter == 1;
+    if (m_overdueFilter >= 0) filter.overdue = m_overdueFilter == 1;
+    filter.tag = m_tagFilter.trimmed().toCaseFolded();
     filter.sort = domain::planner::PlannerSortField::BoardPosition;
     filter.limit = 200;
     int offset = 0;
@@ -140,10 +169,82 @@ void PlannerController::loadMilestones()
     if (m_workspaceId.isEmpty()) return;
     const auto result = m_service.listMilestones(m_workspaceId);
     if (!result) { setFailure(errorText(result)); return; }
-    for (const auto& milestone : result.value()) m_milestones.append(QVariantMap{
-        {QStringLiteral("id"), milestone.id}, {QStringLiteral("title"), milestone.title},
-        {QStringLiteral("dueDate"), milestone.dueDate.isValid() ? milestone.dueDate.toString(Qt::ISODate) : QString{}},
-        {QStringLiteral("completed"), milestone.completed}, {QStringLiteral("revision"), milestone.revision}});
+    for (const auto& milestone : result.value()) {
+        const int taskCount = milestone.taskCount;
+        const int completedCount = milestone.completedTaskCount;
+        m_milestones.append(QVariantMap{
+            {QStringLiteral("id"), milestone.id}, {QStringLiteral("title"), milestone.title},
+            {QStringLiteral("description"), milestone.description},
+            {QStringLiteral("startDate"), milestone.startDate.isValid() ? milestone.startDate.toString(Qt::ISODate) : QString{}},
+            {QStringLiteral("dueDate"), milestone.dueDate.isValid() ? milestone.dueDate.toString(Qt::ISODate) : QString{}},
+            {QStringLiteral("completed"), milestone.completed}, {QStringLiteral("revision"), milestone.revision},
+            {QStringLiteral("taskCount"), taskCount}, {QStringLiteral("completedTaskCount"), completedCount},
+            {QStringLiteral("progress"), taskCount == 0 ? 0 : completedCount * 100 / taskCount}});
+    }
+}
+
+void PlannerController::loadBranches()
+{
+    m_branchTask.cancel();
+    const quint64 generation = ++m_branchGeneration;
+    m_localBranches.clear();
+    m_branchOptions.clear();
+    m_branchLoading = false;
+    m_branchStatus.clear();
+    if (m_workspaceId.isEmpty() || m_workspacePath.isEmpty()) { emit changed(); return; }
+    if (!m_scheduler) {
+        m_branchStatus = tr("Git branch lookup is unavailable.");
+        emit changed();
+        return;
+    }
+    const QString path = m_workspacePath;
+    const QString workspace = m_workspaceId;
+    application::tasks::TaskRequest request;
+    request.moduleKey = QStringLiteral("planner-git-branches");
+    const QUuid workspaceUuid(workspace);
+    if (!workspaceUuid.isNull()) request.workspaceId = workspaceUuid;
+    request.generation = generation;
+    m_branchLoading = true;
+    m_branchStatus = tr("Reading local Git branches…");
+    emit changed();
+    m_branchTask = m_scheduler->submit<QStringList>(request,
+        [path](const application::tasks::TaskContext& context) {
+            application::git::GitExecutableLocator locator;
+            auto executable = locator.locate();
+            if (!executable)
+                return shared::common::Result<QStringList>::failure(executable.error());
+            application::git::GitService service{
+                application::git::GitCommandRunner(executable.value().path)};
+            auto branches = service.branches(path, false, context.cancellationToken);
+            if (!branches)
+                return shared::common::Result<QStringList>::failure(branches.error());
+            QStringList names;
+            for (const auto& branch : branches.value()) names.append(branch.name);
+            names.removeDuplicates();
+            names.sort(Qt::CaseInsensitive);
+            return shared::common::Result<QStringList>::success(std::move(names));
+        }, [this, generation, workspace](shared::common::TaskOutcome<QStringList> outcome) {
+            if (generation != m_branchGeneration || workspace != m_workspaceId) return;
+            m_branchLoading = false;
+            if (std::holds_alternative<shared::common::OperationCancelled>(outcome)) {
+                m_branchStatus = tr("Branch lookup cancelled.");
+                emit changed();
+                return;
+            }
+            auto result = std::get<shared::common::Result<QStringList>>(std::move(outcome));
+            if (!result) {
+                m_branchStatus = result.error().userMessage.isEmpty()
+                    ? tr("Could not read Git branches.") : result.error().userMessage;
+            } else {
+                m_localBranches = std::move(result).value();
+                for (const QString& branch : m_localBranches)
+                    m_branchOptions.append(QVariantMap{{QStringLiteral("name"), branch},
+                        {QStringLiteral("displayName"), branch}, {QStringLiteral("exists"), true}});
+                m_branchStatus = m_localBranches.isEmpty()
+                    ? tr("No local branches found.") : tr("%1 local branch(es) available.").arg(m_localBranches.size());
+            }
+            emit changed();
+        });
 }
 
 void PlannerController::setSessionAllowed(bool allowed)
@@ -152,11 +253,16 @@ void PlannerController::setSessionAllowed(bool allowed)
     m_sessionAllowed = allowed;
     ++m_loadGeneration;
     if (!allowed) {
+        m_branchTask.cancel();
+        ++m_branchGeneration;
+        m_localBranches.clear(); m_branchOptions.clear(); m_branchStatus.clear(); m_branchLoading = false;
         m_tasks.clear(); m_workspaceId.clear(); m_workspaceName.clear(); m_milestones.clear();
         m_loading = false; m_error.clear(); emit changed(); return;
     }
     const auto active = m_workspaceContext.activeWorkspace();
+    if (active) m_workspacePath = active->path().canonicalPath();
     loadWorkspace(active ? active->id().toString() : QString{}, active ? active->displayName() : QString{});
+    loadBranches();
 }
 
 int PlannerController::totalCount() const { return static_cast<int>(m_tasks.tasks().size()); }
@@ -203,6 +309,11 @@ void PlannerController::applyProxyFilters()
     m_undated.setDateFilter({}, true);
 }
 
+void PlannerController::scheduleFilterReload()
+{
+    if (!m_workspaceId.isEmpty() && m_sessionAllowed) m_filterReloadTimer.start();
+}
+
 void PlannerController::setView(const QString& value)
 {
     if (value != QStringLiteral("board") && value != QStringLiteral("list") && value != QStringLiteral("calendar")) return;
@@ -222,11 +333,16 @@ void PlannerController::setCollapsed(bool value)
     }
     emit changed();
 }
-void PlannerController::setSearchText(const QString& value) { m_searchText = value; applyProxyFilters(); }
-void PlannerController::setStatusFilter(const QString& value) { m_statusFilter = value; applyProxyFilters(); }
-void PlannerController::setPriorityFilter(const QString& value) { m_priorityFilter = value; applyProxyFilters(); }
-void PlannerController::setCompletionFilter(int value) { m_completionFilter = value; applyProxyFilters(); }
-void PlannerController::setTagFilter(const QString& value) { m_tagFilter = value; applyProxyFilters(); }
+void PlannerController::setSearchText(const QString& value) { m_searchText = value; applyProxyFilters(); scheduleFilterReload(); }
+void PlannerController::setStatusFilter(const QString& value) { m_statusFilter = value; applyProxyFilters(); scheduleFilterReload(); }
+void PlannerController::setPriorityFilter(const QString& value) { m_priorityFilter = value; applyProxyFilters(); scheduleFilterReload(); }
+void PlannerController::setCompletionFilter(int value) { m_completionFilter = value; applyProxyFilters(); scheduleFilterReload(); }
+void PlannerController::setTagFilter(const QString& value) { m_tagFilter = value; applyProxyFilters(); scheduleFilterReload(); }
+void PlannerController::setMilestoneFilter(const QString& value) { m_milestoneFilter = value; scheduleFilterReload(); }
+void PlannerController::setGitBranchFilter(const QString& value) { m_gitBranchFilter = value; scheduleFilterReload(); }
+void PlannerController::setBlockedFilter(int value) { m_blockedFilter = value; scheduleFilterReload(); }
+void PlannerController::setOverdueFilter(int value) { m_overdueFilter = value; scheduleFilterReload(); }
+void PlannerController::setOriginFilter(const QString& value) { m_originFilter = value; scheduleFilterReload(); }
 void PlannerController::setSelectedDate(const QString& value)
 {
     const auto date = QDate::fromString(value, Qt::ISODate);
@@ -246,20 +362,87 @@ void PlannerController::sortList(const QString& field, bool descending)
 QVariantMap PlannerController::taskDetails(const QString& id) const
 {
     const int row = [&] { for (int i = 0; i < m_tasks.rowCount(); ++i) if (m_tasks.index(i,0).data(PlannerTaskModel::IdRole).toString() == id) return i; return -1; }();
-    if (row < 0) return {};
-    const auto index = m_tasks.index(row, 0);
+    const auto* task = taskById(id);
+    if (!task) return {};
+    PlannerTaskModel detached;
+    const PlannerTaskModel* model = &m_tasks;
+    int modelRow = row;
+    if (row < 0) {
+        detached.setTasks({*task});
+        model = &detached;
+        modelRow = 0;
+    }
+    const auto index = model->index(modelRow, 0);
     QVariantMap values;
-    const auto roleNames = m_tasks.roleNames();
+    const auto roleNames = model->roleNames();
     for (auto it = roleNames.cbegin(); it != roleNames.cend(); ++it)
         values.insert(QString::fromUtf8(it.value()), index.data(it.key()));
+    values.insert(QStringLiteral("workspaceId"), task->workspaceId);
+    values.insert(QStringLiteral("gitBranchExists"), branchExists(values.value(QStringLiteral("gitBranch")).toString()));
     return values;
+}
+
+bool PlannerController::branchExists(const QString& branch) const
+{
+    return !branch.isEmpty() && m_localBranches.contains(branch);
+}
+
+QVariantList PlannerController::branchOptionsForTask(const QString& taskId) const
+{
+    QVariantList options{QVariantMap{{QStringLiteral("name"), QString{}},
+        {QStringLiteral("displayName"), tr("No branch")}, {QStringLiteral("exists"), true}}};
+    for (const QString& branch : m_localBranches)
+        options.append(QVariantMap{{QStringLiteral("name"), branch},
+            {QStringLiteral("displayName"), branch}, {QStringLiteral("exists"), true}});
+    const auto* task = taskById(taskId);
+    if (task && !task->gitBranch.isEmpty() && !m_localBranches.contains(task->gitBranch))
+        options.append(QVariantMap{{QStringLiteral("name"), task->gitBranch},
+            {QStringLiteral("displayName"), tr("%1 (missing)").arg(task->gitBranch)},
+            {QStringLiteral("exists"), false}});
+    return options;
+}
+
+void PlannerController::openGitBranch(const QString& branch)
+{
+    if (branch.trimmed().isEmpty()) return;
+    if (!branchExists(branch))
+        m_branchStatus = tr("Branch ‘%1’ is not present in this workspace.").arg(branch);
+    emit openGitBranchRequested(branch);
+    emit changed();
+}
+
+bool PlannerController::openGitHubUrl(const QString& url)
+{
+    const auto valid = m_service.validateGitHubUrl(url.trimmed());
+    if (!valid) { setFailure(errorText(valid)); return false; }
+    if (url.trimmed().isEmpty()) return false;
+    if (!QDesktopServices::openUrl(QUrl(url.trimmed(), QUrl::StrictMode))) {
+        setFailure(tr("DevHub could not open this GitHub link."));
+        return false;
+    }
+    m_error.clear();
+    emit changed();
+    return true;
 }
 
 QVariantList PlannerController::dependencyChoices(const QString& exclude) const
 {
     QVariantList choices;
-    for (const auto& task : m_tasks.tasks()) if (task.id != exclude && !task.completed)
-        choices.append(QVariantMap{{QStringLiteral("taskId"), task.id}, {QStringLiteral("title"), task.title}});
+    if (m_workspaceId.isEmpty()) return choices;
+    PlannerTaskFilter filter;
+    filter.limit = 200;
+    int offset = 0;
+    while (true) {
+        filter.offset = offset;
+        const auto page = m_service.listTasks(m_workspaceId, filter);
+        if (!page) return {};
+        for (const auto& task : page.value()) if (task.id != exclude)
+            choices.append(QVariantMap{{QStringLiteral("taskId"), task.id},
+                {QStringLiteral("title"), task.completed ? tr("%1 (complete)").arg(task.title) : task.title}});
+        const int received = static_cast<int>(page.value().size());
+        if (received < filter.limit) break;
+        offset += received;
+    }
     return choices;
 }
 
@@ -285,7 +468,15 @@ int PlannerController::countForDate(const QString& isoDate) const
     return count;
 }
 
-const PlannerTask* PlannerController::taskById(const QString& id) const { return m_tasks.taskById(id); }
+const PlannerTask* PlannerController::taskById(const QString& id) const
+{
+    if (const auto* loaded = m_tasks.taskById(id)) return loaded;
+    if (m_workspaceId.isEmpty() || id.isEmpty()) return nullptr;
+    auto task = m_service.getTask(m_workspaceId, id);
+    if (!task) return nullptr;
+    m_taskScratch = std::move(task).value();
+    return &m_taskScratch;
+}
 void PlannerController::setFailure(const QString& message) { m_error = message; emit changed(); }
 void PlannerController::clearError() { if (!m_error.isEmpty()) { m_error.clear(); emit changed(); } }
 void PlannerController::refresh() { reloadAfterMutation(); }
@@ -310,11 +501,19 @@ bool PlannerController::saveTask(const QVariantMap& values)
     const QVariant estimated = values.value(QStringLiteral("estimatedMinutes"));
     if (!estimated.isValid() || estimated.isNull() || estimated.toString().trimmed().isEmpty()) draft.estimatedMinutes.reset();
     else { bool ok = false; const qint64 n = estimated.toLongLong(&ok); if (!ok || n < 0) { setFailure(tr("Estimated duration must be a non-negative number of minutes.")); return false; } draft.estimatedMinutes = n; }
-    bool trackedOk = false; const qint64 tracked = values.value(QStringLiteral("actualTrackedMinutes"), 0).toLongLong(&trackedOk);
-    if (!trackedOk || tracked < 0) { setFailure(tr("Tracked time must be a non-negative number of minutes.")); return false; }
-    draft.actualTrackedMinutes = tracked;
+    if (values.contains(QStringLiteral("actualTrackedMinutes"))) {
+        bool trackedOk = false;
+        const qint64 tracked = values.value(QStringLiteral("actualTrackedMinutes")).toLongLong(&trackedOk);
+        if (!trackedOk || tracked < 0) { setFailure(tr("Tracked time must be a non-negative number of minutes.")); return false; }
+        draft.actualTrackedMinutes = tracked;
+    }
     draft.milestoneId = values.value(QStringLiteral("milestoneId")).toString();
-    draft.gitBranch = values.value(QStringLiteral("gitBranch")).toString();
+    const QString requestedBranch = values.value(QStringLiteral("gitBranch")).toString().trimmed();
+    if (!requestedBranch.isEmpty() && requestedBranch != draft.gitBranch && !branchExists(requestedBranch)) {
+        setFailure(tr("Choose an existing local branch in this workspace."));
+        return false;
+    }
+    draft.gitBranch = requestedBranch;
     draft.githubIssueUrl = values.value(QStringLiteral("githubIssueUrl")).toString().trimmed();
     draft.githubPullRequestUrl = values.value(QStringLiteral("githubPullRequestUrl")).toString().trimmed();
     draft.notes = values.value(QStringLiteral("notes")).toString();
@@ -475,14 +674,103 @@ bool PlannerController::shiftTaskOrder(const QString& id, int direction)
 
 bool PlannerController::createMilestone(const QString& title, const QString& dueDate)
 {
-    if (!hasWorkspace() || title.trimmed().isEmpty()) return false;
-    if (!dueDate.trimmed().isEmpty() && !QDate::fromString(dueDate.trimmed(), Qt::ISODate).isValid()) {
-        setFailure(tr("Enter the milestone due date as a valid YYYY-MM-DD calendar date.")); return false;
+    return saveMilestone({{QStringLiteral("title"), title}, {QStringLiteral("dueDate"), dueDate}});
+}
+
+bool PlannerController::saveMilestone(const QVariantMap& values)
+{
+    if (!hasWorkspace()) { setFailure(tr("Select a workspace before editing milestones.")); return false; }
+    const QString id = values.value(QStringLiteral("id")).toString();
+    const QString title = values.value(QStringLiteral("title")).toString().trimmed();
+    const QString startText = values.value(QStringLiteral("startDate")).toString().trimmed();
+    const QString dueText = values.value(QStringLiteral("dueDate")).toString().trimmed();
+    const QDate startDate = parseDate(startText);
+    const QDate dueDate = parseDate(dueText);
+    if (title.isEmpty() || (!startText.isEmpty() && !startDate.isValid()) ||
+        (!dueText.isEmpty() && !dueDate.isValid())) {
+        setFailure(tr("Enter a milestone title and valid YYYY-MM-DD dates."));
+        return false;
     }
-    domain::planner::PlannerMilestone milestone; milestone.title = title.trimmed(); milestone.dueDate = parseDate(dueDate);
-    auto result = m_service.createMilestone(m_workspaceId, milestone);
+    domain::planner::PlannerMilestone milestone;
+    milestone.id = id;
+    milestone.workspaceId = m_workspaceId;
+    milestone.title = title;
+    milestone.description = values.value(QStringLiteral("description")).toString();
+    milestone.startDate = startDate;
+    milestone.dueDate = dueDate;
+    milestone.completed = values.value(QStringLiteral("completed")).toBool();
+    if (id.isEmpty()) {
+        auto result = m_service.createMilestone(m_workspaceId, milestone);
+        if (!result) { setFailure(errorText(result)); return false; }
+    } else {
+        const auto existing = std::find_if(m_milestones.cbegin(), m_milestones.cend(),
+            [&id](const QVariant& value) { return value.toMap().value(QStringLiteral("id")).toString() == id; });
+        if (existing == m_milestones.cend()) {
+            setFailure(tr("This milestone is no longer available in the active workspace."));
+            return false;
+        }
+        const qint64 revision = existing->toMap().value(QStringLiteral("revision")).toLongLong();
+        auto result = m_service.updateMilestone(milestone, revision);
+        if (!result) { setFailure(errorText(result)); loadMilestones(); return false; }
+    }
+    loadMilestones();
+    m_error.clear();
+    emit changed();
+    return true;
+}
+
+bool PlannerController::removeMilestone(const QString& milestoneId)
+{
+    if (!hasWorkspace()) return false;
+    const auto existing = std::find_if(m_milestones.cbegin(), m_milestones.cend(),
+        [&milestoneId](const QVariant& value) { return value.toMap().value(QStringLiteral("id")).toString() == milestoneId; });
+    if (existing == m_milestones.cend()) return false;
+    const qint64 revision = existing->toMap().value(QStringLiteral("revision")).toLongLong();
+    auto result = m_service.removeMilestone(m_workspaceId, milestoneId, revision);
     if (!result) { setFailure(errorText(result)); return false; }
-    loadMilestones(); m_error.clear(); emit changed(); return true;
+    if (m_milestoneFilter == milestoneId) m_milestoneFilter.clear();
+    reloadAfterMutation();
+    m_error.clear();
+    return true;
+}
+
+QVariantList PlannerController::timeEntries(const QString& taskId)
+{
+    QVariantList entries;
+    if (!hasWorkspace() || !taskById(taskId)) return entries;
+    const auto result = m_service.listTimeEntries(m_workspaceId, taskId);
+    if (!result) { setFailure(errorText(result)); return entries; }
+    for (const auto& entry : result.value())
+        entries.append(QVariantMap{{QStringLiteral("id"), entry.id},
+            {QStringLiteral("durationMinutes"), entry.durationMinutes},
+            {QStringLiteral("note"), entry.note},
+            {QStringLiteral("recordedAt"), entry.recordedAtUtc.toLocalTime().toString(Qt::ISODate)}});
+    return entries;
+}
+
+bool PlannerController::addTimeEntry(const QString& taskId, const QString& minutes, const QString& note)
+{
+    const auto* task = taskById(taskId);
+    if (!hasWorkspace() || !task) return false;
+    bool ok = false;
+    const qint64 duration = minutes.trimmed().toLongLong(&ok);
+    if (!ok || duration <= 0) { setFailure(tr("Enter a time entry duration greater than zero minutes.")); return false; }
+    auto result = m_service.addTimeEntry(m_workspaceId, taskId, duration, note.trimmed(), task->revision);
+    if (!result) { setFailure(errorText(result)); reloadAfterMutation(); return false; }
+    m_error.clear();
+    reloadAfterMutation();
+    return true;
+}
+
+bool PlannerController::removeTimeEntry(const QString& taskId, const QString& entryId)
+{
+    const auto* task = taskById(taskId);
+    if (!hasWorkspace() || !task) return false;
+    auto result = m_service.removeTimeEntry(m_workspaceId, taskId, entryId, task->revision);
+    if (!result) { setFailure(errorText(result)); reloadAfterMutation(); return false; }
+    m_error.clear();
+    reloadAfterMutation();
+    return true;
 }
 
 } // namespace devhub::presentation::overview::planner

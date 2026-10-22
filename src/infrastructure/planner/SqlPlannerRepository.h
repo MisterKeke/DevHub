@@ -50,6 +50,13 @@ class SqlPlannerRepository final : public application::planner::IPlannerReposito
                                                                const QString &taskId,
                                                                const QStringList &subtaskIds,
                                                                qint64 expectedRevision) override;
+    [[nodiscard]] shared::common::Result<domain::planner::PlannerTimeEntry>
+    addTimeEntry(domain::planner::PlannerTimeEntry entry, qint64 expectedRevision) override;
+    [[nodiscard]] shared::common::Result<QVector<domain::planner::PlannerTimeEntry>>
+    listTimeEntries(const QString &workspaceId, const QString &taskId) override;
+    [[nodiscard]] shared::common::Result<void>
+    removeTimeEntry(const QString &workspaceId, const QString &taskId, const QString &entryId,
+                    qint64 expectedRevision) override;
     [[nodiscard]] shared::common::Result<domain::planner::PlannerMilestone>
     createMilestone(domain::planner::PlannerMilestone milestone) override;
     [[nodiscard]] shared::common::Result<QVector<domain::planner::PlannerMilestone>>

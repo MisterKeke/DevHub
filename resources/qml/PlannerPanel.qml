@@ -34,13 +34,34 @@ Rectangle {
     property var calendarMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
     property var detail: ({})
     property string editorTaskId: ""
+    property string knownWorkspaceId: ""
     property bool editorDirty: false
     property string selectedDependencyId: ""
     property var selectedDependencyIds: []
     property string selectedTaskToDelete: ""
+    property string selectedMilestoneId: ""
     property string sortField: "createdAt"
     property bool sortDescending: false
     property var importController: typeof plannerImportController !== "undefined" ? plannerImportController : null
+
+    Component.onCompleted: root.knownWorkspaceId = plannerController.workspaceId
+    Connections {
+        target: plannerController
+        function onChanged() {
+            if (root.knownWorkspaceId === plannerController.workspaceId) return
+            root.knownWorkspaceId = plannerController.workspaceId
+            root.detail = ({})
+            root.editorDirty = false
+            root.selectedDependencyIds = []
+            root.selectedMilestoneId = ""
+            editor.close()
+            detailsDialog.close()
+            milestoneManager.close()
+            milestoneEditor.close()
+            removeMilestoneDialog.close()
+            deleteDialog.close()
+        }
+    }
 
     function isoDate(date) {
         return date.getFullYear().toString().padStart(4, "0") + "-" + (date.getMonth() + 1).toString().padStart(2, "0") + "-" + date.getDate().toString().padStart(2, "0")
@@ -71,9 +92,8 @@ Rectangle {
         startField.text = data.startDate || ""
         dueField.text = data.dueDate || ""
         estimateField.text = data.estimatedMinutes === undefined || data.estimatedMinutes === null ? "" : String(data.estimatedMinutes)
-        actualField.text = String(data.actualTrackedMinutes || 0)
         milestoneBox.currentIndex = milestoneIndex(data.milestoneId || "")
-        branchField.text = data.gitBranch || ""
+        branchBox.currentIndex = branchOptionIndex(editorTaskId, data.gitBranch || "")
         issueField.text = data.githubIssueUrl || ""
         pullRequestField.text = data.githubPullRequestUrl || ""
         notesField.text = data.notes || ""
@@ -90,14 +110,75 @@ Rectangle {
         editor.open()
     }
     function milestoneIndex(id) {
+        if (!id) return 0
         for (var i = 0; i < plannerController.milestones.length; ++i)
-            if (plannerController.milestones[i].id === id) return i
-        return -1
+            if (plannerController.milestones[i].id === id) return i + 1
+        return 0
+    }
+    function branchOptionIndex(taskId, branch) {
+        var options = editorBranchOptions(taskId)
+        for (var i = 0; i < options.length; ++i)
+            if (options[i].name === branch) return i
+        return 0
+    }
+    function editorBranchOptions(taskId) {
+        var options = [{ name: "", displayName: qsTr("No branch"), exists: true }]
+        var local = plannerController.branchOptions
+        for (var i = 0; i < local.length; ++i) options.push(local[i])
+        var associated = detail.gitBranch || ""
+        var present = false
+        for (var j = 0; j < local.length; ++j) if (local[j].name === associated) present = true
+        if (taskId && associated && !present)
+            options.push({ name: associated, displayName: qsTr("%1 (missing)").arg(associated), exists: false })
+        return options
+    }
+    function branchIsPresent(branch) {
+        if (!branch) return false
+        var options = plannerController.branchOptions
+        for (var i = 0; i < options.length; ++i) if (options[i].name === branch) return true
+        return false
+    }
+    function refreshDetails(taskId) {
+        var data = plannerController.taskDetails(taskId)
+        if (!data || !data.taskId) return
+        data.timeEntries = plannerController.timeEntries(taskId)
+        detail = data
+    }
+    function openMilestoneEditor(id) {
+        selectedMilestoneId = id || ""
+        var item = null
+        for (var i = 0; i < plannerController.milestones.length; ++i)
+            if (plannerController.milestones[i].id === selectedMilestoneId) item = plannerController.milestones[i]
+        milestoneTitleField.text = item ? item.title : ""
+        milestoneDescriptionField.text = item ? item.description : ""
+        milestoneStartField.text = item ? item.startDate : ""
+        milestoneDueField.text = item ? item.dueDate : ""
+        milestoneCompletedField.checked = item ? item.completed : false
+        milestoneMessage.text = ""
+        milestoneEditor.open()
+    }
+    function saveMilestoneEditor() {
+        var values = { id: selectedMilestoneId, title: milestoneTitleField.text,
+            description: milestoneDescriptionField.text, startDate: milestoneStartField.text.trim(),
+            dueDate: milestoneDueField.text.trim(), completed: milestoneCompletedField.checked }
+        if (plannerController.saveMilestone(values)) { milestoneEditor.close(); milestoneManager.open() }
+        else milestoneMessage.text = plannerController.error || qsTr("Review the milestone details and try again.")
     }
     function dependencyTitle(id) {
         var choices = plannerController.dependencyChoices(editorTaskId)
         for (var i = 0; i < choices.length; ++i) if (choices[i].taskId === id) return choices[i].title
         return id
+    }
+    function milestoneTitle(id) {
+        for (var i = 0; i < plannerController.milestones.length; ++i)
+            if (plannerController.milestones[i].id === id) return plannerController.milestones[i].title
+        return id
+    }
+    function removeSelectedMilestone() {
+        if (plannerController.removeMilestone(selectedMilestoneId)) {
+            selectedMilestoneId = ""
+            removeMilestoneDialog.close()
+        }
     }
     function requestEditorClose() {
         if (editorDirty) discardDialog.open()
@@ -115,9 +196,9 @@ Rectangle {
             difficulty: ["", "easy", "medium", "hard"][difficultyBox.currentIndex],
             completed: completionBox.checked || statusBox.currentIndex === 4, status: statusKeys[statusBox.currentIndex],
             startDate: startField.text.trim(), dueDate: dueField.text.trim(),
-            estimatedMinutes: estimateField.text.trim(), actualTrackedMinutes: actualField.text.trim(),
-            milestoneId: milestoneBox.currentIndex < 0 ? "" : plannerController.milestones[milestoneBox.currentIndex].id,
-            gitBranch: branchField.text, githubIssueUrl: issueField.text.trim(),
+            estimatedMinutes: estimateField.text.trim(),
+            milestoneId: milestoneBox.currentValue || "",
+            gitBranch: branchBox.currentValue || "", githubIssueUrl: issueField.text.trim(),
             githubPullRequestUrl: pullRequestField.text.trim(), notes: notesField.text,
             blockedReason: blockedField.text, tags: tagsField.text, subtasks: subtasks,
             dependencyIds: selectedDependencyIds
@@ -126,7 +207,7 @@ Rectangle {
         else editorMessage.text = plannerController.error || qsTr("Review the task details and try again.")
     }
     function openDetails(taskId) {
-        detail = plannerController.taskDetails(taskId)
+        refreshDetails(taskId)
         if (detail && detail.taskId) detailsDialog.open()
     }
     function editFromDetails() { var id = detail.taskId; detailsDialog.close(); openEditor(id) }
@@ -198,6 +279,12 @@ Rectangle {
                         onClicked: root.openEditor("")
                         background: Rectangle { radius: 7; color: parent.enabled ? root.accent : root.activeSurface }
                         contentItem: Text { text: parent.text; color: parent.enabled ? "white" : root.muted; font.pixelSize: 11; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; leftPadding: 10; rightPadding: 10 }
+                    }
+                    Button {
+                        visible: !plannerController.collapsed
+                        text: qsTr("Milestones")
+                        enabled: plannerController.hasWorkspace
+                        onClicked: milestoneManager.open()
                     }
                     Button {
                         visible: !plannerController.collapsed
@@ -275,6 +362,42 @@ Rectangle {
                         background: Rectangle { radius: 7; color: root.surface; border.color: root.border }
                     }
                 }
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 6
+                    ComboBox {
+                        Layout.fillWidth: true; Layout.minimumWidth: 82
+                        model: [{ id: "", title: qsTr("All milestones") }].concat(plannerController.milestones)
+                        textRole: "title"; valueRole: "id"
+                        currentIndex: { for (var mi = 0; mi < model.length; ++mi) if (model[mi].id === plannerController.milestoneFilter) return mi; return 0 }
+                        onActivated: plannerController.setMilestoneFilter(currentValue || "")
+                    }
+                    ComboBox {
+                        Layout.fillWidth: true; Layout.minimumWidth: 82
+                        model: [{ name: "", displayName: qsTr("All branches") }].concat(plannerController.branchOptions)
+                        textRole: "displayName"; valueRole: "name"
+                        currentIndex: { for (var bi = 0; bi < model.length; ++bi) if (model[bi].name === plannerController.gitBranchFilter) return bi; return 0 }
+                        onActivated: plannerController.setGitBranchFilter(currentValue || "")
+                    }
+                    ComboBox {
+                        Layout.fillWidth: true; Layout.minimumWidth: 82
+                        model: [qsTr("Any blocked state"), qsTr("Blocked"), qsTr("Not blocked")]
+                        currentIndex: plannerController.blockedFilter < 0 ? 0 : plannerController.blockedFilter === 1 ? 1 : 2
+                        onActivated: plannerController.setBlockedFilter(index === 0 ? -1 : index === 1 ? 1 : 0)
+                    }
+                    ComboBox {
+                        Layout.fillWidth: true; Layout.minimumWidth: 82
+                        model: [qsTr("Any due date"), qsTr("Overdue"), qsTr("Not overdue")]
+                        currentIndex: plannerController.overdueFilter < 0 ? 0 : plannerController.overdueFilter === 1 ? 1 : 2
+                        onActivated: plannerController.setOverdueFilter(index === 0 ? -1 : index === 1 ? 1 : 0)
+                    }
+                    ComboBox {
+                        Layout.fillWidth: true; Layout.minimumWidth: 82
+                        model: [qsTr("Any origin"), qsTr("Local"), qsTr("SomethingQt")]
+                        currentIndex: Math.max(0, ["", "local", "somethingqt"].indexOf(plannerController.originFilter))
+                        onActivated: plannerController.setOriginFilter(["", "local", "somethingqt"][index])
+                    }
+                }
+                Text { visible: plannerController.branchStatus.length > 0; Layout.fillWidth: true; text: plannerController.branchStatus; color: root.muted; font.pixelSize: 9; elide: Text.ElideRight }
                 Text { visible: plannerController.error.length > 0; Layout.fillWidth: true; text: plannerController.error; color: root.error; font.pixelSize: 11; wrapMode: Text.WordWrap }
                 Text {
                     visible: !plannerController.hasWorkspace
@@ -330,6 +453,7 @@ Rectangle {
                                                 required property int subtaskCount
                                                 required property int completedSubtaskCount
                                                 required property bool overdue
+                                                required property bool blocked
                                                 width: ListView.view.width; implicitHeight: cardContent.implicitHeight + 16
                                                 radius: 8; color: root.panel; border.color: overdue ? root.error : root.border
                                                 ColumnLayout {
@@ -341,6 +465,7 @@ Rectangle {
                                                         Text { text: priority.toUpperCase(); color: priority === "high" ? root.error : priority === "low" ? root.muted : root.warning; font.pixelSize: 8; font.weight: Font.DemiBold }
                                                         ToolButton { text: "⋯"; Accessible.name: qsTr("Task details for %1").arg(title); onClicked: root.openDetails(taskId); Layout.preferredWidth: 28 }
                                                     }
+                                                    Text { visible: blocked; text: qsTr("BLOCKED"); color: root.warning; font.pixelSize: 8; font.weight: Font.DemiBold }
                                                     RowLayout {
                                                         visible: dueDate.length > 0 || subtaskCount > 0
                                                         Text { visible: dueDate.length > 0; text: qsTr("Due %1").arg(dueDate); color: overdue ? root.error : root.muted; font.pixelSize: 9; Layout.fillWidth: true }
@@ -402,6 +527,7 @@ Rectangle {
                             required property var tags
                             required property int subtaskCount
                             required property bool overdue
+                            required property bool blocked
                             width: ListView.view.width; height: 58; color: index % 2 ? root.panel : root.surface; radius: 5
                             RowLayout {
                                 anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 4; spacing: 4
@@ -418,6 +544,7 @@ Rectangle {
                                         text: qsTr("%1 · %2 · %3").arg(subtaskCount ? qsTr("%1 subtasks").arg(subtaskCount) : qsTr("No subtasks")).arg(tags.length ? tags.join(", ") : qsTr("No tags")).arg(gitBranch.length ? gitBranch : qsTr("No branch"))
                                         color: root.muted; font.pixelSize: 8; elide: Text.ElideRight; Layout.fillWidth: true
                                     }
+                                    Text { visible: blocked; text: qsTr("Blocked"); color: root.warning; font.pixelSize: 8 }
                                 }
                                 Text { visible: root.width >= 720; text: priority; color: priority === "high" ? root.error : priority === "low" ? root.muted : root.warning; font.pixelSize: 9; Layout.preferredWidth: 68 }
                                 Text { visible: root.width >= 720; text: dueDate.length ? dueDate : "—"; color: overdue ? root.error : root.secondary; font.pixelSize: 9; Layout.preferredWidth: 80 }
@@ -563,21 +690,16 @@ Rectangle {
                             validator: IntValidator { bottom: 0 }
                             onTextChanged: root.editorDirty = true
                         }
-                        Label { text: qsTr("Actual tracked minutes"); color: root.secondary }
-                        TextField {
-                            id: actualField; color: root.text
-                            validator: IntValidator { bottom: 0 }
-                            onTextChanged: root.editorDirty = true
-                        }
+                        Label { text: qsTr("Time recorded"); color: root.secondary }
+                        Label { text: qsTr("%1 minutes · manage entries in task details").arg(detail.actualTrackedMinutes || 0); color: root.muted; wrapMode: Text.WordWrap }
                         Label { text: qsTr("Milestone"); color: root.secondary }
-                        ComboBox { id: milestoneBox; Layout.fillWidth: true; model: plannerController.milestones; textRole: "title"; onActivated: root.editorDirty = true; Component.onCompleted: currentIndex = -1 }
+                        ComboBox {
+                            id: milestoneBox; Layout.fillWidth: true
+                            model: [{ id: "", title: qsTr("No milestone") }].concat(plannerController.milestones)
+                            textRole: "title"; valueRole: "id"; onActivated: root.editorDirty = true
+                        }
                     }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        TextField { id: newMilestoneTitle; Layout.fillWidth: true; placeholderText: qsTr("New milestone title"); color: root.text }
-                        TextField { id: newMilestoneDate; Layout.preferredWidth: 130; placeholderText: "YYYY-MM-DD"; color: root.text }
-                        Button { text: qsTr("Add milestone"); onClicked: { if (plannerController.createMilestone(newMilestoneTitle.text, newMilestoneDate.text)) { newMilestoneTitle.clear(); newMilestoneDate.clear() } else editorMessage.text = plannerController.error } }
-                    }
+                    Button { text: qsTr("Manage milestones…"); onClicked: milestoneManager.open() }
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
                     Text { text: qsTr("Organization"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
                     TextField { id: tagsField; Layout.fillWidth: true; placeholderText: qsTr("Tags, separated by commas"); color: root.text; onTextChanged: root.editorDirty = true }
@@ -619,11 +741,18 @@ Rectangle {
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
                     Text { text: qsTr("Development"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
-                    TextField { id: branchField; Layout.fillWidth: true; placeholderText: qsTr("Git branch"); color: root.text; onTextChanged: root.editorDirty = true }
+                    ComboBox {
+                        id: branchBox; Layout.fillWidth: true; enabled: !plannerController.branchLoading
+                        model: root.editorBranchOptions(editorTaskId)
+                        textRole: "displayName"; valueRole: "name"
+                        onActivated: root.editorDirty = true
+                    }
+                    Text { visible: plannerController.branchLoading; text: qsTr("Loading local branches…"); color: root.muted; font.pixelSize: 9 }
                     TextField { id: issueField; Layout.fillWidth: true; placeholderText: qsTr("GitHub Issue URL"); color: root.text; onTextChanged: root.editorDirty = true }
                     TextField { id: pullRequestField; Layout.fillWidth: true; placeholderText: qsTr("GitHub Pull Request URL"); color: root.text; onTextChanged: root.editorDirty = true }
                     TextField { id: blockedField; Layout.fillWidth: true; placeholderText: qsTr("Blocked reason (optional)"); color: root.text; onTextChanged: root.editorDirty = true }
-                    TextArea { id: notesField; Layout.fillWidth: true; Layout.preferredHeight: 68; placeholderText: qsTr("Additional Planner notes"); color: root.text; wrapMode: TextEdit.Wrap; onTextChanged: root.editorDirty = true }
+                    Text { text: qsTr("Planner notes"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
+                    TextArea { id: notesField; Layout.fillWidth: true; Layout.preferredHeight: 84; placeholderText: qsTr("Developer notes, separate from the task description"); color: root.text; wrapMode: TextEdit.Wrap; onTextChanged: root.editorDirty = true }
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border; visible: editorTaskId.length > 0 }
                     Text { visible: editorTaskId.length > 0; text: qsTr("Source information"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
                     Text {
@@ -660,23 +789,74 @@ Rectangle {
     }
     Dialog {
         id: detailsDialog; modal: true; title: qsTr("Task details"); standardButtons: Dialog.Close
-        width: Math.min(560, Math.max(440, root.width)); anchors.centerIn: Overlay.overlay
+        width: Math.min(700, Math.max(460, root.width)); height: Math.min(680, root.height + 260); anchors.centerIn: Overlay.overlay
         background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
         contentItem: ColumnLayout {
             spacing: 8
-            Text { text: root.detail.title || ""; color: root.text; font.pixelSize: 18; font.weight: Font.DemiBold; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-            Text { text: root.detail.description || qsTr("No description."); color: root.secondary; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-            Text { text: qsTr("%1 · %2 priority · %3 difficulty · due %4").arg(root.detail.statusLabel || "").arg(root.detail.priority || "").arg(root.detail.difficulty || qsTr("not set")).arg(root.detail.dueDate || qsTr("no date")); color: root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-            Text { text: qsTr("Tags: %1").arg((root.detail.tags || []).join(", ") || qsTr("none")); color: root.secondary; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-            Text { text: qsTr("Branch: %1").arg(root.detail.gitBranch || qsTr("none")); color: root.secondary; font.pixelSize: 10; Layout.fillWidth: true }
-            Text { visible: (root.detail.blockedReason || "").length > 0; text: qsTr("Blocked: %1").arg(root.detail.blockedReason || ""); color: root.warning; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-            Text { text: qsTr("Subtasks: %1/%2 complete").arg(root.detail.completedSubtaskCount || 0).arg(root.detail.subtaskCount || 0); color: root.secondary; font.pixelSize: 10; Layout.fillWidth: true }
-            Text {
-                visible: (root.detail.sourceType || "local") !== "local"
-                text: qsTr("Imported from %1 · source identity %2 / %3 · revision %4 · created %5 · updated %6 · imported %7")
-                    .arg(root.detail.sourceType || "").arg(root.detail.sourceProfileIdentity || "—").arg(root.detail.sourceTaskId || "—")
-                    .arg(root.detail.sourceRevision || "—").arg(root.detail.sourceCreatedAt || "—").arg(root.detail.sourceUpdatedAt || "—").arg(root.detail.importedAt || "—")
-                color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true
+            ScrollView {
+                Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                ColumnLayout {
+                    width: Math.max(420, detailsDialog.availableWidth - 28); spacing: 9
+                    Text { text: root.detail.title || ""; color: root.text; font.pixelSize: 18; font.weight: Font.DemiBold; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Text { text: qsTr("General"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
+                    Text { text: root.detail.description || qsTr("No description."); color: root.secondary; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Text { text: qsTr("%1 · %2 priority · %3 difficulty · due %4").arg(root.detail.statusLabel || "").arg(root.detail.priority || "").arg(root.detail.difficulty || qsTr("not set")).arg(root.detail.dueDate || qsTr("no date")); color: root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Text { text: qsTr("Tags: %1 · subtasks %2/%3").arg((root.detail.tags || []).join(", ") || qsTr("none")).arg(root.detail.completedSubtaskCount || 0).arg(root.detail.subtaskCount || 0); color: root.secondary; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
+                    Text { text: qsTr("Planning and milestones"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
+                    Text { text: qsTr("Estimated %1 min · recorded %2 min · milestone %3").arg(root.detail.estimatedMinutes === undefined || root.detail.estimatedMinutes === null ? qsTr("not set") : root.detail.estimatedMinutes).arg(root.detail.actualTrackedMinutes || 0).arg(root.detail.milestoneId ? root.milestoneTitle(root.detail.milestoneId) : qsTr("none")); color: root.secondary; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
+                    Text { text: qsTr("Git and GitHub"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text { Layout.fillWidth: true; text: root.detail.gitBranch ? qsTr("%1 · %2").arg(root.detail.gitBranch).arg(root.branchIsPresent(root.detail.gitBranch) ? qsTr("exists") : qsTr("missing")) : qsTr("No branch associated"); color: root.branchIsPresent(root.detail.gitBranch) ? root.info : root.warning; font.pixelSize: 10; elide: Text.ElideMiddle }
+                        Button { visible: !!root.detail.gitBranch; text: qsTr("Open in Git"); onClicked: plannerController.openGitBranch(root.detail.gitBranch) }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Button { visible: !!root.detail.githubIssueUrl; text: qsTr("Open Issue"); onClicked: plannerController.openGitHubUrl(root.detail.githubIssueUrl) }
+                        Button { visible: !!root.detail.githubPullRequestUrl; text: qsTr("Open Pull Request"); onClicked: plannerController.openGitHubUrl(root.detail.githubPullRequestUrl) }
+                    }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
+                    Text { text: qsTr("Dependencies"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
+                    Text { visible: !!root.detail.blockedByDependency || !!root.detail.blockedReason; text: root.detail.blockedByDependency ? qsTr("Blocked by incomplete prerequisite: %1").arg((root.detail.incompletePrerequisiteTitles || []).join(", ")) : qsTr("Blocked: %1").arg(root.detail.blockedReason || ""); color: root.warning; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Text { text: qsTr("Prerequisites: %1").arg((root.detail.prerequisiteTitles || []).join(", ") || qsTr("none")); color: root.secondary; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Text { text: qsTr("Dependent tasks: %1").arg((root.detail.dependentTaskTitles || []).join(", ") || qsTr("none")); color: root.secondary; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
+                    Text { text: qsTr("Planner notes"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
+                    Text { text: root.detail.notes || qsTr("No developer notes."); color: root.secondary; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
+                    Text { text: qsTr("Time tracking · %1 min total").arg(root.detail.actualTrackedMinutes || 0); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
+                    Repeater {
+                        model: root.detail.timeEntries || []
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Text { Layout.fillWidth: true; text: qsTr("%1 min · %2 · %3").arg(modelData.durationMinutes).arg(modelData.note || qsTr("No note")).arg(modelData.recordedAt || ""); color: root.secondary; font.pixelSize: 9; wrapMode: Text.WordWrap }
+                            ToolButton { text: "×"; Accessible.name: qsTr("Remove time entry"); onClicked: { if (plannerController.removeTimeEntry(root.detail.taskId, modelData.id)) root.refreshDetails(root.detail.taskId); detailsMessage.text = plannerController.error } }
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        TextField {
+                            id: timeMinutesField; Layout.preferredWidth: 100
+                            placeholderText: qsTr("Minutes"); validator: IntValidator { bottom: 1 }
+                            color: root.text
+                        }
+                        TextField { id: timeNoteField; Layout.fillWidth: true; placeholderText: qsTr("Entry note (optional)"); color: root.text }
+                        Button { text: qsTr("Record"); onClicked: { if (plannerController.addTimeEntry(root.detail.taskId, timeMinutesField.text, timeNoteField.text)) { timeMinutesField.clear(); timeNoteField.clear(); root.refreshDetails(root.detail.taskId) } detailsMessage.text = plannerController.error } }
+                    }
+                    Text { id: detailsMessage; visible: text.length > 0; text: ""; color: root.error; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
+                    Text { visible: (root.detail.sourceType || "local") !== "local"; text: qsTr("Import source"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
+                    Text {
+                        visible: (root.detail.sourceType || "local") !== "local"
+                        text: qsTr("Imported from %1 · profile %2 · source task %3 · revision %4 · created %5 · updated %6 · imported %7")
+                            .arg(root.detail.sourceType || "").arg(root.detail.sourceProfileIdentity || "—").arg(root.detail.sourceTaskId || "—")
+                            .arg(root.detail.sourceRevision || "—").arg(root.detail.sourceCreatedAt || "—").arg(root.detail.sourceUpdatedAt || "—").arg(root.detail.importedAt || "—")
+                        color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true
+                    }
+                }
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -685,6 +865,80 @@ Rectangle {
                 Button { text: qsTr("Edit"); onClicked: root.editFromDetails() }
             }
         }
+    }
+    Dialog {
+        id: milestoneManager; modal: true; title: qsTr("Workspace milestones"); standardButtons: Dialog.Close
+        width: Math.min(680, Math.max(480, root.width)); height: Math.min(620, root.height + 180)
+        anchors.centerIn: Overlay.overlay
+        background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
+        contentItem: ColumnLayout {
+            spacing: 8
+            RowLayout {
+                Layout.fillWidth: true
+                Text { text: qsTr("Milestone progress is calculated from tasks assigned in this workspace."); color: root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                Button { text: qsTr("＋ New milestone"); onClicked: { milestoneManager.close(); root.openMilestoneEditor("") } }
+            }
+            ListView {
+                Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 6
+                model: plannerController.milestones
+                delegate: Rectangle {
+                    required property var modelData
+                    width: ListView.view.width; implicitHeight: milestoneRow.implicitHeight + 16
+                    radius: 8; color: root.surface; border.color: root.border
+                    ColumnLayout {
+                        id: milestoneRow; anchors.fill: parent; anchors.margins: 8; spacing: 5
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: modelData.title; color: root.text; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideRight }
+                            Text { text: modelData.completed ? qsTr("Complete") : qsTr("Active"); color: modelData.completed ? root.success : root.muted; font.pixelSize: 9 }
+                            ToolButton { text: "✎"; Accessible.name: qsTr("Edit milestone"); onClicked: { milestoneManager.close(); root.openMilestoneEditor(modelData.id) } }
+                            ToolButton { text: "×"; Accessible.name: qsTr("Delete milestone"); onClicked: { root.selectedMilestoneId = modelData.id; removeMilestoneDialog.open() } }
+                        }
+                        Text { visible: !!modelData.description; text: modelData.description; color: root.secondary; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            ProgressBar { Layout.fillWidth: true; from: 0; to: 100; value: modelData.progress }
+                            Text { text: qsTr("%1% · %2/%3 tasks").arg(modelData.progress).arg(modelData.completedTaskCount).arg(modelData.taskCount); color: root.secondary; font.pixelSize: 9 }
+                            Text { text: modelData.dueDate ? qsTr("Due %1").arg(modelData.dueDate) : qsTr("No due date"); color: root.muted; font.pixelSize: 9 }
+                        }
+                        Button { text: qsTr("View tasks"); onClicked: { plannerController.setMilestoneFilter(modelData.id); milestoneManager.close() } }
+                    }
+                }
+            }
+            Text { visible: plannerController.milestones.length === 0; Layout.fillWidth: true; text: qsTr("No milestones yet."); color: root.muted; horizontalAlignment: Text.AlignHCenter }
+        }
+    }
+    Dialog {
+        id: milestoneEditor; modal: true; title: root.selectedMilestoneId ? qsTr("Edit milestone") : qsTr("New milestone")
+        width: Math.min(520, Math.max(400, root.width)); anchors.centerIn: Overlay.overlay
+        background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
+        contentItem: ColumnLayout {
+            spacing: 8
+            TextField { id: milestoneTitleField; Layout.fillWidth: true; placeholderText: qsTr("Milestone title"); color: root.text }
+            TextArea { id: milestoneDescriptionField; Layout.fillWidth: true; Layout.preferredHeight: 76; placeholderText: qsTr("Description"); color: root.text; wrapMode: TextEdit.Wrap }
+            GridLayout {
+                Layout.fillWidth: true; columns: 2
+                Label { text: qsTr("Start date"); color: root.secondary }
+                TextField { id: milestoneStartField; placeholderText: "YYYY-MM-DD"; color: root.text }
+                Label { text: qsTr("Target date"); color: root.secondary }
+                TextField { id: milestoneDueField; placeholderText: "YYYY-MM-DD"; color: root.text }
+                Label { text: qsTr("Status"); color: root.secondary }
+                CheckBox { id: milestoneCompletedField; text: qsTr("Complete") }
+            }
+            Text { id: milestoneMessage; visible: text.length > 0; Layout.fillWidth: true; color: root.error; font.pixelSize: 10; wrapMode: Text.WordWrap }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                Button { text: qsTr("Cancel"); onClicked: milestoneEditor.close() }
+                Button { text: qsTr("Save milestone"); onClicked: root.saveMilestoneEditor() }
+            }
+        }
+    }
+    Dialog {
+        id: removeMilestoneDialog; modal: true; title: qsTr("Delete milestone?"); standardButtons: Dialog.Yes | Dialog.Cancel
+        width: 420; anchors.centerIn: Overlay.overlay
+        contentItem: Text { text: qsTr("Tasks in this workspace will stay intact and be removed from the milestone."); color: root.secondary; wrapMode: Text.WordWrap }
+        onAccepted: root.removeSelectedMilestone()
     }
     Dialog {
         id: deleteDialog; modal: true; title: qsTr("Delete task?"); standardButtons: Dialog.Yes | Dialog.Cancel

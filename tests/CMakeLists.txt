@@ -225,11 +225,16 @@ qt_add_executable(devhub_planner_ui_tests
     planner_ui_test.cpp
     ../src/presentation/overview/planner/PlannerController.cpp
     ../src/presentation/overview/planner/PlannerTaskModel.cpp
+    ../src/application/git/GitExecutableLocator.cpp
+    ../src/application/git/GitCommandRunner.cpp
+    ../src/application/git/GitStatusParser.cpp
+    ../src/application/git/GitRepositoryLocator.cpp
+    ../src/application/git/GitService.cpp
     ../resources/database_migrations.qrc
 )
 
 target_link_libraries(devhub_planner_ui_tests PRIVATE
-    devhub_planner devhub_workspaces devhub_settings Qt6::Core Qt6::Qml Qt6::Sql Qt6::Test project_options project_warnings)
+    devhub_planner devhub_workspaces devhub_settings Qt6::Core Qt6::Gui Qt6::Qml Qt6::Sql Qt6::Test project_options project_warnings)
 add_test(NAME devhub.planner-ui COMMAND devhub_planner_ui_tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/planner-ui-tests.txt,txt")
 set_tests_properties(devhub.planner-ui PROPERTIES TIMEOUT 60

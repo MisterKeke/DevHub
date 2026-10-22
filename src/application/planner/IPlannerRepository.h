@@ -12,6 +12,7 @@ using domain::planner::PlannerMilestone;
 using domain::planner::PlannerSubtask;
 using domain::planner::PlannerTask;
 using domain::planner::PlannerTaskFilter;
+using domain::planner::PlannerTimeEntry;
 
 class IPlannerRepository
 {
@@ -51,6 +52,13 @@ class IPlannerRepository
     [[nodiscard]] virtual shared::common::Result<void>
     reorderSubtasks(const QString &workspaceId, const QString &taskId,
                     const QStringList &subtaskIds, qint64 expectedRevision) = 0;
+    [[nodiscard]] virtual shared::common::Result<PlannerTimeEntry>
+    addTimeEntry(PlannerTimeEntry entry, qint64 expectedRevision) = 0;
+    [[nodiscard]] virtual shared::common::Result<QVector<PlannerTimeEntry>>
+    listTimeEntries(const QString &workspaceId, const QString &taskId) = 0;
+    [[nodiscard]] virtual shared::common::Result<void>
+    removeTimeEntry(const QString &workspaceId, const QString &taskId,
+                    const QString &entryId, qint64 expectedRevision) = 0;
     [[nodiscard]] virtual shared::common::Result<PlannerMilestone>
     createMilestone(PlannerMilestone milestone) = 0;
     [[nodiscard]] virtual shared::common::Result<QVector<PlannerMilestone>>

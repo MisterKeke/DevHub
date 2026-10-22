@@ -74,6 +74,11 @@ struct PlannerTask final
     QStringList tags;
     QVector<PlannerSubtask> subtasks;
     QStringList dependencyIds;
+    QStringList prerequisiteTitles;
+    QStringList dependentTaskIds;
+    QStringList dependentTaskTitles;
+    QStringList incompletePrerequisiteTitles;
+    bool blockedByDependency = false;
 };
 
 struct PlannerMilestone final
@@ -88,6 +93,18 @@ struct PlannerMilestone final
     qint64 revision = 1;
     QDateTime createdAtUtc;
     QDateTime updatedAtUtc;
+    int taskCount = 0;
+    int completedTaskCount = 0;
+};
+
+struct PlannerTimeEntry final
+{
+    QString id;
+    QString workspaceId;
+    QString taskId;
+    qint64 durationMinutes = 0;
+    QString note;
+    QDateTime recordedAtUtc;
 };
 
 struct PlannerTaskFilter final
@@ -97,7 +114,11 @@ struct PlannerTaskFilter final
     std::optional<bool> completed;
     std::optional<QString> priority;
     QString milestoneId;
+    QString gitBranch;
     QString tag;
+    QString sourceType;
+    std::optional<bool> blocked;
+    std::optional<bool> overdue;
     PlannerSortField sort = PlannerSortField::BoardPosition;
     bool descending = false;
     int limit = 50;

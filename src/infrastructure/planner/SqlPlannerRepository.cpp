@@ -5,10 +5,13 @@
 #include "../database/SqlTransactionGuard.h"
 
 #include <QSet>
+#include <QDate>
 #include <QSqlQuery>
 #include <QThread>
 #include <QUuid>
 #include <QVariant>
+
+#include <limits>
 
 namespace devhub::infrastructure::planner
 {
@@ -412,6 +415,35 @@ Result<PlannerTask> SqlPlannerRepository::getTask(const QString &workspaceId, co
         return sqlFailure<PlannerTask>(details, QStringLiteral("read Planner task dependencies"));
     while (details.next())
         task.dependencyIds.append(details.value(0).toString());
+    details.finish();
+    details.prepare(QStringLiteral(
+        "SELECT p.id,p.title,p.is_completed FROM planner_task_dependencies d JOIN planner_tasks p "
+        "ON p.workspace_id=d.workspace_id AND p.id=d.depends_on_task_id "
+        "WHERE d.workspace_id=? AND d.task_id=? ORDER BY p.title COLLATE NOCASE,p.id"));
+    details.addBindValue(workspaceId);
+    details.addBindValue(taskId);
+    if (!details.exec())
+        return sqlFailure<PlannerTask>(details, QStringLiteral("read Planner task prerequisites"));
+    while (details.next()) {
+        task.prerequisiteTitles.append(details.value(1).toString());
+        if (!details.value(2).toBool()) {
+            task.blockedByDependency = true;
+            task.incompletePrerequisiteTitles.append(details.value(1).toString());
+        }
+    }
+    details.finish();
+    details.prepare(QStringLiteral(
+        "SELECT t.id,t.title FROM planner_task_dependencies d JOIN planner_tasks t "
+        "ON t.workspace_id=d.workspace_id AND t.id=d.task_id "
+        "WHERE d.workspace_id=? AND d.depends_on_task_id=? ORDER BY t.title COLLATE NOCASE,t.id"));
+    details.addBindValue(workspaceId);
+    details.addBindValue(taskId);
+    if (!details.exec())
+        return sqlFailure<PlannerTask>(details, QStringLiteral("read Planner dependent tasks"));
+    while (details.next()) {
+        task.dependentTaskIds.append(details.value(0).toString());
+        task.dependentTaskTitles.append(details.value(1).toString());
+    }
     return Result<PlannerTask>::success(std::move(task));
 }
 
@@ -423,8 +455,10 @@ Result<QVector<PlannerTask>> SqlPlannerRepository::listTasks(const QString &work
     QString sql = QStringLiteral("SELECT t.id FROM planner_tasks t JOIN workspaces w ON "
                                  "w.id=t.workspace_id WHERE t.workspace_id=? AND w.account_id=?");
     if (!filter.searchText.isEmpty())
-        sql +=
-            QStringLiteral(" AND (t.title LIKE ? ESCAPE '!' OR t.description LIKE ? ESCAPE '!')");
+        sql += QStringLiteral(
+            " AND (t.title LIKE ? ESCAPE '!' OR t.description LIKE ? ESCAPE '!' OR t.git_branch LIKE ? ESCAPE '!' "
+            "OR EXISTS(SELECT 1 FROM planner_task_tags sl JOIN planner_tags sg ON sg.id=sl.tag_id "
+            "WHERE sl.workspace_id=t.workspace_id AND sl.task_id=t.id AND sg.name LIKE ? ESCAPE '!'))");
     if (filter.status)
         sql += QStringLiteral(" AND t.status=?");
     if (filter.completed)
@@ -433,10 +467,24 @@ Result<QVector<PlannerTask>> SqlPlannerRepository::listTasks(const QString &work
         sql += QStringLiteral(" AND t.priority=?");
     if (!filter.milestoneId.isEmpty())
         sql += QStringLiteral(" AND t.milestone_id=?");
+    if (!filter.gitBranch.isEmpty())
+        sql += QStringLiteral(" AND t.git_branch=?");
     if (!filter.tag.isEmpty())
         sql += QStringLiteral(
             " AND EXISTS(SELECT 1 FROM planner_task_tags l JOIN planner_tags g ON g.id=l.tag_id "
-            "WHERE l.workspace_id=t.workspace_id AND l.task_id=t.id AND g.name_normalized=?)");
+            "WHERE l.workspace_id=t.workspace_id AND l.task_id=t.id AND g.name_normalized LIKE ? ESCAPE '!')");
+    if (!filter.sourceType.isEmpty())
+        sql += QStringLiteral(" AND t.source_type=?");
+    const QString blockedExpression = QStringLiteral(
+        "(t.blocked_reason<>'' OR EXISTS(SELECT 1 FROM planner_task_dependencies d "
+        "JOIN planner_tasks p ON p.workspace_id=d.workspace_id AND p.id=d.depends_on_task_id "
+        "WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND p.is_completed=0))");
+    if (filter.blocked)
+        sql += *filter.blocked ? QStringLiteral(" AND %1").arg(blockedExpression)
+                               : QStringLiteral(" AND NOT %1").arg(blockedExpression);
+    if (filter.overdue)
+        sql += *filter.overdue ? QStringLiteral(" AND t.is_completed=0 AND t.due_date IS NOT NULL AND t.due_date<?")
+                               : QStringLiteral(" AND (t.is_completed=1 OR t.due_date IS NULL OR t.due_date>=?)");
     QString order;
     switch (filter.sort)
     {
@@ -475,6 +523,8 @@ Result<QVector<PlannerTask>> SqlPlannerRepository::listTasks(const QString &work
         const QString term = QStringLiteral("%") + escaped + QStringLiteral("%");
         query.addBindValue(term);
         query.addBindValue(term);
+        query.addBindValue(term);
+        query.addBindValue(term);
     }
     if (filter.status)
         query.addBindValue(domain::planner::plannerStatusName(*filter.status));
@@ -484,8 +534,19 @@ Result<QVector<PlannerTask>> SqlPlannerRepository::listTasks(const QString &work
         query.addBindValue(*filter.priority);
     if (!filter.milestoneId.isEmpty())
         query.addBindValue(filter.milestoneId);
-    if (!filter.tag.isEmpty())
-        query.addBindValue(filter.tag.trimmed().toCaseFolded());
+    if (!filter.gitBranch.isEmpty())
+        query.addBindValue(filter.gitBranch);
+    if (!filter.tag.isEmpty()) {
+        QString escaped = filter.tag.trimmed().toCaseFolded();
+        escaped.replace(QLatin1Char('!'), QStringLiteral("!!"));
+        escaped.replace(QLatin1Char('%'), QStringLiteral("!%"));
+        escaped.replace(QLatin1Char('_'), QStringLiteral("!_"));
+        query.addBindValue(QStringLiteral("%") + escaped + QStringLiteral("%"));
+    }
+    if (!filter.sourceType.isEmpty())
+        query.addBindValue(filter.sourceType);
+    if (filter.overdue)
+        query.addBindValue(QDate::currentDate().toString(Qt::ISODate));
     query.addBindValue(filter.limit);
     query.addBindValue(filter.offset);
     if (!query.exec())
@@ -839,6 +900,112 @@ Result<void> SqlPlannerRepository::reorderSubtasks(const QString &workspaceId,
     return transaction.commit();
 }
 
+Result<domain::planner::PlannerTimeEntry> SqlPlannerRepository::addTimeEntry(
+    domain::planner::PlannerTimeEntry entry, qint64 expectedRevision)
+{
+    if (!onOwnerThread())
+        return threadFailure<domain::planner::PlannerTimeEntry>(QStringLiteral("record Planner time"));
+    if (entry.durationMinutes <= 0 || expectedRevision < 1)
+        return missing<domain::planner::PlannerTimeEntry>(QStringLiteral("record Planner time"));
+    database::SqlTransactionGuard transaction(m_database.database());
+    if (!transaction.active())
+        return Result<domain::planner::PlannerTimeEntry>::failure(*transaction.error());
+    QSqlQuery update(m_database.database());
+    update.prepare(QStringLiteral(
+        "UPDATE planner_tasks SET actual_tracked_minutes=actual_tracked_minutes+?,revision=revision+1,"
+        "updated_at_utc=? WHERE id=? AND workspace_id=? AND revision=? AND actual_tracked_minutes<=? "
+        "AND workspace_id IN(SELECT id FROM workspaces WHERE account_id=? AND archived_at_utc IS NULL)"));
+    update.addBindValue(entry.durationMinutes);
+    update.addBindValue(timestamp(entry.recordedAtUtc));
+    update.addBindValue(entry.taskId);
+    update.addBindValue(entry.workspaceId);
+    update.addBindValue(expectedRevision);
+    update.addBindValue(std::numeric_limits<qint64>::max() - entry.durationMinutes);
+    update.addBindValue(m_accountId.toString());
+    if (!update.exec())
+        return sqlFailure<domain::planner::PlannerTimeEntry>(update, QStringLiteral("update tracked Planner time"));
+    if (update.numRowsAffected() != 1)
+        return conflict<domain::planner::PlannerTimeEntry>(QStringLiteral("update tracked Planner time"));
+    QSqlQuery insert(m_database.database());
+    insert.prepare(QStringLiteral(
+        "INSERT INTO planner_time_entries(id,workspace_id,task_id,duration_minutes,note,recorded_at_utc) "
+        "VALUES(?,?,?,?,?,?)"));
+    insert.addBindValue(entry.id);
+    insert.addBindValue(entry.workspaceId);
+    insert.addBindValue(entry.taskId);
+    insert.addBindValue(entry.durationMinutes);
+    insert.addBindValue(textValue(entry.note));
+    insert.addBindValue(timestamp(entry.recordedAtUtc));
+    if (!insert.exec())
+        return sqlFailure<domain::planner::PlannerTimeEntry>(insert, QStringLiteral("save Planner time entry"));
+    auto committed = transaction.commit();
+    if (!committed) return Result<domain::planner::PlannerTimeEntry>::failure(committed.error());
+    return Result<domain::planner::PlannerTimeEntry>::success(std::move(entry));
+}
+
+Result<QVector<domain::planner::PlannerTimeEntry>> SqlPlannerRepository::listTimeEntries(
+    const QString &workspaceId, const QString &taskId)
+{
+    if (!onOwnerThread())
+        return threadFailure<QVector<domain::planner::PlannerTimeEntry>>(QStringLiteral("list Planner time entries"));
+    QSqlQuery query(m_database.database());
+    query.prepare(QStringLiteral(
+        "SELECT e.id,e.workspace_id,e.task_id,e.duration_minutes,e.note,e.recorded_at_utc "
+        "FROM planner_time_entries e JOIN planner_tasks t ON t.workspace_id=e.workspace_id AND t.id=e.task_id "
+        "JOIN workspaces w ON w.id=t.workspace_id WHERE e.workspace_id=? AND e.task_id=? AND w.account_id=? "
+        "ORDER BY e.recorded_at_utc DESC,e.id DESC"));
+    query.addBindValue(workspaceId);
+    query.addBindValue(taskId);
+    query.addBindValue(m_accountId.toString());
+    if (!query.exec())
+        return sqlFailure<QVector<domain::planner::PlannerTimeEntry>>(query, QStringLiteral("list Planner time entries"));
+    QVector<domain::planner::PlannerTimeEntry> entries;
+    while (query.next())
+        entries.append({query.value(0).toString(), query.value(1).toString(), query.value(2).toString(),
+                        query.value(3).toLongLong(), query.value(4).toString(), readTimestamp(query.value(5))});
+    return Result<QVector<domain::planner::PlannerTimeEntry>>::success(std::move(entries));
+}
+
+Result<void> SqlPlannerRepository::removeTimeEntry(const QString &workspaceId, const QString &taskId,
+                                                   const QString &entryId, qint64 expectedRevision)
+{
+    if (!onOwnerThread()) return threadFailure<void>(QStringLiteral("remove Planner time entry"));
+    database::SqlTransactionGuard transaction(m_database.database());
+    if (!transaction.active()) return Result<void>::failure(*transaction.error());
+    QSqlQuery read(m_database.database());
+    read.prepare(QStringLiteral(
+        "SELECT duration_minutes FROM planner_time_entries WHERE workspace_id=? AND task_id=? AND id=?"));
+    read.addBindValue(workspaceId);
+    read.addBindValue(taskId);
+    read.addBindValue(entryId);
+    if (!read.exec()) return sqlFailure<void>(read, QStringLiteral("read Planner time entry"));
+    if (!read.next()) return missing<void>(QStringLiteral("read Planner time entry"));
+    const qint64 duration = read.value(0).toLongLong();
+    read.finish();
+    QSqlQuery update(m_database.database());
+    update.prepare(QStringLiteral(
+        "UPDATE planner_tasks SET actual_tracked_minutes=actual_tracked_minutes-?,revision=revision+1,"
+        "updated_at_utc=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND workspace_id=? AND revision=? "
+        "AND actual_tracked_minutes>=? AND workspace_id IN(SELECT id FROM workspaces WHERE account_id=? "
+        "AND archived_at_utc IS NULL)"));
+    update.addBindValue(duration);
+    update.addBindValue(taskId);
+    update.addBindValue(workspaceId);
+    update.addBindValue(expectedRevision);
+    update.addBindValue(duration);
+    update.addBindValue(m_accountId.toString());
+    if (!update.exec()) return sqlFailure<void>(update, QStringLiteral("remove Planner tracked time"));
+    if (update.numRowsAffected() != 1) return conflict<void>(QStringLiteral("remove Planner tracked time"));
+    QSqlQuery remove(m_database.database());
+    remove.prepare(QStringLiteral("DELETE FROM planner_time_entries WHERE workspace_id=? AND task_id=? AND id=?"));
+    remove.addBindValue(workspaceId);
+    remove.addBindValue(taskId);
+    remove.addBindValue(entryId);
+    if (!remove.exec()) return sqlFailure<void>(remove, QStringLiteral("delete Planner time entry"));
+    if (remove.numRowsAffected() != 1) return missing<void>(QStringLiteral("delete Planner time entry"));
+    return transaction.commit();
+}
+
 Result<PlannerMilestone> SqlPlannerRepository::createMilestone(PlannerMilestone milestone)
 {
     if (!onOwnerThread())
@@ -876,7 +1043,10 @@ Result<QVector<PlannerMilestone>> SqlPlannerRepository::listMilestones(const QSt
     query.prepare(QStringLiteral(
         "SELECT "
         "m.id,m.workspace_id,m.title,m.description,m.start_date,m.due_date,m.is_completed,m."
-        "revision,m.created_at_utc,m.updated_at_utc FROM planner_milestones m JOIN workspaces w ON "
+        "revision,m.created_at_utc,m.updated_at_utc,"
+        "(SELECT COUNT(*) FROM planner_tasks t WHERE t.workspace_id=m.workspace_id AND t.milestone_id=m.id),"
+        "(SELECT COUNT(*) FROM planner_tasks t WHERE t.workspace_id=m.workspace_id AND t.milestone_id=m.id AND t.is_completed=1) "
+        "FROM planner_milestones m JOIN workspaces w ON "
         "w.id=m.workspace_id WHERE m.workspace_id=? AND w.account_id=? ORDER BY m.due_date,m.title "
         "COLLATE NOCASE,m.id"));
     query.addBindValue(workspaceId);
@@ -890,7 +1060,8 @@ Result<QVector<PlannerMilestone>> SqlPlannerRepository::listMilestones(const QSt
                            query.value(2).toString(), query.value(3).toString(),
                            readDate(query.value(4)), readDate(query.value(5)),
                            query.value(6).toBool(), query.value(7).toLongLong(),
-                           readTimestamp(query.value(8)), readTimestamp(query.value(9))});
+                           readTimestamp(query.value(8)), readTimestamp(query.value(9)),
+                           query.value(10).toInt(), query.value(11).toInt()});
     return Result<QVector<PlannerMilestone>>::success(std::move(milestones));
 }
 

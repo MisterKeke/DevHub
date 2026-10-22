@@ -53,6 +53,12 @@ QVariant PlannerTaskModel::data(const QModelIndex& index, int role) const
     case TagsRole: return task->tags;
     case SubtasksRole: return subtasks;
     case DependencyIdsRole: return task->dependencyIds;
+    case BlockedByDependencyRole: return task->blockedByDependency;
+    case BlockedRole: return task->blockedByDependency || !task->blockedReason.isEmpty();
+    case IncompletePrerequisiteTitlesRole: return task->incompletePrerequisiteTitles;
+    case DependentTaskIdsRole: return task->dependentTaskIds;
+    case PrerequisiteTitlesRole: return task->prerequisiteTitles;
+    case DependentTaskTitlesRole: return task->dependentTaskTitles;
     case OverdueRole: return !task->completed && task->dueDate.isValid() && task->dueDate < QDate::currentDate();
     case SubtaskCountRole: return task->subtasks.size();
     case CompletedSubtaskCountRole: return std::count_if(task->subtasks.cbegin(), task->subtasks.cend(), [](const auto& item) { return item.completed; });
@@ -77,7 +83,10 @@ QHash<int, QByteArray> PlannerTaskModel::roleNames() const
         {ImportedAtRole,"importedAt"},{TagsRole,"tags"},{SubtasksRole,"subtasks"},
         {DependencyIdsRole,"dependencyIds"},{OverdueRole,"overdue"},{SubtaskCountRole,"subtaskCount"},
         {CompletedSubtaskCountRole,"completedSubtaskCount"},{CreatedAtRole,"createdAt"},
-        {UpdatedAtRole,"updatedAt"}};
+        {UpdatedAtRole,"updatedAt"},{BlockedByDependencyRole,"blockedByDependency"},
+        {IncompletePrerequisiteTitlesRole,"incompletePrerequisiteTitles"},{DependentTaskIdsRole,"dependentTaskIds"},
+        {PrerequisiteTitlesRole,"prerequisiteTitles"},{DependentTaskTitlesRole,"dependentTaskTitles"},
+        {BlockedRole,"blocked"}};
 }
 
 const PlannerTask* PlannerTaskModel::taskAt(int row) const
@@ -85,7 +94,9 @@ const PlannerTask* PlannerTaskModel::taskAt(int row) const
 const PlannerTask* PlannerTaskModel::taskById(const QString& id) const
 { const auto it = std::find_if(m_tasks.cbegin(), m_tasks.cend(), [&id](const auto& task) { return task.id == id; }); return it == m_tasks.cend() ? nullptr : &*it; }
 void PlannerTaskModel::setTasks(QVector<PlannerTask> tasks)
-{ beginResetModel(); m_tasks = std::move(tasks); endResetModel(); }
+{
+    beginResetModel(); m_tasks = std::move(tasks); endResetModel();
+}
 void PlannerTaskModel::clear() { setTasks({}); }
 
 PlannerTaskFilterModel::PlannerTaskFilterModel(QObject* parent) : QSortFilterProxyModel(parent)
