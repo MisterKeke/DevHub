@@ -559,15 +559,162 @@ Result<QVector<PlannerTask>> SqlPlannerRepository::listTasks(const QString &work
     while (query.next())
         ids.append(query.value(0).toString());
     query.finish();
+
+    QHash<QString, PlannerTask> tasksById;
+    tasksById.reserve(ids.size());
+    const auto placeholdersFor = [](qsizetype count) {
+        QStringList placeholders;
+        placeholders.reserve(count);
+        for (qsizetype i = 0; i < count; ++i)
+            placeholders.append(QStringLiteral("?"));
+        return placeholders.join(QLatin1Char(','));
+    };
+    const auto prepareBatch = [&workspaceId, &placeholdersFor](QSqlQuery& batch,
+                                                               const QString& sql,
+                                                               const QStringList& taskIds) {
+        batch.prepare(sql.arg(placeholdersFor(taskIds.size())));
+        batch.addBindValue(workspaceId);
+        for (const auto& taskId : taskIds)
+            batch.addBindValue(taskId);
+    };
+
+    // Keep each IN list well below SQLite's historical 999-parameter limit.
+    constexpr qsizetype BatchSize = 300;
+    for (qsizetype start = 0; start < ids.size(); start += BatchSize)
+    {
+        const QStringList batchIds = ids.mid(start, BatchSize);
+        const QString inClause = placeholdersFor(batchIds.size());
+        QSqlQuery rows(m_database.database());
+        rows.prepare(QStringLiteral(
+            "SELECT t.id,t.workspace_id,t.title,t.description,t.is_completed,t.status,t.board_position,t."
+            "created_at_utc,t.updated_at_utc,t.due_date,t.start_date,t.priority,t.difficulty,t.revision,"
+            "t.estimated_minutes,t.actual_tracked_minutes,COALESCE(t.milestone_id,''),"
+            "COALESCE(t.git_branch,''),COALESCE(t.github_issue_url,''),"
+            "COALESCE(t.github_pull_request_url,''),t.planner_notes,t.blocked_reason,t.source_type,"
+            "COALESCE(i.source_profile_identity,''),COALESCE(i.source_task_id,''),"
+            "COALESCE(i.source_revision,''),i.source_created_at,i.source_updated_at,i.imported_at_utc,"
+            "COALESCE(t.linked_service_id,'') FROM planner_tasks t JOIN workspaces w ON w.id=t.workspace_id "
+            "LEFT JOIN planner_import_records i ON i.task_id=t.id WHERE t.workspace_id=? AND t.id IN (%1) "
+            "AND w.account_id=?").arg(inClause));
+        rows.addBindValue(workspaceId);
+        for (const auto& taskId : batchIds)
+            rows.addBindValue(taskId);
+        rows.addBindValue(m_accountId.toString());
+        if (!rows.exec())
+            return sqlFailure<QVector<PlannerTask>>(rows, QStringLiteral("list Planner tasks"));
+        while (rows.next())
+        {
+            PlannerTask task;
+            task.id = rows.value(0).toString();
+            task.workspaceId = rows.value(1).toString();
+            task.title = rows.value(2).toString();
+            task.description = rows.value(3).toString();
+            task.completed = rows.value(4).toBool();
+            task.status = domain::planner::plannerStatusFromName(rows.value(5).toString())
+                              .value_or(PlannerStatus::Todo);
+            task.boardPosition = rows.value(6).toLongLong();
+            task.createdAtUtc = readTimestamp(rows.value(7));
+            task.updatedAtUtc = readTimestamp(rows.value(8));
+            task.dueDate = readDate(rows.value(9));
+            task.startDate = readDate(rows.value(10));
+            task.priority = rows.value(11).toString();
+            task.difficulty = rows.value(12).toString();
+            task.revision = rows.value(13).toLongLong();
+            if (!rows.value(14).isNull())
+                task.estimatedMinutes = rows.value(14).toLongLong();
+            task.actualTrackedMinutes = rows.value(15).toLongLong();
+            task.milestoneId = rows.value(16).toString();
+            task.gitBranch = rows.value(17).toString();
+            task.githubIssueUrl = rows.value(18).toString();
+            task.githubPullRequestUrl = rows.value(19).toString();
+            task.notes = rows.value(20).toString();
+            task.blockedReason = rows.value(21).toString();
+            task.sourceType = rows.value(22).toString();
+            task.sourceProfileIdentity = rows.value(23).toString();
+            task.sourceTaskId = rows.value(24).toString();
+            task.sourceRevision = rows.value(25).toString();
+            task.sourceCreatedAt = rows.value(26).toString();
+            task.sourceUpdatedAt = rows.value(27).toString();
+            if (!rows.value(28).isNull())
+                task.importedAtUtc = readTimestamp(rows.value(28));
+            task.linkedServiceId = rows.value(29).toString();
+            tasksById.insert(task.id, std::move(task));
+        }
+        rows.finish();
+
+        QSqlQuery tags(m_database.database());
+        prepareBatch(tags, QStringLiteral(
+            "SELECT l.task_id,t.name FROM planner_task_tags l JOIN planner_tags t ON t.id=l.tag_id "
+            "WHERE l.workspace_id=? AND l.task_id IN (%1) ORDER BY l.task_id,t.name COLLATE NOCASE"), batchIds);
+        if (!tags.exec())
+            return sqlFailure<QVector<PlannerTask>>(tags, QStringLiteral("list Planner task tags"));
+        while (tags.next())
+            tasksById[tags.value(0).toString()].tags.append(tags.value(1).toString());
+        tags.finish();
+
+        QSqlQuery subtasks(m_database.database());
+        prepareBatch(subtasks, QStringLiteral(
+            "SELECT task_id,id,COALESCE(source_subtask_id,''),title,is_completed,position FROM planner_subtasks "
+            "WHERE workspace_id=? AND task_id IN (%1) ORDER BY task_id,position,id"), batchIds);
+        if (!subtasks.exec())
+            return sqlFailure<QVector<PlannerTask>>(subtasks, QStringLiteral("list Planner subtasks"));
+        while (subtasks.next())
+            tasksById[subtasks.value(0).toString()].subtasks.append(
+                {subtasks.value(1).toString(), subtasks.value(2).toString(), subtasks.value(3).toString(),
+                 subtasks.value(4).toBool(), subtasks.value(5).toInt()});
+        subtasks.finish();
+
+        QSqlQuery dependencies(m_database.database());
+        prepareBatch(dependencies, QStringLiteral(
+            "SELECT task_id,depends_on_task_id FROM planner_task_dependencies WHERE workspace_id=? "
+            "AND task_id IN (%1) ORDER BY task_id,depends_on_task_id"), batchIds);
+        if (!dependencies.exec())
+            return sqlFailure<QVector<PlannerTask>>(dependencies, QStringLiteral("list Planner dependencies"));
+        while (dependencies.next())
+            tasksById[dependencies.value(0).toString()].dependencyIds.append(dependencies.value(1).toString());
+        dependencies.finish();
+
+        QSqlQuery prerequisites(m_database.database());
+        prepareBatch(prerequisites, QStringLiteral(
+            "SELECT d.task_id,p.title,p.is_completed FROM planner_task_dependencies d JOIN planner_tasks p "
+            "ON p.workspace_id=d.workspace_id AND p.id=d.depends_on_task_id WHERE d.workspace_id=? "
+            "AND d.task_id IN (%1) ORDER BY d.task_id,p.title COLLATE NOCASE,p.id"), batchIds);
+        if (!prerequisites.exec())
+            return sqlFailure<QVector<PlannerTask>>(prerequisites, QStringLiteral("list Planner prerequisites"));
+        while (prerequisites.next())
+        {
+            auto& task = tasksById[prerequisites.value(0).toString()];
+            const auto title = prerequisites.value(1).toString();
+            task.prerequisiteTitles.append(title);
+            if (!prerequisites.value(2).toBool())
+            {
+                task.blockedByDependency = true;
+                task.incompletePrerequisiteTitles.append(title);
+            }
+        }
+        prerequisites.finish();
+
+        QSqlQuery dependents(m_database.database());
+        prepareBatch(dependents, QStringLiteral(
+            "SELECT d.depends_on_task_id,t.id,t.title FROM planner_task_dependencies d JOIN planner_tasks t "
+            "ON t.workspace_id=d.workspace_id AND t.id=d.task_id WHERE d.workspace_id=? "
+            "AND d.depends_on_task_id IN (%1) ORDER BY d.depends_on_task_id,t.title COLLATE NOCASE,t.id"), batchIds);
+        if (!dependents.exec())
+            return sqlFailure<QVector<PlannerTask>>(dependents, QStringLiteral("list Planner dependents"));
+        while (dependents.next())
+        {
+            auto& task = tasksById[dependents.value(0).toString()];
+            task.dependentTaskIds.append(dependents.value(1).toString());
+            task.dependentTaskTitles.append(dependents.value(2).toString());
+        }
+    }
+    if (tasksById.size() != ids.size())
+        return missing<QVector<PlannerTask>>(QStringLiteral("list Planner tasks"));
+
     QVector<PlannerTask> tasks;
     tasks.reserve(ids.size());
-    for (const QString &id : ids)
-    {
-        auto task = getTask(workspaceId, id);
-        if (!task)
-            return Result<QVector<PlannerTask>>::failure(task.error());
-        tasks.append(std::move(task).value());
-    }
+    for (const auto& id : ids)
+        tasks.append(tasksById.take(id));
     return Result<QVector<PlannerTask>>::success(std::move(tasks));
 }
 

@@ -2,10 +2,12 @@
 #include "support/SyntheticSomethingProfile.h"
 
 #include <QCryptographicHash>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QSet>
 #include <QUuid>
 #include <QtTest/QtTest>
 
@@ -132,6 +134,102 @@ private slots:
         QCOMPARE(fileHash(profile.path), before);
     }
 
+    void thousandTaskProfileStreamsWithoutDataLossOrSourceWrites()
+    {
+        SyntheticProfile profile;
+        QVERIFY(profile.created);
+        const QString connectionName = QStringLiteral("something-tasks-scale-")
+            + QUuid::createUuid().toString(QUuid::WithoutBraces);
+        auto source = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        source.setDatabaseName(profile.path);
+        bool inserted = source.open() && source.transaction();
+        QElapsedTimer seedTimer;
+        seedTimer.start();
+        if (inserted)
+        {
+            {
+                QSqlQuery query(source);
+                inserted = query.prepare(QStringLiteral(
+                    "INSERT INTO tasks(id,title,description,is_completed,created_at,updated_at,due_date,"
+                    "priority,difficulty,revision) VALUES(?,?,?,?,?,?,?,?,?,?)"));
+                for (int i = 1; inserted && i <= 1000; ++i)
+                {
+                    query.bindValue(0, i);
+                    query.bindValue(1, i == 1000 ? QStringLiteral("最後の scale task")
+                                                 : QStringLiteral("Scale import task %1").arg(i));
+                    query.bindValue(2, i == 1000 ? QString(256000, QChar(0x03bb)) : QStringLiteral(""));
+                    query.bindValue(3, i % 3 == 0 ? 1 : 0);
+                    query.bindValue(4, QStringLiteral("2026-10-01T00:00:00Z"));
+                    query.bindValue(5, QStringLiteral("2026-10-02T00:00:00Z"));
+                    query.bindValue(6, i % 2 == 0 ? QVariant(QStringLiteral("2027-04-29")) : QVariant());
+                    query.bindValue(7, i % 2 == 0 ? QStringLiteral("high") : QStringLiteral("low"));
+                    query.bindValue(8, QStringLiteral("medium"));
+                    query.bindValue(9, 1 + (i % 5));
+                    inserted = query.exec();
+                }
+            }
+            if (inserted)
+                inserted = source.commit();
+            else
+                source.rollback();
+        }
+        SyntheticProfile::close(source, connectionName);
+        QVERIFY(inserted);
+        qInfo().noquote() << QStringLiteral("SomethingQt scale seed: 1000 rows in %1 ms")
+                                 .arg(seedTimer.elapsed());
+
+        const QByteArray before = fileHash(profile.path);
+        QVERIFY(!before.isEmpty());
+        const auto inspected = SomethingQtImportReader::inspect(profile.path);
+        QVERIFY2(inspected.success, qPrintable(inspected.message));
+        QCOMPARE(inspected.value.taskCount, qint64(1000));
+
+        SomethingQtImportFilter firstPageFilter;
+        firstPageFilter.limit = 50;
+        const auto firstPage = SomethingQtImportReader::listPage(
+            profile.path, inspected.value.identity, firstPageFilter);
+        QVERIFY2(firstPage.success, qPrintable(firstPage.message));
+        QCOMPARE(firstPage.value.tasks.size(), 50);
+        QSet<QString> firstPageIds;
+        for (const auto& task : firstPage.value.tasks)
+        {
+            bool validId = false;
+            const qint64 id = task.sourceTaskId.toLongLong(&validId);
+            QVERIFY(validId);
+            QVERIFY(id >= 1 && id <= 1000);
+            firstPageIds.insert(task.sourceTaskId);
+        }
+        QCOMPARE(firstPageIds.size(), 50);
+
+        SomethingQtImportSelection selection;
+        selection.all = true;
+        int processed = 0;
+        bool finalTaskPreserved = false;
+        QElapsedTimer importTimer;
+        importTimer.start();
+        const auto stream = SomethingQtImportReader::forEachTask(
+            profile.path, inspected.value.identity, selection, {},
+            [&processed, &finalTaskPreserved](domain::planner::PlannerTask task) {
+                ++processed;
+                if (task.sourceTaskId == QStringLiteral("1000"))
+                    finalTaskPreserved = task.title == QStringLiteral("最後の scale task")
+                        && task.description.size() == 256000
+                        && task.dueDate == QDate(2027, 4, 29)
+                        && task.revision == 1
+                        && task.sourceRevision == QStringLiteral("1");
+                return true;
+            });
+        QVERIFY2(stream.success, qPrintable(stream.message));
+        QCOMPARE(stream.sourceCount, qint64(1000));
+        QCOMPARE(stream.processedCount, qint64(1000));
+        QCOMPARE(processed, 1000);
+        QVERIFY(finalTaskPreserved);
+        QCOMPARE(fileHash(profile.path), before);
+        qInfo().noquote() << QStringLiteral("SomethingQt scale stream: %1 tasks in %2 ms (%3 tasks/s)")
+                                 .arg(processed).arg(importTimer.elapsed())
+                                 .arg(processed * 1000 / qMax(1, static_cast<int>(importTimer.elapsed())));
+    }
+
     void selectionValidatesBeforeStreamingAndIdentityMustMatch()
     {
         SyntheticProfile profile;
@@ -201,6 +299,26 @@ private slots:
         const auto result = SomethingQtImportReader::inspect(profile.path);
         QVERIFY(!result.success);
         QCOMPARE(result.errorCode, QStringLiteral("schema_incompatible"));
+    }
+
+    void missingProfileAndMalformedTaskAreReportedWithoutWrites()
+    {
+        const auto missing = SomethingQtImportReader::inspect(
+            QStringLiteral("missing-somethingqt-profile.sqlite"));
+        QVERIFY(!missing.success);
+        QCOMPARE(missing.errorCode, QStringLiteral("profile_missing"));
+
+        SyntheticProfile profile;
+        QVERIFY(profile.created);
+        QVERIFY(profile.addTask(900, QStringLiteral("   ")));
+        const QByteArray before = fileHash(profile.path);
+        const auto inspected = SomethingQtImportReader::inspect(profile.path);
+        QVERIFY(inspected.success);
+        const auto task = SomethingQtImportReader::readTask(
+            profile.path, inspected.value.identity, QStringLiteral("900"));
+        QVERIFY(!task.success);
+        QCOMPARE(task.errorCode, QStringLiteral("invalid_source_data"));
+        QCOMPARE(fileHash(profile.path), before);
     }
 
 private:

@@ -14,11 +14,6 @@ QVariant PlannerTaskModel::data(const QModelIndex& index, int role) const
 {
     const auto* task = taskAt(index.row());
     if (!task || !index.isValid()) return {};
-    QVariantList subtasks;
-    for (const auto& subtask : task->subtasks)
-        subtasks.append(QVariantMap{{QStringLiteral("id"), subtask.id},
-            {QStringLiteral("title"), subtask.title}, {QStringLiteral("completed"), subtask.completed},
-            {QStringLiteral("position"), subtask.position}});
     switch (role) {
     case IdRole: return task->id;
     case TitleRole: return task->title;
@@ -52,7 +47,15 @@ QVariant PlannerTaskModel::data(const QModelIndex& index, int role) const
     case SourceUpdatedAtRole: return task->sourceUpdatedAt;
     case ImportedAtRole: return task->importedAtUtc.isValid() ? task->importedAtUtc.toString(Qt::ISODateWithMs) : QString{};
     case TagsRole: return task->tags;
-    case SubtasksRole: return subtasks;
+    case SubtasksRole: {
+        QVariantList subtasks;
+        subtasks.reserve(task->subtasks.size());
+        for (const auto& subtask : task->subtasks)
+            subtasks.append(QVariantMap{{QStringLiteral("id"), subtask.id},
+                {QStringLiteral("title"), subtask.title}, {QStringLiteral("completed"), subtask.completed},
+                {QStringLiteral("position"), subtask.position}});
+        return subtasks;
+    }
     case DependencyIdsRole: return task->dependencyIds;
     case BlockedByDependencyRole: return task->blockedByDependency;
     case BlockedRole: return task->blockedByDependency || !task->blockedReason.isEmpty();

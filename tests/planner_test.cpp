@@ -4,12 +4,17 @@
 #include "../src/shared/identifiers/IdGenerator.h"
 #include "../src/shared/time/ApplicationClock.h"
 #include "../src/infrastructure/planner/SomethingQtImportReader.h"
+#include "../src/presentation/overview/planner/PlannerTaskModel.h"
 #include "support/SyntheticSomethingProfile.h"
 
 #include <QDir>
+#include <QElapsedTimer>
+#include <QSqlError>
 #include <QSqlQuery>
 #include <QTemporaryDir>
+#include <QUuid>
 #include <QtTest/QtTest>
+#include <algorithm>
 #include <memory>
 
 using namespace devhub;
@@ -85,6 +90,95 @@ class PlannerTest final : public QObject
                                           "AND name LIKE 'idx_planner_%'")));
         QVERIFY(query.next());
         QVERIFY(query.value(0).toInt() >= 8);
+    }
+
+    void plannerListScaleProfile()
+    {
+        if (qEnvironmentVariableIntValue("DEVHUB_RUN_PLANNER_PERF") != 1)
+            QSKIP("Set DEVHUB_RUN_PLANNER_PERF=1 to run the 10,000-task profile.");
+
+        constexpr int totalTasks = 10000;
+        auto database = m_database->database();
+        QVERIFY(database.transaction());
+        QSqlQuery insert(database);
+        QVERIFY(insert.prepare(QStringLiteral(
+            "INSERT INTO planner_tasks(id,workspace_id,title,created_at_utc,updated_at_utc) "
+            "VALUES(?,?,?,?,?)")));
+        QElapsedTimer seedTimer;
+        seedTimer.start();
+        for (int i = 0; i < totalTasks; ++i)
+        {
+            insert.bindValue(0, QUuid::createUuid().toString(QUuid::WithoutBraces));
+            insert.bindValue(1, m_workspaceA);
+            insert.bindValue(2, QStringLiteral("Scale task %1").arg(i));
+            insert.bindValue(3, QStringLiteral("2026-10-23T08:00:00.000Z"));
+            insert.bindValue(4, QStringLiteral("2026-10-23T08:00:00.000Z"));
+            if (!insert.exec())
+            {
+                const QString error = insert.lastError().text();
+                database.rollback();
+                QFAIL(qPrintable(error));
+            }
+        }
+        QVERIFY(database.commit());
+        qInfo().noquote() << QStringLiteral("Planner scale seed: %1 rows in %2 ms")
+                                 .arg(totalTasks).arg(seedTimer.elapsed());
+
+        for (const int count : {100, 1000, 10000})
+        {
+            domain::planner::PlannerTaskFilter filter;
+            QElapsedTimer loadTimer;
+            loadTimer.start();
+            QVector<domain::planner::PlannerTask> loadedTasks;
+            loadedTasks.reserve(count);
+            while (loadedTasks.size() < count)
+            {
+                filter.limit = std::min(200, count - static_cast<int>(loadedTasks.size()));
+                filter.offset = static_cast<int>(loadedTasks.size());
+                auto page = m_service->listTasks(m_workspaceA, filter);
+                QVERIFY2(page, page ? "" : qPrintable(page.error().technicalMessage));
+                QVERIFY(!page.value().isEmpty());
+                loadedTasks += page.value();
+            }
+            const qint64 listMs = loadTimer.elapsed();
+            QCOMPARE(loadedTasks.size(), count);
+
+            quint64 estimatedModelPayload = static_cast<quint64>(sizeof(domain::planner::PlannerTask))
+                * static_cast<quint64>(loadedTasks.size());
+            for (const auto& task : loadedTasks)
+                estimatedModelPayload += static_cast<quint64>(task.title.size()) * sizeof(QChar)
+                    + static_cast<quint64>(task.description.size()) * sizeof(QChar);
+
+            presentation::overview::planner::PlannerTaskModel model;
+            QElapsedTimer modelTimer;
+            modelTimer.start();
+            model.setTasks(std::move(loadedTasks));
+            const qint64 modelMs = modelTimer.elapsed();
+
+            presentation::overview::planner::PlannerTaskFilterModel search;
+            search.setSourceModel(&model);
+            QElapsedTimer searchTimer;
+            searchTimer.start();
+            search.setSearchText(QStringLiteral("scale task 9"));
+            const int searchMatches = search.rowCount();
+            const qint64 searchMs = searchTimer.elapsed();
+            QVERIFY(searchMatches > 0);
+
+            presentation::overview::planner::PlannerTaskFilterModel board;
+            board.setSourceModel(&model);
+            QElapsedTimer boardTimer;
+            boardTimer.start();
+            board.setStatusFilter(QStringLiteral("todo"));
+            QCOMPARE(board.rowCount(), count);
+            const qint64 boardFilterMs = boardTimer.elapsed();
+
+            const double payloadMiB = static_cast<double>(estimatedModelPayload) / (1024.0 * 1024.0);
+            qInfo().noquote() << QStringLiteral(
+                "Planner scale: tasks=%1 list=%2ms modelReset=%3ms searchFilter=%4ms boardFilter=%5ms "
+                "estimatedModelPayload=%6MiB")
+                .arg(count).arg(listMs).arg(modelMs).arg(searchMs).arg(boardFilterMs)
+                .arg(payloadMiB, 0, 'f', 2);
+        }
     }
 
     void taskCrudTagsSubtasksUnicodeAndPagination()
@@ -171,6 +265,8 @@ class PlannerTest final : public QObject
         page = m_service->listTasks(m_workspaceA, filter);
         QVERIFY(page);
         QCOMPARE(page.value().size(), 1);
+        QCOMPARE(page.value().first().tags.size(), 2);
+        QCOMPARE(page.value().first().subtasks.size(), 2);
     }
 
     void statusRevisionMilestoneDependenciesAndWorkspaceIsolation()
@@ -322,11 +418,17 @@ class PlannerTest final : public QObject
         QVERIFY(filtered);
         QCOMPARE(filtered.value().size(), 1);
         QCOMPARE(filtered.value().first().id, dependent.value().id);
+        QVERIFY(filtered.value().first().blockedByDependency);
+        QCOMPARE(filtered.value().first().incompletePrerequisiteTitles,
+                 QStringList{QStringLiteral("Branch work")});
         filter.blocked = false;
         filtered = m_service->listTasks(m_workspaceA, filter);
         QVERIFY(filtered);
         QCOMPARE(filtered.value().size(), 1);
         QCOMPARE(filtered.value().first().id, prerequisite.value().id);
+        QCOMPARE(filtered.value().first().dependentTaskIds, QStringList{dependent.value().id});
+        QCOMPARE(filtered.value().first().dependentTaskTitles,
+                 QStringList{QStringLiteral("Imported dependent")});
         filter.blocked.reset();
         filter.gitBranch = QStringLiteral("feature/phase-four");
         filtered = m_service->listTasks(m_workspaceA, filter);

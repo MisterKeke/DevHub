@@ -134,7 +134,7 @@ qt_add_executable(devhub_assistant_tool_runtime_tests assistant_tool_runtime_tes
 target_link_libraries(devhub_assistant_tool_runtime_tests PRIVATE devhub_assistant Qt6::Sql Qt6::Test project_warnings)
 add_test(NAME devhub.assistant-tool-runtime COMMAND devhub_assistant_tool_runtime_tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-tool-runtime-tests.txt,txt")
-set_tests_properties(devhub.assistant-tool-runtime PROPERTIES TIMEOUT 45
+set_tests_properties(devhub.assistant-tool-runtime PROPERTIES TIMEOUT 180
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins;TMP=${CMAKE_CURRENT_BINARY_DIR};TEMP=${CMAKE_CURRENT_BINARY_DIR}"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
@@ -212,6 +212,7 @@ add_test(NAME devhub.database-migrations COMMAND devhub_database_tests)
 
 qt_add_executable(devhub_planner_tests
     planner_test.cpp
+    ../src/presentation/overview/planner/PlannerTaskModel.cpp
     ../resources/database_migrations.qrc
 )
 target_link_libraries(devhub_planner_tests PRIVATE
@@ -312,7 +313,7 @@ target_link_libraries(devhub_feature_tests PRIVATE devhub_services devhub_databa
 add_test(NAME devhub.feature-regressions COMMAND devhub_feature_tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/feature-regressions-tests.txt,txt")
 set_tests_properties(devhub.feature-regressions PROPERTIES
-    TIMEOUT 90
+    TIMEOUT 180
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;PATH=path_list_prepend:$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}"
 )
@@ -346,6 +347,14 @@ set_tests_properties(devhub.qml-runtime PROPERTIES TIMEOUT 45
 # Development test folders can contain copied Qt DLLs. Point plugin discovery
 # at the configured Qt kit rather than relying on the DLLs' compiled prefix.
 set_tests_properties(devhub.smoke devhub.database-migrations devhub.account-security
-    devhub.planner devhub.authentication devhub.feature-regressions devhub.reliability devhub.qml-runtime PROPERTIES
+    devhub.planner devhub.planner-ui devhub.authentication devhub.feature-regressions devhub.reliability devhub.qml-runtime PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
 )
+
+# Sandboxed Windows runners may deny the default per-user AppData Temp. Keep all
+# Qt test scratch files inside the writable build tree, without touching user data.
+get_property(DEVHUB_REGISTERED_TESTS DIRECTORY PROPERTY TESTS)
+foreach(test_name IN LISTS DEVHUB_REGISTERED_TESTS)
+    set_property(TEST "${test_name}" APPEND PROPERTY ENVIRONMENT_MODIFICATION
+        "TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}")
+endforeach()

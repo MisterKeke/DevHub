@@ -1,6 +1,6 @@
 # Workspace Planner architecture
 
-**Status:** Phases 1–5 implemented · **Reviewed:** 2026-10-23
+**Status:** Phases 1–6 implemented · **Reviewed:** 2026-10-23
 **Scope:** Local Planner storage, embedded Overview UI, independent SomethingQt task import, developer planning metadata, and saved-service integration.
 
 ## 1. Feature scope and non-goals
@@ -83,14 +83,16 @@ rows for a later restore.
 
 ### SQLite and build conventions
 
-The internal database is `LocalAppData/DevHub/data/devhub.db`. `InternalDatabaseManager` owns a
+The internal database is `LocalAppData/DevHub/data/devhub.db`. The current schema version is 12;
+the Planner migration history and current table contract are documented in
+[`workspace-planner-database.md`](workspace-planner-database.md). `InternalDatabaseManager` owns a
 uniquely named Qt SQL `QSQLITE` connection on its QObject thread, enables foreign keys, sets a
 5-second busy timeout, requests and verifies WAL, integrity-checks before migration, and applies
 embedded migrations transactionally. `SqlTransactionGuard` rolls back uncommitted work. Released
 migrations are immutable; migration files are embedded by `resources/database_migrations.qrc`.
-The migration sequence now ends at `0010_planner_import_copies.sql`. Migration 0010 preserves
-existing import provenance and adds a copy number for explicitly requested independent copies;
-released migrations 0001–0009 remain unchanged.
+Planner migrations 0009–0012 are additive and transactional. Migration 0010 preserves existing
+import provenance and adds a copy number for explicitly requested independent copies; migrations
+0001–0008 remain unchanged.
 
 The production application already uses Qt Widgets, Qt Quick/QML, Qt SQL and Qt Test. CMake lists
 sources explicitly and declares QML files in its QML module. No additional framework or database
@@ -136,6 +138,9 @@ Migration `0009_workspace_planner.sql` adds these workspace-owned tables:
   0010 adds `copy_number` and scopes uniqueness to workspace/source type/profile/source ID/copy
   number, enabling duplicate skips and explicitly requested independent copies. Original source
   timestamp strings are kept verbatim; local timestamps use normalized UTC ISO values.
+- `planner_time_entries` records manual durations, while `planner_action_runs` stores bounded
+  metadata for explicitly started saved-service actions. Migration 0012 adds `linked_service_id`
+  and the per-task action history; service output remains in the existing bounded Logs buffers.
 
 All workspace-owned rows cascade only when the workspace row is permanently deleted. Archiving
 continues to set `archived_at_utc`, preserving task data for restore. Repository queries and
@@ -286,12 +291,17 @@ Overview and service repositories use that main-thread connection. Moving it to 
 workers would violate Qt SQL affinity.
 
 The `SqlPlannerRepository` checks that each operation runs on `InternalDatabaseManager`'s owning
-thread. Local `PlannerController` calls remain synchronous on that thread. The import controller
+thread. Local `PlannerController` calls remain synchronous on that thread. Task list pages fetch
+task rows and batch their tags, subtasks, dependency IDs, prerequisite details and dependent-task
+details in chunks of at most 300 task IDs, avoiding one SQL round trip per relation per task. Full
+task descriptions and relations are still loaded into the in-memory model. The controller currently
+reads every matching page synchronously and retains the complete filtered workspace result, so
+very large workspaces remain a GUI-thread and memory limit that needs target-machine profiling.
+The import controller
 reads one source task at a time on a scheduler worker under a consistent read transaction, then
 queues the detached task to the owner thread for a per-task target transaction. The worker waits
 with cancellation polling for that task boundary acknowledgement, so shutdown cannot strand a
-blocking GUI call. Large descriptions and subtasks load for preview/import, never for the paged
-list. Cancellation retains prior task commits and reports partial counts.
+blocking GUI call. Cancellation retains prior task commits and reports partial counts.
 
 Use `revision` in update predicates (`WHERE id=? AND workspace_id=? AND revision=?`) and increment
 it atomically. The repository's unique source index remains the final guard against repeated
@@ -329,7 +339,8 @@ Use the existing Qt Test and CTest conventions, including temporary SQLite datab
 `devhub_planner_tests`, `devhub_database_tests`, `devhub_somethingqt_import_tests`, and the existing
 `devhub_something_tasks_reader_tests` includes:
 
-- fresh migration to schema 11, v9 provenance upgrade, and foreign-key integrity;
+- fresh migration to schema 12, v9 provenance upgrade, existing data preservation, rollback and
+  foreign-key integrity;
 - workspace/account isolation and archive/restore retention;
 - CRUD, Unicode and a large description, tag replacement, subtask ordering, search and pagination;
 - completion/status transitions, board ordering, revision conflicts and stale workspace reads;
@@ -337,9 +348,13 @@ Use the existing Qt Test and CTest conventions, including temporary SQLite datab
 - Git branch metadata and deleted-branch display, GitHub URL validation, manual time-entry history and restart persistence;
 - SQL filters for branch, milestone, blocked, overdue, origin, status and priority;
 - failed target transaction rollback, independent imported copies, 64-bit source IDs/revisions,
-  long descriptions, 75 subtasks, Unicode tags, live WAL reads, source deletion independence and
-  task-boundary cancellation;
+  long descriptions, 75 subtasks, Unicode tags, 1,000-task source streaming, live WAL reads, source
+  deletion independence, malformed/missing profile handling and task-boundary cancellation;
 - Assistant reader regression, paged Planner UI, runtime QML loading and migration preservation.
+
+The opt-in `plannerListScaleProfile` test profiles 100, 1,000 and 10,000 task loads, Qt model reset,
+in-memory search and board status filtering. It estimates task-model payload but does not measure
+whole-process RSS or actual QML frame times.
 
 ## 12. Identified risks
 
@@ -363,6 +378,9 @@ Use the existing Qt Test and CTest conventions, including temporary SQLite datab
 8. **QML vertical space:** the current shell is a scrollable Overview with a responsive card grid.
    The Planner must contribute accurate implicit height, scroll as one document and preserve access
    to the cards below it.
+9. **Large workspaces:** task rows and relations are hydrated in batches, but the controller still
+   synchronously loads all matching pages on the database-owning GUI thread. Results at 10,000 tasks
+   are recorded in the Phase 6 verification section; the model payload is estimated, not RSS.
 
 ## 13. Implementation phases
 
@@ -386,6 +404,10 @@ Use the existing Qt Test and CTest conventions, including temporary SQLite datab
    NotificationService, and Ctrl+K flows. Starting a saved service requires an explicit click and
    active workspace/session validation; task text is never executable. Planner data remains outside
    Assistant context until the disclosure and conversation-scope prerequisites are available.
+6. **Phase 6 — release hardening (implemented):** review current Planner boundaries, batch relation
+   reads for paged task results, avoid constructing subtask QVariant maps for unrelated model roles,
+   profile 100/1,000/10,000 tasks, add a 1,000-task source-stream fixture, document schema 12 and
+   import limits, and run the supported build/test presets available on the host.
 
 ## 14. Overall product acceptance criteria
 
@@ -460,10 +482,50 @@ disclosure consent, account/workspace/conversation scope binding, cancellation o
 bounded treatment of untrusted task descriptions. See
 [`workspace-planner-phase-5.md`](workspace-planner-phase-5.md) for supported and deferred workflows.
 
-Verification on 2026-10-23: the Debug build completed all 423 Ninja steps. The focused CTest run
-passed all five targets: `devhub.database-migrations`, `devhub.planner`, `devhub.planner-ui`,
-`devhub.somethingqt-import`, and `devhub.qml-runtime`. The full 26-target suite passed 24 targets
-with temporary files redirected into the build tree. The remaining broad Git integration target
-`devhub.feature-regressions` could not complete in this environment: sandboxed Git for Windows
-reported `NtCreateDirectoryObject` access denied during local push fixtures, and its elevated rerun
-timed out at 90 seconds. `devhub.assistant-tool-runtime` passed when rerun elevated.
+At the Phase 5 checkpoint on 2026-10-23, the Debug build completed all 423 Ninja steps and the
+focused Planner, Planner UI, migration, SomethingQt import and QML runtime tests passed. The
+26-target suite
+had two incomplete long-running integration tests at that checkpoint: sandboxed Git for Windows
+reported `NtCreateDirectoryObject` access denied during local push fixtures, and the elevated Git
+test timed out at its then-current 90-second limit. Phase 6 raised the relevant test timeouts and
+the final complete suite results are recorded below.
+
+## Phase 6 verification and release status
+
+Verified on 2026-10-23:
+
+- `cmake --build --preset windows-dev-debug --parallel 4` completed successfully with Qt 6.11.0
+  and MinGW 13.1.
+- `ctest --test-dir out/build/windows-dev -C Debug --output-on-failure` passed all 26 targets in
+  150 seconds. This includes the migration, Planner, Planner UI, SomethingQt import, QML runtime,
+  authentication, account security, assistant, and existing module regression targets. Git-heavy
+  integration tests use a 180-second CTest timeout; the final run completed `feature-regressions`
+  in 87 seconds and `assistant-tool-runtime` in 32 seconds.
+- The opt-in `plannerListScaleProfile` test passed with 100, 1,000 and 10,000 synthetic tasks.
+  Debug measurements were respectively 7/53/722 ms for repository list loading, 0 ms for model
+  reset at the timer's millisecond resolution, 0/0/10 ms for in-memory search, and 0/0/2 ms for
+  board-status filtering. The estimated model payload at 10,000 tasks was 7.15 MiB; this is not
+  whole-process memory usage or measured QML frame time.
+- The 1,000-task SomethingQt stream fixture passed in 93 ms (about 10,752 tasks/second). The
+  fixture checks task counts and content, a 256,000-character description, and the source database
+  hash before and after reading. Broader import fixtures cover 64-bit IDs, Unicode, 75 subtasks,
+  WAL reads, cancellation, duplicate handling and target rollback.
+- `tools/package-windows.ps1 -PortableOnly` built a warnings-as-errors Release application and
+  produced `out/release/DevHub-Portable-0.0.2-x64.zip`. Packaging staged Qt and QSQLITE and passed
+  its isolated runtime check for SQLite, authentication views, the populated main shell, embedded
+  Planner construction, and packaged runtime. Inno Setup is not installed, so no installer was
+  produced.
+
+The schema remains version 12; Phase 6 adds no migration. No real user database was reset or used
+as a fixture. The MSVC `windows-ci-release` preset could not be verified because this host does not
+have the required Visual Studio 2022 v143 14.44 toolset. The Release build was verified with the
+supported MinGW package preset instead.
+
+The automated QML runtime checks instantiate the shell and Planner, but the complete signed-in
+acceptance sequence was not manually exercised: creating and editing tasks in the user's profile,
+restarting between edits, importing from a real SomethingQt profile, switching/locking accounts and
+workspaces, changing themes, resizing a small window, and keyboard-only navigation remain manual
+acceptance gates. Consequently the implementation, Debug suite and portable Release package are
+verified, but this is not a claim of full production release readiness. Before distribution, run
+that interactive acceptance flow and the clean-machine, install/upgrade/uninstall and Qt license
+review gates in [packaging/README.md](../../packaging/README.md).

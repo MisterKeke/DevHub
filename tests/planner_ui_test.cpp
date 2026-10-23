@@ -98,8 +98,14 @@ private slots:
         QCOMPARE(m_controller->totalCount(), 1);
         QCOMPARE(m_controller->statusCount(QStringLiteral("todo")), 1);
         QCOMPARE(m_controller->listModel()->rowCount(), 1);
-        const QString taskId = m_controller->tasks()->index(0, 0).data(PlannerTaskModel::IdRole).toString();
+        const auto taskIndex = m_controller->tasks()->index(0, 0);
+        const QString taskId = taskIndex.data(PlannerTaskModel::IdRole).toString();
         QVERIFY(!taskId.isEmpty());
+        QCOMPARE(taskIndex.data(PlannerTaskModel::TitleRole).toString(), QStringLiteral("Ship Planner UI"));
+        const auto modelSubtasks = taskIndex.data(PlannerTaskModel::SubtasksRole).toList();
+        QCOMPARE(modelSubtasks.size(), 1);
+        QCOMPARE(modelSubtasks.first().toMap().value(QStringLiteral("title")).toString(),
+                 QStringLiteral("Build the panel"));
         const QString dueDate = QDate::currentDate().addDays(4).toString(Qt::ISODate);
         QCOMPARE(m_controller->countForDate(dueDate), 1);
         m_controller->setSelectedDate(dueDate);
