@@ -80,6 +80,7 @@ add_test(NAME devhub.assistant-controller COMMAND devhub_assistant_controller_te
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-controller-tests.txt,txt")
 qt_add_executable(devhub_assistant_ui_tests assistant_ui_test.cpp
     ../src/application/commands/CommandRegistry.cpp
+    ../src/application/commands/ICommandSearchProvider.cpp
     ../src/presentation/assistant/AssistantPage.cpp
     ../src/presentation/widgets/SafeMarkdownBrowser.cpp
     ../src/presentation/theme/ThemeTokens.cpp
@@ -313,7 +314,7 @@ add_test(NAME devhub.feature-regressions COMMAND devhub_feature_tests
 set_tests_properties(devhub.feature-regressions PROPERTIES
     TIMEOUT 90
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;PATH=path_list_prepend:$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin>"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;PATH=path_list_prepend:$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}"
 )
 
 qt_add_executable(devhub_reliability_tests

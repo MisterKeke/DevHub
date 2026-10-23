@@ -262,6 +262,49 @@ private slots:
         QVERIFY(m_controller->taskDetails(taskId).value(QStringLiteral("milestoneId")).toString().isEmpty());
     }
 
+    void linkedServiceStartRequiresConfiguredServiceAndCurrentWorkspace()
+    {
+        const QString serviceId = QStringLiteral("11111111-1111-4111-8111-111111111111");
+        m_controller->setServiceOptions({QVariantMap{{QStringLiteral("id"), serviceId},
+                                                     {QStringLiteral("name"), QStringLiteral("Dev server")}}});
+        QVERIFY(m_controller->saveTask({{QStringLiteral("title"), QStringLiteral("Task linked to saved service")},
+                                        {QStringLiteral("linkedServiceId"), serviceId}}));
+        const QString taskId = m_controller->tasks()->index(0, 0)
+            .data(presentation::overview::planner::PlannerTaskModel::IdRole).toString();
+        QVERIFY(!taskId.isEmpty());
+        QCOMPARE(m_controller->taskDetails(taskId).value(QStringLiteral("linkedServiceId")).toString(), serviceId);
+        QSignalSpy startSpy(m_controller.get(), &presentation::overview::planner::PlannerController::startLinkedServiceRequested);
+        m_controller->startLinkedService(taskId);
+        QCOMPARE(startSpy.size(), 1);
+        QCOMPARE(startSpy.first().at(0).toString(), m_workspaceA);
+        QCOMPARE(startSpy.first().at(2).toString(), serviceId);
+
+        QSignalSpy cancelSpy(m_controller.get(), &presentation::overview::planner::PlannerController::cancelLinkedServiceStartRequested);
+        m_controller->cancelLinkedServiceStart(taskId);
+        QCOMPARE(cancelSpy.size(), 1);
+        QCOMPARE(cancelSpy.first().at(1).toString(), taskId);
+        const auto run = m_controller->beginLinkedServiceAction(taskId, serviceId,
+            QStringLiteral("service:%1:stdout").arg(serviceId));
+        QVERIFY(run.has_value());
+        QVERIFY(m_controller->finishActionRun(*run, false, QStringLiteral("Synthetic launch failure")));
+        const QVariantList history = m_controller->actionRuns(taskId);
+        QCOMPARE(history.size(), 1);
+        QCOMPARE(history.first().toMap().value(QStringLiteral("status")).toString(), QStringLiteral("Failed"));
+        QCOMPARE(history.first().toMap().value(QStringLiteral("logReference")).toString(),
+                 QStringLiteral("service:%1:stdout").arg(serviceId));
+
+        m_controller->setSessionAllowed(false);
+        m_controller->startLinkedService(taskId);
+        QVERIFY(!m_controller->beginLinkedServiceAction(taskId, serviceId, {}));
+        QCOMPARE(startSpy.size(), 1);
+        m_controller->setSessionAllowed(true);
+
+        m_context->activate(makeWorkspace(m_workspaceB, QStringLiteral("Beta")));
+        m_controller->setServiceOptions({});
+        m_controller->startLinkedService(taskId);
+        QCOMPARE(startSpy.size(), 1);
+    }
+
     void taskAndPlannerPresentationSettingsPersistAfterReopen()
     {
         QVariantMap draft{{QStringLiteral("title"), QStringLiteral("Survives restart")},

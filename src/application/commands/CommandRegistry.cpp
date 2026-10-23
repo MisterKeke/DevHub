@@ -23,6 +23,23 @@ QAction* CommandRegistry::addCommand(QString id, QString title, CommandCategory 
     return action;
 }
 
+QAction* CommandRegistry::addPayloadCommand(QString id, QString title, CommandCategory category,
+                                             PayloadHandler handler, Availability availability,
+                                             QString description, QStringList keywords)
+{
+    auto* action = new QAction(title, this);
+    Entry entry;
+    entry.descriptor = {std::move(id), std::move(title), std::move(description), std::move(keywords),
+                        category, {}, action};
+    entry.availability = std::move(availability);
+    entry.payloadHandler = std::move(handler);
+    connect(action, &QAction::triggered, this, [this, commandId = entry.descriptor.id] { (void)execute(commandId); });
+    m_entries.push_back(std::move(entry));
+    refreshAvailability();
+    emit commandsChanged();
+    return action;
+}
+
 void CommandRegistry::setContext(CommandContext context)
 {
     m_context = std::move(context);
@@ -57,11 +74,15 @@ CommandDescriptor CommandRegistry::descriptor(const QString& id) const
 }
 
 bool CommandRegistry::execute(const QString& id)
+{ return execute(id, {}); }
+
+bool CommandRegistry::execute(const QString& id, const QVariant& payload)
 {
     for (auto& entry : m_entries) {
         if (entry.descriptor.id != id) continue;
-        if (!entry.descriptor.availability.available || !entry.handler) return false;
-        entry.handler();
+        if (!entry.descriptor.availability.available || (!entry.handler && !entry.payloadHandler)) return false;
+        if (entry.payloadHandler) entry.payloadHandler(payload);
+        else entry.handler();
         m_recent.removeAll(id);
         m_recent.prepend(id);
         while (m_recent.size() > 30) m_recent.removeLast();

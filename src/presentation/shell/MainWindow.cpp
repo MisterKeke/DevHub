@@ -106,6 +106,17 @@ public:
     }
 };
 
+class PlannerTaskSearchProvider final : public application::commands::CachedSearchProvider {
+public:
+    PlannerTaskSearchProvider() : CachedSearchProvider(QStringLiteral("Planner tasks")) {}
+    QVector<application::commands::SearchCandidate> search(const QString& query,
+        const application::commands::CommandContext& context) const override
+    {
+        if (!context.hasWorkspace || query.trimmed().isEmpty()) return {};
+        return CachedSearchProvider::search(query, context);
+    }
+};
+
 QToolButton* makeToolButton(const QString& name, IconName iconName, QWidget* parent,
                             bool iconOnly = false)
 {
@@ -166,6 +177,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
       m_relocation(relocation),
       m_terminalLauncher(terminalLauncher),
       m_scheduler(scheduler),
+      m_serviceRepository(serviceRepository),
       m_serviceCoordinator(serviceCoordinator),
       m_settingsService(settingsService),
       m_assistantController(assistantController), m_assistantToolRuntime(assistantToolRuntime),
@@ -317,6 +329,33 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             }, {},
             tr("Open the %1 module").arg(navigationTitles[row]), {navigationTitles[row].toLower()});
     }
+    using CommandCategory = application::commands::CommandCategory;
+    const auto plannerAvailability = [](const application::commands::CommandContext& context) {
+        return application::commands::CommandAvailability{context.hasWorkspace,
+            context.hasWorkspace ? QString{} : QObject::tr("Select a workspace and sign in to use Planner.")};
+    };
+    m_commandRegistry->addCommand(QStringLiteral("planner.create-task"), tr("Planner: Create task"),
+        CommandCategory::Workspace, [this] { selectQuickModule(0); m_plannerController->setCollapsed(false); m_plannerController->requestCreateTask(); },
+        plannerAvailability, tr("Create a task in the active workspace"), {QStringLiteral("task"), QStringLiteral("new")});
+    m_commandRegistry->addCommand(QStringLiteral("planner.find-task"), tr("Planner: Find task"),
+        CommandCategory::Workspace, [this] { selectQuickModule(0); m_plannerController->setCollapsed(false); m_plannerController->requestFocusSearch(); },
+        plannerAvailability, tr("Focus Planner task search"), {QStringLiteral("task"), QStringLiteral("search")});
+    m_commandRegistry->addCommand(QStringLiteral("planner.show-overdue"), tr("Planner: Show overdue tasks"),
+        CommandCategory::Workspace, [this] { selectQuickModule(0); m_plannerController->setCollapsed(false); m_plannerController->setOverdueFilter(1); },
+        plannerAvailability, tr("Filter Planner to overdue tasks"), {QStringLiteral("due"), QStringLiteral("late")});
+    m_commandRegistry->addCommand(QStringLiteral("planner.show-in-progress"), tr("Planner: Show in-progress tasks"),
+        CommandCategory::Workspace, [this] { selectQuickModule(0); m_plannerController->setCollapsed(false); m_plannerController->setStatusFilter(QStringLiteral("in_progress")); },
+        plannerAvailability, tr("Filter Planner to tasks in progress"), {QStringLiteral("active"), QStringLiteral("working")});
+    m_commandRegistry->addCommand(QStringLiteral("planner.toggle"), tr("Planner: Expand or collapse"),
+        CommandCategory::Workspace, [this] { selectQuickModule(0); m_plannerController->setCollapsed(!m_plannerController->collapsed()); },
+        plannerAvailability, tr("Toggle the embedded Planner"), {QStringLiteral("planner"), QStringLiteral("overview")});
+    m_commandRegistry->addPayloadCommand(QStringLiteral("planner.open-task"), tr("Planner: Open task"),
+        CommandCategory::Workspace, [this](const QVariant& payload) {
+            selectQuickModule(0); m_plannerController->setCollapsed(false);
+            if (payload.toString().isEmpty()) m_plannerController->requestFocusSearch();
+            else m_plannerController->requestOpenTask(payload.toString());
+        }, plannerAvailability, tr("Open task details from Planner search"),
+        {QStringLiteral("task"), QStringLiteral("details"), QStringLiteral("planner")});
 
     auto* content = new QWidget(root);
     content->setObjectName(QStringLiteral("contentRegion"));
@@ -459,13 +498,105 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         });
     m_pageHost->addWidget(gitPage);
     auto* servicePage = new devhub::presentation::services::ServicePage(serviceRepository, serviceCoordinator, m_pageHost);
+    m_servicePage = servicePage;
     m_pageHost->addWidget(servicePage);
     auto* portPage = new devhub::presentation::ports::PortPage(portMonitor, serviceCoordinator, workspaceManager, m_pageHost);
     m_pageHost->addWidget(portPage);
     auto* logsPage = new devhub::presentation::logs::LogsPage(logSourceRepository, serviceCoordinator, m_pageHost,
         m_settingsService.value(QStringLiteral("logs/maxLines")).toLongLong(),
         m_settingsService.value(QStringLiteral("logs/maxBytes")).toLongLong());
+    m_logsPage = logsPage;
     m_pageHost->addWidget(logsPage);
+    connect(servicePage, &devhub::presentation::services::ServicePage::definitionsChanged,
+            this, [this] { refreshPlannerServiceOptions(m_workspaceContext.activeWorkspace()
+                ? m_workspaceContext.activeWorkspace()->id().toString() : QString{}); });
+    connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::openWorkspaceFolderRequested,
+            this, [this](const QString& workspaceId) {
+        if (!plannerWorkspaceAuthorized(workspaceId)) return;
+        const auto active = m_workspaceContext.activeWorkspace();
+        const QString path = active->path().canonicalPath();
+        if (!QDir(path).exists() || !QDesktopServices::openUrl(QUrl::fromLocalFile(path)))
+            statusBar()->showMessage(tr("The workspace folder could not be opened."), 5000);
+    });
+    connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::openWorkspaceNotesRequested,
+            this, [this](const QString& workspaceId) {
+        if (plannerWorkspaceAuthorized(workspaceId)) selectQuickModule(6);
+    });
+    connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::openGitModuleRequested,
+            this, [this](const QString& workspaceId) {
+        if (plannerWorkspaceAuthorized(workspaceId)) selectQuickModule(1);
+    });
+    connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::openLinkedServiceRequested,
+            this, [this, servicePage](const QString& workspaceId, const QString& serviceId) {
+        if (!plannerWorkspaceAuthorized(workspaceId)) return;
+        const auto definitions = m_serviceRepository.list(workspaceId);
+        if (!definitions) { statusBar()->showMessage(definitions.error().userMessage, 5000); return; }
+        const auto found = std::find_if(definitions.value().cbegin(), definitions.value().cend(),
+            [&serviceId](const auto& item) { return item.id == serviceId; });
+        if (found == definitions.value().cend()) { statusBar()->showMessage(tr("The linked service is no longer configured."), 5000); return; }
+        selectQuickModule(2); servicePage->focusService(serviceId);
+    });
+    connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::openLinkedServiceLogsRequested,
+            this, [this, logsPage](const QString& workspaceId, const QString& serviceId) {
+        if (!plannerWorkspaceAuthorized(workspaceId)) return;
+        const auto definitions = m_serviceRepository.list(workspaceId);
+        if (!definitions) { statusBar()->showMessage(definitions.error().userMessage, 5000); return; }
+        const bool configured = std::any_of(definitions.value().cbegin(), definitions.value().cend(),
+            [&serviceId](const auto& item) { return item.id == serviceId; });
+        if (!configured) { statusBar()->showMessage(tr("The linked service is no longer configured."), 5000); return; }
+        selectQuickModule(4); logsPage->focusService(serviceId);
+    });
+    connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::startLinkedServiceRequested,
+            this, [this](const QString& workspaceId, const QString& taskId, const QString& serviceId) {
+        if (!plannerWorkspaceAuthorized(workspaceId)) {
+            statusBar()->showMessage(tr("Sign in and select the task's workspace before starting its service."), 5000); return;
+        }
+        const auto definitions = m_serviceRepository.list(workspaceId);
+        if (!definitions) { statusBar()->showMessage(definitions.error().userMessage, 5000); return; }
+        const auto found = std::find_if(definitions.value().cbegin(), definitions.value().cend(),
+            [&serviceId, &workspaceId](const auto& item) { return item.id == serviceId && item.workspaceId == workspaceId; });
+        if (found == definitions.value().cend()) { statusBar()->showMessage(tr("The linked service is no longer configured for this workspace."), 5000); return; }
+        if (m_pendingPlannerServiceStarts.contains(serviceId)) {
+            statusBar()->showMessage(tr("This task's service is already starting."), 4000); return;
+        }
+        for (const auto& state : m_serviceCoordinator.states()) {
+            if (state.definition.id == serviceId && state.definition.workspaceId == workspaceId
+                && (state.lifecycle == application::services::ServiceLifecycleState::Starting
+                    || state.lifecycle == application::services::ServiceLifecycleState::Running
+                    || state.lifecycle == application::services::ServiceLifecycleState::Stopping)) {
+                statusBar()->showMessage(tr("The linked service is already active."), 4000); return;
+            }
+        }
+        const QString logReference = QStringLiteral("service:%1:stdout").arg(serviceId);
+        auto run = m_plannerController->beginLinkedServiceAction(taskId, serviceId, logReference);
+        if (!run) { statusBar()->showMessage(m_plannerController->error(), 5000); return; }
+        const quint64 actionIdentity = m_serviceCoordinator.nextActionIdentity();
+        m_pendingPlannerServiceStarts.insert(serviceId, PendingPlannerServiceStart{
+            workspaceId, taskId, serviceId, run->id, found->name, actionIdentity});
+        const auto active = m_workspaceContext.activeWorkspace();
+        const auto started = m_serviceCoordinator.start(*found, active->path().canonicalPath());
+        if (!started) {
+            auto state = application::services::ServiceRuntimeState{};
+            state.definition = *found; state.actionIdentity = actionIdentity;
+            state.lifecycle = application::services::ServiceLifecycleState::Failed;
+            state.error = started.error().userMessage;
+            handlePlannerServiceState(serviceId, state);
+            return;
+        }
+        statusBar()->showMessage(tr("Starting %1 for the selected Planner task…").arg(found->name), 5000);
+    });
+    connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::cancelLinkedServiceStartRequested,
+            this, [this](const QString& workspaceId, const QString& taskId, const QString& serviceId) {
+        const auto it = m_pendingPlannerServiceStarts.find(serviceId);
+        if (it == m_pendingPlannerServiceStarts.end() || it->workspaceId != workspaceId || it->taskId != taskId) return;
+        const PendingPlannerServiceStart pending = it.value();
+        m_pendingPlannerServiceStarts.erase(it);
+        m_serviceCoordinator.cancelPendingRestart(serviceId, pending.actionIdentity);
+        (void)m_serviceCoordinator.stop(serviceId);
+        domain::planner::PlannerActionRun run; run.id = pending.runId; run.workspaceId = workspaceId; run.taskId = taskId;
+        (void)m_plannerController->finishActionRun(run, false, tr("Service start was cancelled."));
+        statusBar()->showMessage(tr("The linked service start was cancelled."), 4000);
+    });
     auto* databasePage = new devhub::presentation::databases::DatabasePage(databaseReferences, databaseFactory, m_pageHost,
         m_settingsService.value(QStringLiteral("database/pageSize")).toInt(),
         m_settingsService.value(QStringLiteral("database/queryHistoryEnabled")).toBool(),
@@ -520,12 +651,14 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     m_pageHost->addWidget(m_assistantPage);
     m_commandPalette = new devhub::presentation::commands::CommandPaletteDialog(*m_commandRegistry, this);
     m_workspaceSearchProvider = new application::commands::WorkspaceSearchProvider();
+    m_plannerSearchProvider = new PlannerTaskSearchProvider();
     m_servicesSearchProvider = new application::commands::ServiceSearchProvider();
     m_notesSearchProvider = new application::commands::NoteSearchProvider();
     m_databaseSearchProvider = new application::commands::DatabaseSearchProvider();
     m_settingsSearchProvider = new application::commands::SettingsSearchProvider();
     m_commandPalette->addProvider(new application::commands::CommandSearchProvider(*m_commandRegistry));
     m_commandPalette->addProvider(m_workspaceSearchProvider);
+    m_commandPalette->addProvider(m_plannerSearchProvider);
     m_commandPalette->addProvider(m_servicesSearchProvider);
     m_commandPalette->addProvider(m_notesSearchProvider);
     m_commandPalette->addProvider(m_databaseSearchProvider);
@@ -534,6 +667,22 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     m_notesSearchProvider->setEntries({{tr("Workspace notes"), tr("Open notes for the active workspace"), QStringLiteral("nav.notes"), {}}});
     m_databaseSearchProvider->setEntries({{tr("Database connections"), tr("Open saved database references"), QStringLiteral("nav.database"), {}}});
     m_settingsSearchProvider->setEntries({{tr("Account security"), tr("Change the local account password"), QStringLiteral("nav.settings"), {}}});
+    const auto refreshPlannerSearch = [this] {
+        QVector<application::commands::SearchCandidate> entries;
+        if (m_plannerController && m_plannerController->hasWorkspace()) {
+            const auto& tasks = m_plannerController->tasks()->tasks();
+            entries.reserve(qMin(200, tasks.size()));
+            for (const auto& task : tasks) {
+                if (entries.size() >= 200) break;
+                entries.append({task.title, tr("Open task details · %1").arg(domain::planner::plannerStatusName(task.status)),
+                    QStringLiteral("planner.open-task"), tr("Planner tasks"), task.id});
+            }
+        }
+        m_plannerSearchProvider->setEntries(std::move(entries));
+    };
+    connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::changed,
+            this, refreshPlannerSearch);
+    refreshPlannerSearch();
     auto* paletteAction = new QAction(tr("Search commands…"), this);
     paletteAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
     paletteAction->setShortcutContext(Qt::ApplicationShortcut);
@@ -599,6 +748,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             this, [this](const QString& workspaceId) { activateWorkspace(workspaceId); });
     connect(&m_workspaceContext, &application::workspaces::WorkspaceContext::workspaceChanged,
             this, [this, gitPage, servicePage, logsPage, databasePage, filesPage, &portMonitor](const QString& workspaceId, const QString& path) {
+        cancelPendingPlannerServiceStarts();
+        refreshPlannerServiceOptions(workspaceId);
         const auto& active = m_workspaceContext.activeWorkspace();
         m_restartButton->setEnabled(active.has_value());
         m_observedLogBytes = 0;
@@ -607,7 +758,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         m_workspacePath->setText(active ? path : tr("Select a workspace to get started"));
         setWindowTitle(active ? QStringLiteral("%1 — DevHub").arg(active->displayName()) : QStringLiteral("DevHub"));
         application::commands::CommandContext commandContext;
-        commandContext.hasWorkspace = active.has_value();
+        commandContext.hasWorkspace = active.has_value()
+            && m_session.state() == application::authentication::SessionState::SignedIn;
         commandContext.workspaceId = workspaceId;
         commandContext.workspaceName = active ? active->displayName() : QString{};
         commandContext.workspacePath = path;
@@ -719,7 +871,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             (void)m_notificationService.post(std::move(draft));
         });
     connect(&m_serviceCoordinator, &application::services::ServiceCoordinator::stateChanged, this,
-        [this](const QString&, const application::services::ServiceRuntimeState&) {
+        [this](const QString& serviceId, const application::services::ServiceRuntimeState& state) {
+            handlePlannerServiceState(serviceId, state);
             if (!m_workspaceContext.activeWorkspace()) return;
             const auto states = m_serviceCoordinator.states();
             int running = 0; int failed = 0;
@@ -818,6 +971,14 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             [this](application::authentication::SessionState state) {
                 using State = application::authentication::SessionState;
                 m_plannerController->setSessionAllowed(state == State::SignedIn);
+                if (state != State::SignedIn) cancelPendingPlannerServiceStarts();
+                application::commands::CommandContext context;
+                const auto active = m_workspaceContext.activeWorkspace();
+                context.hasWorkspace = active.has_value() && state == State::SignedIn;
+                context.workspaceId = active ? active->id().toString() : QString{};
+                context.workspaceName = active ? active->displayName() : QString{};
+                context.workspacePath = active ? active->path().canonicalPath() : QString{};
+                m_commandRegistry->setContext(std::move(context));
                 if (state == application::authentication::SessionState::Locking && m_notesPage)
                     (void)m_notesPage->flushPendingSave();
             });
@@ -1367,6 +1528,7 @@ void MainWindow::archiveWorkspace(const QString& id)
     }
 
     m_archivingWorkspaceIds.insert(id);
+    cancelPendingPlannerServiceStarts(id);
     m_removalWorkspaceId = id;
     m_workspaceActionMessage = tr("Preparing to remove %1…").arg(name);
     m_workspaceActionTone = QStringLiteral("info");
@@ -1585,6 +1747,87 @@ void MainWindow::selectPage(int index)
     selectQuickModule(index);
 }
 
+bool MainWindow::plannerWorkspaceAuthorized(const QString& workspaceId) const
+{
+    const auto active = m_workspaceContext.activeWorkspace();
+    return m_session.state() == application::authentication::SessionState::SignedIn
+        && m_scheduler.isAccepting() && active && !active->isArchived()
+        && active->id().toString() == workspaceId
+        && !m_archivingWorkspaceIds.contains(workspaceId);
+}
+
+void MainWindow::refreshPlannerServiceOptions(const QString& workspaceId)
+{
+    QVariantList options;
+    const auto active = m_workspaceContext.activeWorkspace();
+    if (!workspaceId.isEmpty() && active && active->id().toString() == workspaceId
+        && m_session.state() == application::authentication::SessionState::SignedIn) {
+        const auto definitions = m_serviceRepository.list(workspaceId);
+        if (definitions) {
+            for (const auto& definition : definitions.value())
+                if (definition.workspaceId == workspaceId)
+                    options.append(QVariantMap{{QStringLiteral("id"), definition.id},
+                                               {QStringLiteral("name"), definition.name}});
+        }
+    }
+    if (m_plannerController) m_plannerController->setServiceOptions(std::move(options));
+}
+
+void MainWindow::cancelPendingPlannerServiceStarts(const QString& workspaceId)
+{
+    const QStringList serviceIds = m_pendingPlannerServiceStarts.keys();
+    for (const QString& serviceId : serviceIds) {
+        const auto it = m_pendingPlannerServiceStarts.constFind(serviceId);
+        if (it == m_pendingPlannerServiceStarts.cend()
+            || (!workspaceId.isEmpty() && it->workspaceId != workspaceId)) continue;
+        const PendingPlannerServiceStart pending = it.value();
+        m_pendingPlannerServiceStarts.remove(serviceId);
+        m_serviceCoordinator.cancelPendingRestart(serviceId, pending.actionIdentity);
+        for (const auto& state : m_serviceCoordinator.states()) {
+            if (state.definition.id == serviceId && state.actionIdentity == pending.actionIdentity
+                && state.lifecycle == application::services::ServiceLifecycleState::Starting) {
+                (void)m_serviceCoordinator.stop(serviceId);
+                break;
+            }
+        }
+        domain::planner::PlannerActionRun run;
+        run.id = pending.runId; run.workspaceId = pending.workspaceId; run.taskId = pending.taskId;
+        if (m_plannerController)
+            (void)m_plannerController->finishActionRun(run, false,
+                tr("Service start was cancelled because the workspace or account scope changed."));
+    }
+}
+
+void MainWindow::handlePlannerServiceState(const QString& serviceId,
+    const application::services::ServiceRuntimeState& state)
+{
+    auto it = m_pendingPlannerServiceStarts.find(serviceId);
+    if (it == m_pendingPlannerServiceStarts.end() || it->actionIdentity != state.actionIdentity) return;
+    if (state.lifecycle == application::services::ServiceLifecycleState::Starting
+        || state.lifecycle == application::services::ServiceLifecycleState::Stopping) return;
+    const PendingPlannerServiceStart pending = it.value();
+    m_pendingPlannerServiceStarts.erase(it);
+    domain::planner::PlannerActionRun run;
+    run.id = pending.runId; run.workspaceId = pending.workspaceId; run.taskId = pending.taskId;
+    if (state.lifecycle == application::services::ServiceLifecycleState::Running) {
+        (void)m_plannerController->finishActionRun(run, true);
+        statusBar()->showMessage(tr("%1 is running. Its bounded output is available in Logs.").arg(pending.serviceName), 6000);
+        return;
+    }
+    const QString summary = m_redactor.redact(state.error.isEmpty()
+        ? tr("The linked service stopped before it reported ready.") : state.error).left(512);
+    (void)m_plannerController->finishActionRun(run, false, summary);
+    application::notifications::NotificationDraft draft;
+    draft.severity = application::notifications::NotificationSeverity::Error;
+    draft.category = application::notifications::NotificationCategory::Service;
+    draft.title = tr("Planner service action failed");
+    draft.message = tr("%1 could not start for the selected task: %2").arg(pending.serviceName, summary);
+    draft.deduplicationKey = QStringLiteral("planner-service-action-failed:%1").arg(serviceId);
+    draft.workspaceId = QUuid::fromString(pending.workspaceId);
+    (void)m_notificationService.post(std::move(draft));
+    statusBar()->showMessage(tr("Could not start %1: %2").arg(pending.serviceName, summary), 8000);
+}
+
 void MainWindow::resizeEvent(QResizeEvent* event)
 {
     QMainWindow::resizeEvent(event);
@@ -1608,12 +1851,13 @@ void MainWindow::closeEvent(QCloseEvent* event)
             auto* cancel=dialog.addButton(tr("Cancel"),QMessageBox::RejectRole);
             dialog.setDefaultButton(qobject_cast<QPushButton*>(cancel)); dialog.exec();
             if (dialog.clickedButton()!=stopAndExit) { event->ignore(); return; }
-            m_closeAfterServicesStop=true; m_serviceCoordinator.stopAll(); event->ignore(); return;
+            m_closeAfterServicesStop=true; cancelPendingPlannerServiceStarts(); m_serviceCoordinator.stopAll(); event->ignore(); return;
         }
         event->ignore(); return;
     }
     m_closeAfterServicesStop=false;
     if (!confirmDatabaseTransition()) { event->ignore(); return; }
+    cancelPendingPlannerServiceStarts();
     if (!isMaximized() && !isMinimized()) {
         QSettings().setValue(QStringLiteral("window/normalGeometry"), normalGeometry());
     }

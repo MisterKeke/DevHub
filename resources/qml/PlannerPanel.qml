@@ -47,6 +47,10 @@ Rectangle {
     Component.onCompleted: root.knownWorkspaceId = plannerController.workspaceId
     Connections {
         target: plannerController
+        function onCreateTaskRequested() { root.openEditor("") }
+        function onFocusSearchRequested() { plannerController.setCollapsed(false); searchField.forceActiveFocus() }
+        function onOpenTaskDetailsRequested(taskId) { root.openDetails(taskId) }
+        function onActionRunsChanged(taskId) { if (root.detail.taskId === taskId) root.refreshDetails(taskId) }
         function onChanged() {
             if (root.knownWorkspaceId === plannerController.workspaceId) return
             root.knownWorkspaceId = plannerController.workspaceId
@@ -78,7 +82,7 @@ Rectangle {
             taskId: "", title: "", description: "", status: "todo", completed: false,
             priority: "medium", difficulty: "", dueDate: "", startDate: "", estimatedMinutes: null,
             actualTrackedMinutes: 0, milestoneId: "", gitBranch: "", githubIssueUrl: "",
-            githubPullRequestUrl: "", notes: "", blockedReason: "", tags: [], subtasks: [], dependencyIds: []
+            githubPullRequestUrl: "", linkedServiceId: "", notes: "", blockedReason: "", tags: [], subtasks: [], dependencyIds: []
         }
         if (!data || Object.keys(data).length === 0) return
         detail = data
@@ -94,6 +98,7 @@ Rectangle {
         estimateField.text = data.estimatedMinutes === undefined || data.estimatedMinutes === null ? "" : String(data.estimatedMinutes)
         milestoneBox.currentIndex = milestoneIndex(data.milestoneId || "")
         branchBox.currentIndex = branchOptionIndex(editorTaskId, data.gitBranch || "")
+        serviceBox.currentIndex = serviceOptionIndex(editorTaskId, data.linkedServiceId || "")
         issueField.text = data.githubIssueUrl || ""
         pullRequestField.text = data.githubPullRequestUrl || ""
         notesField.text = data.notes || ""
@@ -136,6 +141,28 @@ Rectangle {
         if (!branch) return false
         var options = plannerController.branchOptions
         for (var i = 0; i < options.length; ++i) if (options[i].name === branch) return true
+        return false
+    }
+    function editorServiceOptions(taskId) {
+        var options = [{ id: "", name: qsTr("No linked service") }]
+        var configured = plannerController.serviceOptions
+        var present = false
+        for (var i = 0; i < configured.length; ++i) {
+            options.push(configured[i])
+            if (configured[i].id === detail.linkedServiceId) present = true
+        }
+        if (taskId && detail.linkedServiceId && !present)
+            options.push({ id: detail.linkedServiceId, name: qsTr("Unavailable service · %1").arg(detail.linkedServiceId) })
+        return options
+    }
+    function serviceOptionIndex(taskId, serviceId) {
+        var options = editorServiceOptions(taskId)
+        for (var i = 0; i < options.length; ++i) if (options[i].id === serviceId) return i
+        return 0
+    }
+    function actionIsStarting() {
+        var runs = detail.actionRuns || []
+        for (var i = 0; i < runs.length; ++i) if (!runs[i].finished) return true
         return false
     }
     function refreshDetails(taskId) {
@@ -199,7 +226,7 @@ Rectangle {
             estimatedMinutes: estimateField.text.trim(),
             milestoneId: milestoneBox.currentValue || "",
             gitBranch: branchBox.currentValue || "", githubIssueUrl: issueField.text.trim(),
-            githubPullRequestUrl: pullRequestField.text.trim(), notes: notesField.text,
+            githubPullRequestUrl: pullRequestField.text.trim(), linkedServiceId: serviceBox.currentValue || "", notes: notesField.text,
             blockedReason: blockedField.text, tags: tagsField.text, subtasks: subtasks,
             dependencyIds: selectedDependencyIds
         }
@@ -747,6 +774,13 @@ Rectangle {
                         textRole: "displayName"; valueRole: "name"
                         onActivated: root.editorDirty = true
                     }
+                    ComboBox {
+                        id: serviceBox; Layout.fillWidth: true
+                        model: root.editorServiceOptions(editorTaskId)
+                        textRole: "name"; valueRole: "id"
+                        onActivated: root.editorDirty = true
+                    }
+                    Text { text: qsTr("Starting a linked service requires an explicit click. Task text is never used as a command."); color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     Text { visible: plannerController.branchLoading; text: qsTr("Loading local branches…"); color: root.muted; font.pixelSize: 9 }
                     TextField { id: issueField; Layout.fillWidth: true; placeholderText: qsTr("GitHub Issue URL"); color: root.text; onTextChanged: root.editorDirty = true }
                     TextField { id: pullRequestField; Layout.fillWidth: true; placeholderText: qsTr("GitHub Pull Request URL"); color: root.text; onTextChanged: root.editorDirty = true }
@@ -816,6 +850,32 @@ Rectangle {
                         Layout.fillWidth: true
                         Button { visible: !!root.detail.githubIssueUrl; text: qsTr("Open Issue"); onClicked: plannerController.openGitHubUrl(root.detail.githubIssueUrl) }
                         Button { visible: !!root.detail.githubPullRequestUrl; text: qsTr("Open Pull Request"); onClicked: plannerController.openGitHubUrl(root.detail.githubPullRequestUrl) }
+                    }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
+                    Text { text: qsTr("Development actions"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
+                    Text { text: root.detail.linkedServiceId ? (root.detail.linkedServiceAvailable ? qsTr("Linked service · %1").arg(root.detail.serviceName) : qsTr("Linked service is unavailable in the active workspace.")) : qsTr("No configured service is linked to this task."); color: root.detail.linkedServiceAvailable ? root.secondary : root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Flow {
+                        Layout.fillWidth: true; spacing: 6
+                        Button { text: qsTr("Open Git"); enabled: !!plannerController.hasWorkspace; onClicked: plannerController.openGitModule() }
+                        Button { text: qsTr("Repository folder"); enabled: !!plannerController.hasWorkspace && !!root.detail.workspaceId; onClicked: plannerController.openWorkspaceFolder() }
+                        Button { text: qsTr("Workspace notes"); enabled: !!plannerController.hasWorkspace; onClicked: plannerController.openWorkspaceNotes() }
+                        Button { text: qsTr("View service"); enabled: !!root.detail.linkedServiceAvailable; onClicked: plannerController.openLinkedService(root.detail.taskId) }
+                        Button { text: qsTr("Related logs"); enabled: !!root.detail.linkedServiceAvailable; onClicked: plannerController.openLinkedServiceLogs(root.detail.taskId) }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Button { visible: !root.actionIsStarting(); enabled: !!root.detail.linkedServiceAvailable; text: qsTr("Start linked service"); onClicked: { plannerController.startLinkedService(root.detail.taskId); root.refreshDetails(root.detail.taskId); detailsMessage.text = plannerController.error } }
+                        Button { visible: root.actionIsStarting(); text: qsTr("Cancel start"); onClicked: { plannerController.cancelLinkedServiceStart(root.detail.taskId); detailsMessage.text = plannerController.error } }
+                        Text { visible: !root.detail.linkedServiceAvailable; text: qsTr("Choose an existing service in the Development section to enable service actions."); color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    }
+                    Repeater {
+                        model: root.detail.actionRuns || []
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Text { Layout.fillWidth: true; text: qsTr("%1 · %2 · %3 ms%4").arg(modelData.status).arg(modelData.startedAt).arg(modelData.durationMs).arg(modelData.errorSummary ? " · " + modelData.errorSummary : ""); color: modelData.succeeded ? root.success : modelData.finished ? root.error : root.info; font.pixelSize: 9; wrapMode: Text.WordWrap }
+                            Button { visible: !!modelData.logReference; text: qsTr("Logs"); enabled: !!root.detail.linkedServiceAvailable; onClicked: plannerController.openLinkedServiceLogs(root.detail.taskId) }
+                        }
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
                     Text { text: qsTr("Dependencies"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }

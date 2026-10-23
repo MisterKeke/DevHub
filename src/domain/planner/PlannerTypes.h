@@ -64,6 +64,7 @@ struct PlannerTask final
     QString githubPullRequestUrl;
     QString notes;
     QString blockedReason;
+    QString linkedServiceId;
     QString sourceType = QStringLiteral("local");
     QString sourceProfileIdentity;
     QString sourceTaskId;
@@ -105,6 +106,20 @@ struct PlannerTimeEntry final
     qint64 durationMinutes = 0;
     QString note;
     QDateTime recordedAtUtc;
+};
+
+struct PlannerActionRun final
+{
+    QString id;
+    QString workspaceId;
+    QString taskId;
+    QString actionId;
+    QDateTime startedAtUtc;
+    QDateTime finishedAtUtc;
+    std::optional<bool> succeeded;
+    qint64 durationMilliseconds = 0;
+    QString errorSummary;
+    QString logReference;
 };
 
 struct PlannerTaskFilter final

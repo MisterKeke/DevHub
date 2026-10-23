@@ -43,6 +43,7 @@ QVariant PlannerTaskModel::data(const QModelIndex& index, int role) const
     case PullRequestUrlRole: return task->githubPullRequestUrl;
     case NotesRole: return task->notes;
     case BlockedReasonRole: return task->blockedReason;
+    case LinkedServiceIdRole: return task->linkedServiceId;
     case SourceTypeRole: return task->sourceType;
     case SourceProfileIdentityRole: return task->sourceProfileIdentity;
     case SourceTaskIdRole: return task->sourceTaskId;
@@ -86,7 +87,7 @@ QHash<int, QByteArray> PlannerTaskModel::roleNames() const
         {UpdatedAtRole,"updatedAt"},{BlockedByDependencyRole,"blockedByDependency"},
         {IncompletePrerequisiteTitlesRole,"incompletePrerequisiteTitles"},{DependentTaskIdsRole,"dependentTaskIds"},
         {PrerequisiteTitlesRole,"prerequisiteTitles"},{DependentTaskTitlesRole,"dependentTaskTitles"},
-        {BlockedRole,"blocked"}};
+        {BlockedRole,"blocked"},{LinkedServiceIdRole,"linkedServiceId"}};
 }
 
 const PlannerTask* PlannerTaskModel::taskAt(int row) const

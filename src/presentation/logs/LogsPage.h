@@ -30,6 +30,7 @@ public:
              application::services::ServiceCoordinator& services,
              QWidget* parent = nullptr, qsizetype lineLimit = 10000, qsizetype byteLimit = 4 * 1024 * 1024);
     void setWorkspace(QString workspaceId, QString workspacePath);
+    void focusService(const QString& serviceId);
 
 private:
     struct StreamState final {

@@ -38,6 +38,7 @@ class PlannerController final : public QObject
     Q_PROPERTY(QString selectedDate READ selectedDate NOTIFY changed)
     Q_PROPERTY(QVariantList milestones READ milestones NOTIFY changed)
     Q_PROPERTY(QVariantList branchOptions READ branchOptions NOTIFY changed)
+    Q_PROPERTY(QVariantList serviceOptions READ serviceOptions NOTIFY changed)
     Q_PROPERTY(bool branchLoading READ branchLoading NOTIFY changed)
     Q_PROPERTY(QString branchStatus READ branchStatus NOTIFY changed)
     Q_PROPERTY(QString milestoneFilter READ milestoneFilter NOTIFY changed)
@@ -71,6 +72,7 @@ public:
     QString selectedDate() const { return m_selectedDate; }
     QVariantList milestones() const { return m_milestones; }
     QVariantList branchOptions() const { return m_branchOptions; }
+    QVariantList serviceOptions() const { return m_serviceOptions; }
     bool branchLoading() const { return m_branchLoading; }
     QString branchStatus() const { return m_branchStatus; }
     QString milestoneFilter() const { return m_milestoneFilter; }
@@ -112,12 +114,40 @@ public:
     Q_INVOKABLE QVariantList branchOptionsForTask(const QString& taskId) const;
     Q_INVOKABLE void openGitBranch(const QString& branch);
     Q_INVOKABLE bool openGitHubUrl(const QString& url);
+    Q_INVOKABLE void openWorkspaceFolder();
+    Q_INVOKABLE void openWorkspaceNotes();
+    Q_INVOKABLE void openGitModule();
+    Q_INVOKABLE void openLinkedService(const QString& taskId);
+    Q_INVOKABLE void openLinkedServiceLogs(const QString& taskId);
+    Q_INVOKABLE void startLinkedService(const QString& taskId);
+    Q_INVOKABLE void cancelLinkedServiceStart(const QString& taskId);
+    Q_INVOKABLE QVariantList actionRuns(const QString& taskId) const;
+    Q_INVOKABLE void requestCreateTask();
+    Q_INVOKABLE void requestFocusSearch();
+    Q_INVOKABLE void requestOpenTask(const QString& taskId);
+    void setServiceOptions(QVariantList options);
+    [[nodiscard]] std::optional<domain::planner::PlannerActionRun>
+    beginLinkedServiceAction(const QString& taskId, const QString& serviceId,
+                             const QString& logReference);
+    [[nodiscard]] bool finishActionRun(const domain::planner::PlannerActionRun& run,
+                                       bool succeeded, const QString& errorSummary = {});
     Q_INVOKABLE void clearError();
     Q_INVOKABLE void refresh();
     void setSessionAllowed(bool allowed);
 signals:
     void changed();
     void openGitBranchRequested(QString branch);
+    void openWorkspaceFolderRequested(QString workspaceId);
+    void openWorkspaceNotesRequested(QString workspaceId);
+    void openGitModuleRequested(QString workspaceId);
+    void openLinkedServiceRequested(QString workspaceId, QString serviceId);
+    void openLinkedServiceLogsRequested(QString workspaceId, QString serviceId);
+    void startLinkedServiceRequested(QString workspaceId, QString taskId, QString serviceId);
+    void cancelLinkedServiceStartRequested(QString workspaceId, QString taskId, QString serviceId);
+    void createTaskRequested();
+    void focusSearchRequested();
+    void openTaskDetailsRequested(QString taskId);
+    void actionRunsChanged(QString taskId);
 private slots:
     void workspaceChanged(const QString& workspaceId, const QString& absolutePath);
 private:
@@ -157,6 +187,7 @@ private:
     QString m_branchStatus;
     QStringList m_localBranches;
     QVariantList m_branchOptions;
+    QVariantList m_serviceOptions;
     application::tasks::TaskHandle m_branchTask;
     QTimer m_filterReloadTimer;
     quint64 m_branchGeneration = 0;

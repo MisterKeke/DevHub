@@ -90,6 +90,7 @@ void CommandPaletteDialog::searchNextProvider(quint64 generation, QString query,
         item->setToolTip(match.detail);
         item->setData(Qt::UserRole, match.commandId);
         item->setData(Qt::UserRole + 1, match.provider);
+        item->setData(Qt::UserRole + 2, match.payload);
         if (!command.availability.available) item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
     }
     if (m_results->currentRow() < 0 && m_results->count() > 0) {
@@ -106,7 +107,8 @@ void CommandPaletteDialog::executeCurrent()
 {
     auto* item = m_results->currentItem();
     if (!item || !(item->flags() & Qt::ItemIsEnabled)) return;
-    m_acceptedSelection = m_registry.execute(item->data(Qt::UserRole).toString());
+    m_acceptedSelection = m_registry.execute(item->data(Qt::UserRole).toString(),
+                                             item->data(Qt::UserRole + 2));
     if (m_acceptedSelection) accept();
 }
 

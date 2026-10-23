@@ -6,6 +6,7 @@
 #include <QStringList>
 #include <QVariantList>
 #include <QSet>
+#include <QHash>
 #include <optional>
 
 #include "../../application/workspaces/WorkspaceManager.h"
@@ -50,6 +51,8 @@ namespace devhub::presentation::notes { class NotesPage; }
 namespace devhub::presentation::assistant { class AssistantPage; }
 namespace devhub::application::assistant { class AssistantController; class AssistantToolRuntime; class ICodexExecutableProbe; }
 namespace devhub::presentation::databases { class DatabasePage; }
+namespace devhub::presentation::services { class ServicePage; }
+namespace devhub::presentation::logs { class LogsPage; }
 namespace devhub::application::overview { class OverviewStateComposer; }
 namespace devhub::application::commands { class CommandRegistry; }
 namespace devhub::application::commands { class CachedSearchProvider; }
@@ -165,6 +168,11 @@ private:
     void archiveWorkspace(const QString& id);
     void finishWorkspaceArchive(const QString& id, const QString& name, bool serviceStopTimedOut = false);
     void restoreWorkspaceAfterArchiveFailure(const QString& id);
+    void refreshPlannerServiceOptions(const QString& workspaceId);
+    [[nodiscard]] bool plannerWorkspaceAuthorized(const QString& workspaceId) const;
+    void cancelPendingPlannerServiceStarts(const QString& workspaceId = {});
+    void handlePlannerServiceState(const QString& serviceId,
+                                   const application::services::ServiceRuntimeState& state);
 
     QLabel* m_workspaceTitle = nullptr;
     QLabel* m_workspacePath = nullptr;
@@ -184,6 +192,7 @@ private:
     application::workspaces::WorkspaceRelocationService& m_relocation;
     application::workspaces::ITerminalLauncher& m_terminalLauncher;
     application::tasks::TaskScheduler& m_scheduler;
+    application::services::IServiceDefinitionRepository& m_serviceRepository;
     application::services::ServiceCoordinator& m_serviceCoordinator;
     application::settings::SettingsService& m_settingsService;
     application::assistant::AssistantController& m_assistantController;
@@ -210,6 +219,8 @@ private:
     devhub::presentation::notes::NotesPage* m_notesPage = nullptr;
     devhub::presentation::assistant::AssistantPage* m_assistantPage = nullptr;
     devhub::presentation::databases::DatabasePage* m_databasePage = nullptr;
+    devhub::presentation::services::ServicePage* m_servicePage = nullptr;
+    devhub::presentation::logs::LogsPage* m_logsPage = nullptr;
     application::overview::OverviewStateComposer* m_overviewComposer = nullptr;
     application::commands::CommandRegistry* m_commandRegistry = nullptr;
     devhub::presentation::overview::OverviewPage* m_overviewPage = nullptr;
@@ -217,6 +228,7 @@ private:
     devhub::presentation::overview::planner::PlannerImportController* m_plannerImportController = nullptr;
     devhub::presentation::commands::CommandPaletteDialog* m_commandPalette = nullptr;
     application::commands::CachedSearchProvider* m_workspaceSearchProvider = nullptr;
+    application::commands::CachedSearchProvider* m_plannerSearchProvider = nullptr;
     application::commands::CachedSearchProvider* m_servicesSearchProvider = nullptr;
     application::commands::CachedSearchProvider* m_notesSearchProvider = nullptr;
     application::commands::CachedSearchProvider* m_databaseSearchProvider = nullptr;
@@ -233,6 +245,15 @@ private:
     QString m_removalWorkspaceId;
     QStringList m_workspaceCommandIds;
     std::optional<devhub::domain::workspace::Workspace> m_workspaceBeingArchivedActive;
+    struct PendingPlannerServiceStart final {
+        QString workspaceId;
+        QString taskId;
+        QString serviceId;
+        QString runId;
+        QString serviceName;
+        quint64 actionIdentity = 0;
+    };
+    QHash<QString, PendingPlannerServiceStart> m_pendingPlannerServiceStarts;
 };
 
 } // namespace devhub::presentation::shell

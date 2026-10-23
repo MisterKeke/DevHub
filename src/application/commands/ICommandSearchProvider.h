@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CommandRegistry.h"
+#include <QVariant>
 
 namespace devhub::application::commands {
 
@@ -9,6 +10,7 @@ struct SearchCandidate final {
     QString detail;
     QString commandId;
     QString provider;
+    QVariant payload{};
 };
 
 class ICommandSearchProvider

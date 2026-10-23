@@ -41,7 +41,7 @@ ServicePage::ServicePage(application::services::IServiceDefinitionRepository& re
             if (!m_list->currentIndex().isValid()) return;
             const QString id=m_model->serviceId(m_list->currentIndex());
             if (QMessageBox::question(this,tr("Remove service"),tr("Remove this service definition?"))!=QMessageBox::Yes) return;
-            auto removed=m_repository.remove(id,m_workspaceId); if (!removed) QMessageBox::warning(this,tr("Remove failed"),removed.error().userMessage); reload();
+            auto removed=m_repository.remove(id,m_workspaceId); if (!removed) QMessageBox::warning(this,tr("Remove failed"),removed.error().userMessage); else emit definitionsChanged(); reload();
         });
         else if (label==tr("Start")) connect(button,&QPushButton::clicked,this,[this]{
             if (!m_list->currentIndex().isValid()) return;
@@ -72,6 +72,7 @@ ServicePage::ServicePage(application::services::IServiceDefinitionRepository& re
     });
 }
 void ServicePage::setWorkspace(QString id,QString root){m_workspaceId=std::move(id);m_root=std::move(root);reload();}
+void ServicePage::focusService(const QString& serviceId){for(int row=0;row<m_model->rowCount();++row){const auto index=m_model->index(row,0);if(m_model->serviceId(index)==serviceId){m_list->setCurrentIndex(index);m_list->scrollTo(index);return;}}}
 void ServicePage::reload(){
     if(m_workspaceId.isEmpty()){m_model->setDefinitions({});m_model->setRuntimeStates({});m_status->setText(tr("Select a workspace to manage services."));return;}
     auto definitions=m_repository.list(m_workspaceId); if(!definitions){m_status->setText(definitions.error().userMessage);return;}
@@ -106,6 +107,6 @@ void ServicePage::editDefinition(const std::optional<domain::services::ServiceDe
     def.restartPolicy=static_cast<domain::services::RestartPolicy>(restart->currentData().toInt());def.stopTimeoutMs=timeout->value();
     application::services::ServiceDefinitionValidator validator;auto checked=validator.validate(def,m_root);
     if(!checked){QMessageBox::warning(this,tr("Invalid service"),checked.error().userMessage);return;}
-    auto saved=m_repository.save(checked.value());if(!saved)QMessageBox::warning(this,tr("Save failed"),saved.error().userMessage);reload();
+    auto saved=m_repository.save(checked.value());if(!saved)QMessageBox::warning(this,tr("Save failed"),saved.error().userMessage);else emit definitionsChanged();reload();
 }
 }

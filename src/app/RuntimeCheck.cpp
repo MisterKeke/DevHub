@@ -130,6 +130,7 @@ class RuntimePlanner final : public QObject
     Q_PROPERTY(QString selectedDate MEMBER selectedDateValue CONSTANT)
     Q_PROPERTY(QVariantList milestones MEMBER milestoneValues CONSTANT)
     Q_PROPERTY(QVariantList branchOptions MEMBER branchOptionValues CONSTANT)
+    Q_PROPERTY(QVariantList serviceOptions MEMBER serviceOptionValues CONSTANT)
     Q_PROPERTY(bool branchLoading MEMBER branchLoadingValue CONSTANT)
     Q_PROPERTY(QString branchStatus MEMBER branchStatusValue CONSTANT)
     Q_PROPERTY(QString milestoneFilter MEMBER milestoneFilterValue CONSTANT)
@@ -156,6 +157,7 @@ public:
     QString selectedDateValue;
     QVariantList milestoneValues;
     QVariantList branchOptionValues;
+    QVariantList serviceOptionValues;
     bool branchLoadingValue = false;
     QString branchStatusValue;
     QString milestoneFilterValue;
@@ -201,10 +203,25 @@ public:
     Q_INVOKABLE QVariantList branchOptionsForTask(const QString&) const { return {}; }
     Q_INVOKABLE void openGitBranch(const QString&) {}
     Q_INVOKABLE bool openGitHubUrl(const QString&) { return false; }
+    Q_INVOKABLE void openWorkspaceFolder() {}
+    Q_INVOKABLE void openWorkspaceNotes() {}
+    Q_INVOKABLE void openGitModule() {}
+    Q_INVOKABLE void openLinkedService(const QString&) {}
+    Q_INVOKABLE void openLinkedServiceLogs(const QString&) {}
+    Q_INVOKABLE void startLinkedService(const QString&) {}
+    Q_INVOKABLE void cancelLinkedServiceStart(const QString&) {}
+    Q_INVOKABLE QVariantList actionRuns(const QString&) const { return {}; }
+    Q_INVOKABLE void requestCreateTask() {}
+    Q_INVOKABLE void requestFocusSearch() {}
+    Q_INVOKABLE void requestOpenTask(const QString&) {}
     Q_INVOKABLE bool createMilestone(const QString&, const QString&) { return false; }
     Q_INVOKABLE void clearError() {}
 signals:
     void changed();
+    void createTaskRequested();
+    void focusSearchRequested();
+    void openTaskDetailsRequested(QString taskId);
+    void actionRunsChanged(QString taskId);
 };
 
 bool hasObjectName(QQuickItem* item, const QString& objectName)

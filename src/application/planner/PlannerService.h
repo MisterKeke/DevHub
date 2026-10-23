@@ -66,6 +66,14 @@ class PlannerService final
     [[nodiscard]] shared::common::Result<void>
     removeTimeEntry(const QString &workspaceId, const QString &taskId, const QString &entryId,
                     qint64 expectedRevision);
+    [[nodiscard]] shared::common::Result<domain::planner::PlannerActionRun>
+    beginActionRun(const QString& workspaceId, const QString& taskId, QString actionId,
+                   QString logReference = {});
+    [[nodiscard]] shared::common::Result<void>
+    finishActionRun(const QString& workspaceId, const QString& taskId, const QString& runId,
+                    bool succeeded, QString errorSummary = {});
+    [[nodiscard]] shared::common::Result<QVector<domain::planner::PlannerActionRun>>
+    listActionRuns(const QString& workspaceId, const QString& taskId, int limit = 20);
     [[nodiscard]] shared::common::Result<void> validateGitHubUrl(const QString &url) const
     { return m_validation.validateGitHubUrl(url); }
     [[nodiscard]] shared::common::Result<void> validateGitHubIssueUrl(const QString &url) const

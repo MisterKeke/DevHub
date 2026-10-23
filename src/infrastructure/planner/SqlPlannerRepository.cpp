@@ -19,6 +19,7 @@ using domain::errors::AppError;
 using domain::errors::ErrorCategory;
 using domain::errors::ErrorCode;
 using domain::planner::PlannerMilestone;
+using domain::planner::PlannerActionRun;
 using domain::planner::PlannerStatus;
 using domain::planner::PlannerSubtask;
 using domain::planner::PlannerTask;
@@ -187,8 +188,8 @@ Result<PlannerTask> SqlPlannerRepository::createTaskImpl(PlannerTask task, bool 
         "created_at_utc,updated_at_utc,"
         "due_date,start_date,priority,difficulty,revision,estimated_minutes,actual_tracked_minutes,"
         "milestone_id,git_branch,"
-        "github_issue_url,github_pull_request_url,planner_notes,blocked_reason,source_type) "
-        "SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS("
+        "github_issue_url,github_pull_request_url,planner_notes,blocked_reason,source_type,linked_service_id) "
+        "SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS("
         "SELECT 1 FROM workspaces WHERE id=? AND account_id=? AND archived_at_utc IS NULL)"));
     query.addBindValue(task.id);
     query.addBindValue(task.workspaceId);
@@ -213,6 +214,7 @@ Result<PlannerTask> SqlPlannerRepository::createTaskImpl(PlannerTask task, bool 
     query.addBindValue(textValue(task.notes));
     query.addBindValue(textValue(task.blockedReason));
     query.addBindValue(textValue(task.sourceType));
+    query.addBindValue(textValue(task.linkedServiceId));
     query.addBindValue(task.workspaceId);
     query.addBindValue(m_accountId.toString());
     if (!query.exec())
@@ -337,7 +339,8 @@ Result<PlannerTask> SqlPlannerRepository::getTask(const QString &workspaceId, co
         "COALESCE(t.github_pull_request_url,''),"
         "t.planner_notes,t.blocked_reason,t.source_type,COALESCE(i.source_profile_identity,''),"
         "COALESCE(i.source_task_id,''),"
-        "COALESCE(i.source_revision,''),i.source_created_at,i.source_updated_at,i.imported_at_utc "
+        "COALESCE(i.source_revision,''),i.source_created_at,i.source_updated_at,i.imported_at_utc,"
+        "COALESCE(t.linked_service_id,'') "
         "FROM planner_tasks t JOIN workspaces w ON w.id=t.workspace_id LEFT JOIN "
         "planner_import_records i ON i.task_id=t.id "
         "WHERE t.workspace_id=? AND t.id=? AND w.account_id=?"));
@@ -381,6 +384,7 @@ Result<PlannerTask> SqlPlannerRepository::getTask(const QString &workspaceId, co
     task.sourceUpdatedAt = query.value(27).toString();
     if (!query.value(28).isNull())
         task.importedAtUtc = readTimestamp(query.value(28));
+    task.linkedServiceId = query.value(29).toString();
     query.finish();
 
     QSqlQuery details(m_database.database());
@@ -579,7 +583,7 @@ Result<PlannerTask> SqlPlannerRepository::updateTask(PlannerTask task, qint64 ex
                        "priority=?,difficulty=?,revision=revision+1,estimated_minutes=?,actual_"
                        "tracked_minutes=?,milestone_id=?,git_branch=?,"
                        "github_issue_url=?,github_pull_request_url=?,planner_notes=?,blocked_"
-                       "reason=? WHERE id=? AND workspace_id=? AND revision=? "
+                       "reason=?,linked_service_id=? WHERE id=? AND workspace_id=? AND revision=? "
                        "AND workspace_id IN(SELECT id FROM workspaces WHERE account_id=?)"));
     query.addBindValue(task.title);
     query.addBindValue(textValue(task.description));
@@ -599,6 +603,7 @@ Result<PlannerTask> SqlPlannerRepository::updateTask(PlannerTask task, qint64 ex
     query.addBindValue(textValue(task.githubPullRequestUrl));
     query.addBindValue(textValue(task.notes));
     query.addBindValue(textValue(task.blockedReason));
+    query.addBindValue(textValue(task.linkedServiceId));
     query.addBindValue(task.id);
     query.addBindValue(task.workspaceId);
     query.addBindValue(expectedRevision);
@@ -1004,6 +1009,117 @@ Result<void> SqlPlannerRepository::removeTimeEntry(const QString &workspaceId, c
     if (!remove.exec()) return sqlFailure<void>(remove, QStringLiteral("delete Planner time entry"));
     if (remove.numRowsAffected() != 1) return missing<void>(QStringLiteral("delete Planner time entry"));
     return transaction.commit();
+}
+
+Result<PlannerActionRun> SqlPlannerRepository::beginActionRun(PlannerActionRun run)
+{
+    if (!onOwnerThread())
+        return threadFailure<PlannerActionRun>(QStringLiteral("start Planner action"));
+    const QString actionPrefix = QStringLiteral("service.start:");
+    const QString serviceId = run.actionId.startsWith(actionPrefix)
+        ? run.actionId.mid(actionPrefix.size()) : QString{};
+    if (serviceId.isEmpty() || QUuid::fromString(serviceId).isNull() || run.id.isEmpty()
+        || run.workspaceId.isEmpty() || run.taskId.isEmpty() || run.logReference.size() > 160
+        || (!run.logReference.isEmpty()
+            && run.logReference != QStringLiteral("service:%1:stdout").arg(serviceId)))
+        return missing<PlannerActionRun>(QStringLiteral("start Planner action"));
+    QSqlQuery query(m_database.database());
+    query.prepare(QStringLiteral(
+        "INSERT INTO planner_action_runs(id,workspace_id,task_id,action_id,started_at_utc,log_reference) "
+        "SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM planner_tasks t JOIN workspaces w "
+        "ON w.id=t.workspace_id WHERE t.workspace_id=? AND t.id=? AND t.linked_service_id<>'' "
+        "AND t.linked_service_id=? AND w.account_id=? AND w.archived_at_utc IS NULL)"));
+    query.addBindValue(run.id);
+    query.addBindValue(run.workspaceId);
+    query.addBindValue(run.taskId);
+    query.addBindValue(run.actionId);
+    query.addBindValue(timestamp(run.startedAtUtc));
+    query.addBindValue(textValue(run.logReference));
+    query.addBindValue(run.workspaceId);
+    query.addBindValue(run.taskId);
+    query.addBindValue(serviceId);
+    query.addBindValue(m_accountId.toString());
+    if (!query.exec())
+        return sqlFailure<PlannerActionRun>(query, QStringLiteral("start Planner action"));
+    if (query.numRowsAffected() != 1)
+        return missing<PlannerActionRun>(QStringLiteral("start Planner action"));
+    QSqlQuery prune(m_database.database());
+    prune.prepare(QStringLiteral(
+        "DELETE FROM planner_action_runs WHERE workspace_id=? AND task_id=? AND finished_at_utc IS NOT NULL "
+        "AND id NOT IN (SELECT id FROM planner_action_runs WHERE workspace_id=? AND task_id=? "
+        "AND finished_at_utc IS NOT NULL ORDER BY started_at_utc DESC,id DESC LIMIT 20)"));
+    prune.addBindValue(run.workspaceId);
+    prune.addBindValue(run.taskId);
+    prune.addBindValue(run.workspaceId);
+    prune.addBindValue(run.taskId);
+    if (!prune.exec())
+        return sqlFailure<PlannerActionRun>(prune, QStringLiteral("prune Planner action history"));
+    return Result<PlannerActionRun>::success(std::move(run));
+}
+
+Result<void> SqlPlannerRepository::finishActionRun(const QString& workspaceId, const QString& taskId,
+                                                    const QString& runId, bool succeeded,
+                                                    qint64 durationMilliseconds, QString errorSummary)
+{
+    if (!onOwnerThread()) return threadFailure<void>(QStringLiteral("finish Planner action"));
+    if (durationMilliseconds < 0) return missing<void>(QStringLiteral("finish Planner action"));
+    errorSummary = errorSummary.left(512);
+    QSqlQuery query(m_database.database());
+    query.prepare(QStringLiteral(
+        "UPDATE planner_action_runs SET finished_at_utc=strftime('%Y-%m-%dT%H:%M:%fZ','now'),"
+        "succeeded=?,duration_ms=?,error_summary=? WHERE workspace_id=? AND task_id=? AND id=? "
+        "AND finished_at_utc IS NULL AND workspace_id IN(SELECT id FROM workspaces WHERE account_id=? )"));
+    query.addBindValue(succeeded ? 1 : 0);
+    query.addBindValue(durationMilliseconds);
+    query.addBindValue(textValue(errorSummary));
+    query.addBindValue(workspaceId);
+    query.addBindValue(taskId);
+    query.addBindValue(runId);
+    query.addBindValue(m_accountId.toString());
+    if (!query.exec()) return sqlFailure<void>(query, QStringLiteral("finish Planner action"));
+    if (query.numRowsAffected() != 1) return conflict<void>(QStringLiteral("finish Planner action"));
+    QSqlQuery prune(m_database.database());
+    prune.prepare(QStringLiteral(
+        "DELETE FROM planner_action_runs WHERE workspace_id=? AND task_id=? AND finished_at_utc IS NOT NULL "
+        "AND id NOT IN (SELECT id FROM planner_action_runs WHERE workspace_id=? AND task_id=? "
+        "AND finished_at_utc IS NOT NULL ORDER BY started_at_utc DESC,id DESC LIMIT 20)"));
+    prune.addBindValue(workspaceId); prune.addBindValue(taskId);
+    prune.addBindValue(workspaceId); prune.addBindValue(taskId);
+    if (!prune.exec()) return sqlFailure<void>(prune, QStringLiteral("prune Planner action history"));
+    return Result<void>::success();
+}
+
+Result<QVector<PlannerActionRun>> SqlPlannerRepository::listActionRuns(const QString& workspaceId,
+                                                                        const QString& taskId,
+                                                                        int limit)
+{
+    if (!onOwnerThread()) return threadFailure<QVector<PlannerActionRun>>(QStringLiteral("list Planner actions"));
+    QSqlQuery query(m_database.database());
+    query.prepare(QStringLiteral(
+        "SELECT r.id,r.workspace_id,r.task_id,r.action_id,r.started_at_utc,r.finished_at_utc,"
+        "r.succeeded,r.duration_ms,r.error_summary,r.log_reference FROM planner_action_runs r "
+        "JOIN planner_tasks t ON t.workspace_id=r.workspace_id AND t.id=r.task_id "
+        "JOIN workspaces w ON w.id=t.workspace_id WHERE r.workspace_id=? AND r.task_id=? "
+        "AND w.account_id=? ORDER BY CASE WHEN r.finished_at_utc IS NULL THEN 0 ELSE 1 END,"
+        "r.started_at_utc DESC,r.id DESC LIMIT ?"));
+    query.addBindValue(workspaceId);
+    query.addBindValue(taskId);
+    query.addBindValue(m_accountId.toString());
+    query.addBindValue(qBound(1, limit, 20));
+    if (!query.exec()) return sqlFailure<QVector<PlannerActionRun>>(query, QStringLiteral("list Planner actions"));
+    QVector<PlannerActionRun> rows;
+    while (query.next()) {
+        PlannerActionRun row;
+        row.id = query.value(0).toString(); row.workspaceId = query.value(1).toString();
+        row.taskId = query.value(2).toString(); row.actionId = query.value(3).toString();
+        row.startedAtUtc = readTimestamp(query.value(4));
+        if (!query.value(5).isNull()) row.finishedAtUtc = readTimestamp(query.value(5));
+        if (!query.value(6).isNull()) row.succeeded = query.value(6).toBool();
+        row.durationMilliseconds = query.value(7).toLongLong();
+        row.errorSummary = query.value(8).toString(); row.logReference = query.value(9).toString();
+        rows.append(std::move(row));
+    }
+    return Result<QVector<PlannerActionRun>>::success(std::move(rows));
 }
 
 Result<PlannerMilestone> SqlPlannerRepository::createMilestone(PlannerMilestone milestone)

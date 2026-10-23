@@ -1,7 +1,7 @@
 # Workspace Planner architecture
 
-**Status:** Phases 1–4 implemented · **Reviewed:** 2026-10-23
-**Scope:** Local Planner storage, embedded Overview UI, independent SomethingQt task import, and developer planning metadata.
+**Status:** Phases 1–5 implemented · **Reviewed:** 2026-10-23
+**Scope:** Local Planner storage, embedded Overview UI, independent SomethingQt task import, developer planning metadata, and saved-service integration.
 
 ## 1. Feature scope and non-goals
 
@@ -381,6 +381,11 @@ Use the existing Qt Test and CTest conventions, including temporary SQLite datab
    lookup and safe Git navigation, validated GitHub links, milestone progress and management,
    dependency detail/blocking, manual time-entry history, separate Planner notes and SQL metadata
    filters. Active timers remain deferred.
+5. **Phase 5 — DevHub module integration (implemented):** migration 0012 adds saved-service links
+   and bounded action history. Task details reuse Git, Notes, Services, Logs, workspace-folder,
+   NotificationService, and Ctrl+K flows. Starting a saved service requires an explicit click and
+   active workspace/session validation; task text is never executable. Planner data remains outside
+   Assistant context until the disclosure and conversation-scope prerequisites are available.
 
 ## 14. Overall product acceptance criteria
 
@@ -435,6 +440,25 @@ now covers milestone, branch, blocked, overdue, origin, status, priority, comple
 
 No active timer was added. A running timer would need defined shutdown and crash recovery behavior;
 Phase 4 delivers manual entries and persistent history without counting unobserved time.
+
+## Phase 5 completion
+
+Migration 0012 adds a workspace-scoped saved-service association and per-task action history. Each
+task retains at most 20 finished runs plus an in-progress run; records contain a fixed action ID,
+timestamps, result, duration, a 512-character error summary, and a bounded reference to the existing
+service stdout source. Managed output stays in DevHub's existing capped Logs buffers.
+
+Task details open Git, the repository folder, workspace Notes, the linked saved service, and its
+related service logs. Starting the linked service uses `ServiceCoordinator` and a definition loaded
+again from the active workspace. It is explicit, asynchronous, cancellable during startup, and
+invalidated by workspace changes, account locking, archive, and shutdown. Failed starts create a
+deduplicated Service notification. Ctrl+K includes Planner create, find, overdue, in-progress,
+expand/collapse, and task-detail search actions.
+
+Planner task disclosure to Assistant is not enabled. The missing prerequisites are explicit
+disclosure consent, account/workspace/conversation scope binding, cancellation on scope changes, and
+bounded treatment of untrusted task descriptions. See
+[`workspace-planner-phase-5.md`](workspace-planner-phase-5.md) for supported and deferred workflows.
 
 Verification on 2026-10-23: the Debug build completed all 423 Ninja steps. The focused CTest run
 passed all five targets: `devhub.database-migrations`, `devhub.planner`, `devhub.planner-ui`,

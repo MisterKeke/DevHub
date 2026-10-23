@@ -2,6 +2,7 @@
 
 #include "../../domain/planner/PlannerRules.h"
 
+#include <algorithm>
 #include <QUuid>
 
 namespace devhub::application::planner
@@ -211,6 +212,58 @@ Result<void> PlannerService::removeTimeEntry(const QString &workspaceId, const Q
                                              const QString &entryId, qint64 expectedRevision)
 {
     return m_repository.removeTimeEntry(workspaceId, taskId, entryId, expectedRevision);
+}
+
+Result<domain::planner::PlannerActionRun> PlannerService::beginActionRun(
+    const QString& workspaceId, const QString& taskId, QString actionId, QString logReference)
+{
+    const QString actionPrefix = QStringLiteral("service.start:");
+    const QString serviceId = actionId.startsWith(actionPrefix) ? actionId.mid(actionPrefix.size()) : QString{};
+    if (serviceId.isEmpty() || QUuid::fromString(serviceId).isNull())
+        return Result<domain::planner::PlannerActionRun>::failure(domain::errors::AppError::failure(
+            domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Workspace,
+            QStringLiteral("This Planner action is not supported."), actionId,
+            QStringLiteral("start Planner action")));
+    auto task = m_repository.getTask(workspaceId, taskId);
+    if (!task) return Result<domain::planner::PlannerActionRun>::failure(task.error());
+    if (task.value().linkedServiceId != serviceId)
+        return Result<domain::planner::PlannerActionRun>::failure(domain::errors::AppError::failure(
+            domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Workspace,
+            QStringLiteral("Link a configured service to this task first."), {},
+            QStringLiteral("start Planner action")));
+    domain::planner::PlannerActionRun run;
+    run.id = m_ids.create().toString(QUuid::WithoutBraces);
+    run.workspaceId = workspaceId;
+    run.taskId = taskId;
+    run.actionId = std::move(actionId);
+    run.startedAtUtc = nowUtc(m_clock);
+    run.logReference = std::move(logReference);
+    return m_repository.beginActionRun(std::move(run));
+}
+
+Result<void> PlannerService::finishActionRun(const QString& workspaceId, const QString& taskId,
+                                              const QString& runId, bool succeeded,
+                                              QString errorSummary)
+{
+    auto runs = m_repository.listActionRuns(workspaceId, taskId, 20);
+    if (!runs) return Result<void>::failure(runs.error());
+    const auto run = std::find_if(runs.value().cbegin(), runs.value().cend(), [&runId](const auto& row) {
+        return row.id == runId && !row.finishedAtUtc.isValid() && !row.succeeded.has_value();
+    });
+    if (run == runs.value().cend())
+        return Result<void>::failure(domain::errors::AppError::failure(
+            domain::errors::ErrorCode::RevisionConflict, domain::errors::ErrorCategory::Persistence,
+            QStringLiteral("This Planner action has already finished or is unavailable."), runId,
+            QStringLiteral("finish Planner action")));
+    const qint64 duration = qMax<qint64>(0, run->startedAtUtc.msecsTo(nowUtc(m_clock)));
+    return m_repository.finishActionRun(workspaceId, taskId, runId, succeeded, duration,
+                                        errorSummary.left(512));
+}
+
+Result<QVector<domain::planner::PlannerActionRun>> PlannerService::listActionRuns(
+    const QString& workspaceId, const QString& taskId, int limit)
+{
+    return m_repository.listActionRuns(workspaceId, taskId, qBound(1, limit, 20));
 }
 
 Result<PlannerMilestone> PlannerService::createMilestone(QString workspaceId,

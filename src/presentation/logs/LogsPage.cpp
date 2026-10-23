@@ -144,6 +144,19 @@ void LogsPage::setWorkspace(QString workspaceId, QString workspacePath)
     m_workspaceId = std::move(workspaceId); m_workspacePath = std::move(workspacePath); reloadSources();
 }
 
+void LogsPage::focusService(const QString& serviceId)
+{
+    if (serviceId.isEmpty()) return;
+    reloadSources();
+    const int index = m_sources->findData(serviceSourceId(serviceId, false));
+    if (index >= 0) {
+        m_sources->setCurrentIndex(index);
+        selectSource(selectedSourceId());
+    } else {
+        m_status->setText(tr("No managed-service log source is available yet. Start the linked service to collect output."));
+    }
+}
+
 void LogsPage::reloadSources()
 {
     const QString previous = selectedSourceId();

@@ -9,6 +9,7 @@ namespace devhub::application::planner
 {
 
 using domain::planner::PlannerMilestone;
+using domain::planner::PlannerActionRun;
 using domain::planner::PlannerSubtask;
 using domain::planner::PlannerTask;
 using domain::planner::PlannerTaskFilter;
@@ -59,6 +60,13 @@ class IPlannerRepository
     [[nodiscard]] virtual shared::common::Result<void>
     removeTimeEntry(const QString &workspaceId, const QString &taskId,
                     const QString &entryId, qint64 expectedRevision) = 0;
+    [[nodiscard]] virtual shared::common::Result<PlannerActionRun>
+    beginActionRun(PlannerActionRun run) = 0;
+    [[nodiscard]] virtual shared::common::Result<void>
+    finishActionRun(const QString& workspaceId, const QString& taskId, const QString& runId,
+                    bool succeeded, qint64 durationMilliseconds, QString errorSummary) = 0;
+    [[nodiscard]] virtual shared::common::Result<QVector<PlannerActionRun>>
+    listActionRuns(const QString& workspaceId, const QString& taskId, int limit = 20) = 0;
     [[nodiscard]] virtual shared::common::Result<PlannerMilestone>
     createMilestone(PlannerMilestone milestone) = 0;
     [[nodiscard]] virtual shared::common::Result<QVector<PlannerMilestone>>

@@ -32,7 +32,7 @@ class PlannerTest final : public QObject
         QVERIFY2(opened, opened ? "" : qPrintable(opened.error().technicalMessage));
         const auto migrated = m_database->migrate();
         QVERIFY2(migrated, migrated ? "" : qPrintable(migrated.error().technicalMessage));
-        QCOMPARE(m_database->currentSchemaVersion(), 11);
+        QCOMPARE(m_database->currentSchemaVersion(), 12);
         QSqlQuery query(m_database->database());
         QVERIFY(query.exec(
             QStringLiteral(
@@ -401,6 +401,46 @@ class PlannerTest final : public QObject
         QVERIFY(!m_validation.validateGitHubUrl(QStringLiteral("http://github.com/org/repo/issues/42")));
     }
 
+    void linkedServiceActionsKeepBoundedWorkspaceScopedHistory()
+    {
+        domain::planner::PlannerTask draft;
+        draft.title = QStringLiteral("Build the application");
+        draft.linkedServiceId = QStringLiteral("11111111-1111-4111-8111-111111111111");
+        auto task = m_service->createTask(m_workspaceA, draft);
+        QVERIFY2(task, task ? "" : qPrintable(task.error().technicalMessage));
+        QCOMPARE(task.value().linkedServiceId, draft.linkedServiceId);
+        QVERIFY(!m_service->beginActionRun(m_workspaceB, task.value().id,
+            QStringLiteral("service.start:%1").arg(draft.linkedServiceId)));
+        QVERIFY(!m_service->beginActionRun(m_workspaceA, task.value().id, QStringLiteral("arbitrary.command")));
+
+        auto first = m_service->beginActionRun(m_workspaceA, task.value().id,
+            QStringLiteral("service.start:%1").arg(draft.linkedServiceId),
+            QStringLiteral("service:%1:stdout").arg(draft.linkedServiceId));
+        QVERIFY(first);
+        QVERIFY(m_service->finishActionRun(m_workspaceA, task.value().id, first.value().id,
+                                           false, QString(700, QLatin1Char('x'))));
+        auto history = m_service->listActionRuns(m_workspaceA, task.value().id);
+        QVERIFY(history);
+        QCOMPARE(history.value().size(), 1);
+        QCOMPARE(history.value().first().logReference, QStringLiteral("service:%1:stdout").arg(draft.linkedServiceId));
+        QVERIFY(history.value().first().succeeded.has_value());
+        QCOMPARE(*history.value().first().succeeded, false);
+        QCOMPARE(history.value().first().errorSummary.size(), 512);
+        QVERIFY(history.value().first().finishedAtUtc.isValid());
+
+        for (int i = 0; i < 22; ++i) {
+            auto run = m_service->beginActionRun(m_workspaceA, task.value().id,
+                QStringLiteral("service.start:%1").arg(draft.linkedServiceId));
+            QVERIFY2(run, run ? "" : qPrintable(run.error().technicalMessage));
+            QVERIFY(m_service->finishActionRun(m_workspaceA, task.value().id, run.value().id,
+                                               true));
+        }
+        history = m_service->listActionRuns(m_workspaceA, task.value().id, 1000);
+        QVERIFY(history);
+        QCOMPARE(history.value().size(), 20);
+        QVERIFY(m_service->listActionRuns(m_workspaceB, task.value().id).value().isEmpty());
+    }
+
     void importProvenanceKeepsWideIdentifiersAndArchiveRetainsData()
     {
         domain::planner::PlannerTask imported;
@@ -466,7 +506,7 @@ class PlannerTest final : public QObject
         archive.addBindValue(m_workspaceA);
         archive.addBindValue(m_accountId);
         QVERIFY(archive.exec());
-        QCOMPARE(m_database->currentSchemaVersion(), 11);
+        QCOMPARE(m_database->currentSchemaVersion(), 12);
     }
 
     void importedTaskFailureRollsBackTaskTagsSubtasksAndProvenance()

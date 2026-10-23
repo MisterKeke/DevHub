@@ -12,6 +12,7 @@
 #include <QUrl>
 #include <QSet>
 #include <QRegularExpression>
+#include <QUuid>
 #include <algorithm>
 
 namespace devhub::presentation::overview::planner {
@@ -379,8 +380,143 @@ QVariantMap PlannerController::taskDetails(const QString& id) const
         values.insert(QString::fromUtf8(it.value()), index.data(it.key()));
     values.insert(QStringLiteral("workspaceId"), task->workspaceId);
     values.insert(QStringLiteral("gitBranchExists"), branchExists(values.value(QStringLiteral("gitBranch")).toString()));
+    values.insert(QStringLiteral("serviceName"), QString{});
+    values.insert(QStringLiteral("linkedServiceAvailable"), false);
+    for (const QVariant& option : m_serviceOptions) {
+        const QVariantMap service = option.toMap();
+        if (service.value(QStringLiteral("id")).toString() == task->linkedServiceId) {
+            values.insert(QStringLiteral("serviceName"), service.value(QStringLiteral("name")).toString());
+            values.insert(QStringLiteral("linkedServiceAvailable"), hasWorkspace()
+                && task->workspaceId == m_workspaceId);
+            break;
+        }
+    }
+    values.insert(QStringLiteral("actionRuns"), actionRuns(id));
     return values;
 }
+
+void PlannerController::setServiceOptions(QVariantList options)
+{
+    QVariantList safe;
+    QSet<QString> ids;
+    for (const QVariant& value : options) {
+        const QVariantMap row = value.toMap();
+        const QString id = row.value(QStringLiteral("id")).toString().trimmed();
+        const QString name = row.value(QStringLiteral("name")).toString().trimmed();
+        if (id.isEmpty() || QUuid::fromString(id).isNull() || name.isEmpty() || ids.contains(id)) continue;
+        ids.insert(id);
+        safe.append(QVariantMap{{QStringLiteral("id"), id}, {QStringLiteral("name"), name}});
+        if (safe.size() >= 100) break;
+    }
+    m_serviceOptions = std::move(safe);
+    emit changed();
+}
+
+QVariantList PlannerController::actionRuns(const QString& taskId) const
+{
+    if (!hasWorkspace() || taskId.isEmpty()) return {};
+    const auto runs = m_service.listActionRuns(m_workspaceId, taskId, 20);
+    if (!runs) return {};
+    QVariantList rows;
+    for (const auto& run : runs.value()) {
+        const QString status = !run.finishedAtUtc.isValid() ? tr("Starting")
+            : run.succeeded.value_or(false) ? tr("Started") : tr("Failed");
+        rows.append(QVariantMap{{QStringLiteral("id"), run.id},
+            {QStringLiteral("actionId"), run.actionId}, {QStringLiteral("status"), status},
+            {QStringLiteral("succeeded"), run.succeeded.value_or(false)},
+            {QStringLiteral("finished"), run.finishedAtUtc.isValid()},
+            {QStringLiteral("startedAt"), run.startedAtUtc.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))},
+            {QStringLiteral("durationMs"), run.durationMilliseconds},
+            {QStringLiteral("errorSummary"), run.errorSummary},
+            {QStringLiteral("logReference"), run.logReference}});
+    }
+    return rows;
+}
+
+void PlannerController::openWorkspaceFolder()
+{ if (hasWorkspace()) emit openWorkspaceFolderRequested(m_workspaceId); }
+void PlannerController::openWorkspaceNotes()
+{ if (hasWorkspace()) emit openWorkspaceNotesRequested(m_workspaceId); }
+void PlannerController::openGitModule()
+{ if (hasWorkspace()) emit openGitModuleRequested(m_workspaceId); }
+
+void PlannerController::openLinkedService(const QString& taskId)
+{
+    const auto* task = hasWorkspace() ? taskById(taskId) : nullptr;
+    if (!task || task->workspaceId != m_workspaceId || task->linkedServiceId.isEmpty()) return;
+    for (const QVariant& value : m_serviceOptions)
+        if (value.toMap().value(QStringLiteral("id")).toString() == task->linkedServiceId) {
+            emit openLinkedServiceRequested(m_workspaceId, task->linkedServiceId); return;
+        }
+    setFailure(tr("The linked service is unavailable in this workspace. Choose a configured service in task details."));
+}
+
+void PlannerController::openLinkedServiceLogs(const QString& taskId)
+{
+    const auto* task = hasWorkspace() ? taskById(taskId) : nullptr;
+    if (!task || task->workspaceId != m_workspaceId || task->linkedServiceId.isEmpty()) return;
+    for (const QVariant& value : m_serviceOptions)
+        if (value.toMap().value(QStringLiteral("id")).toString() == task->linkedServiceId) {
+            emit openLinkedServiceLogsRequested(m_workspaceId, task->linkedServiceId); return;
+        }
+    setFailure(tr("The linked service is unavailable in this workspace."));
+}
+
+void PlannerController::startLinkedService(const QString& taskId)
+{
+    const auto* task = hasWorkspace() ? taskById(taskId) : nullptr;
+    if (!task || task->workspaceId != m_workspaceId || task->linkedServiceId.isEmpty()) {
+        setFailure(tr("This task has no available configured service.")); return;
+    }
+    const QString serviceId = task->linkedServiceId;
+    const bool configured = std::any_of(m_serviceOptions.cbegin(), m_serviceOptions.cend(), [&serviceId](const QVariant& value) {
+        return value.toMap().value(QStringLiteral("id")).toString() == serviceId;
+    });
+    if (!configured) { setFailure(tr("The linked service is unavailable in this workspace.")); return; }
+    emit startLinkedServiceRequested(m_workspaceId, taskId, serviceId);
+}
+
+void PlannerController::cancelLinkedServiceStart(const QString& taskId)
+{
+    const auto* task = hasWorkspace() ? taskById(taskId) : nullptr;
+    if (task && task->workspaceId == m_workspaceId && !task->linkedServiceId.isEmpty())
+        emit cancelLinkedServiceStartRequested(m_workspaceId, taskId, task->linkedServiceId);
+}
+
+std::optional<domain::planner::PlannerActionRun> PlannerController::beginLinkedServiceAction(
+    const QString& taskId, const QString& serviceId, const QString& logReference)
+{
+    if (!hasWorkspace()) { setFailure(tr("Sign in and select a workspace before starting a Planner service.")); return std::nullopt; }
+    const auto* task = taskById(taskId);
+    if (!task || task->workspaceId != m_workspaceId || task->linkedServiceId != serviceId) {
+        setFailure(tr("The task or linked service changed. Reload task details and try again.")); return std::nullopt;
+    }
+    const bool configured = std::any_of(m_serviceOptions.cbegin(), m_serviceOptions.cend(), [&serviceId](const QVariant& value) {
+        return value.toMap().value(QStringLiteral("id")).toString() == serviceId;
+    });
+    if (!configured) { setFailure(tr("The linked service is unavailable in this workspace.")); return std::nullopt; }
+    auto result = m_service.beginActionRun(m_workspaceId, taskId,
+        QStringLiteral("service.start:%1").arg(serviceId), logReference);
+    if (!result) { setFailure(errorText(result)); return std::nullopt; }
+    return std::move(result).value();
+}
+
+bool PlannerController::finishActionRun(const domain::planner::PlannerActionRun& run, bool succeeded,
+                                        const QString& errorSummary)
+{
+    const auto result = m_service.finishActionRun(run.workspaceId, run.taskId, run.id, succeeded, errorSummary);
+    if (!result) { setFailure(errorText(result)); return false; }
+    emit actionRunsChanged(run.taskId);
+    if (run.workspaceId == m_workspaceId) emit changed();
+    return true;
+}
+
+void PlannerController::requestCreateTask()
+{ if (hasWorkspace()) emit createTaskRequested(); }
+void PlannerController::requestFocusSearch()
+{ if (hasWorkspace()) emit focusSearchRequested(); }
+void PlannerController::requestOpenTask(const QString& taskId)
+{ if (hasWorkspace() && taskById(taskId)) emit openTaskDetailsRequested(taskId); }
 
 bool PlannerController::branchExists(const QString& branch) const
 {
@@ -508,6 +644,15 @@ bool PlannerController::saveTask(const QVariantMap& values)
         draft.actualTrackedMinutes = tracked;
     }
     draft.milestoneId = values.value(QStringLiteral("milestoneId")).toString();
+    const QString linkedServiceId = values.value(QStringLiteral("linkedServiceId")).toString().trimmed();
+    const bool serviceConfigured = std::any_of(m_serviceOptions.cbegin(), m_serviceOptions.cend(), [&linkedServiceId](const QVariant& value) {
+        return value.toMap().value(QStringLiteral("id")).toString() == linkedServiceId;
+    });
+    if (!linkedServiceId.isEmpty() && !serviceConfigured
+        && (!existing || existing->linkedServiceId != linkedServiceId)) {
+        setFailure(tr("Choose a service configured in the active workspace.")); return false;
+    }
+    draft.linkedServiceId = linkedServiceId;
     const QString requestedBranch = values.value(QStringLiteral("gitBranch")).toString().trimmed();
     if (!requestedBranch.isEmpty() && requestedBranch != draft.gitBranch && !branchExists(requestedBranch)) {
         setFailure(tr("Choose an existing local branch in this workspace."));
