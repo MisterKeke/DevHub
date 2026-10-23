@@ -876,9 +876,9 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             if (!m_workspaceContext.activeWorkspace()) return;
             const auto states = m_serviceCoordinator.states();
             int running = 0; int failed = 0;
-            for (const auto& state : states) {
-                running += state.lifecycle == application::services::ServiceLifecycleState::Running ? 1 : 0;
-                failed += state.lifecycle == application::services::ServiceLifecycleState::Failed ? 1 : 0;
+            for (const auto& runtimeState : states) {
+                running += runtimeState.lifecycle == application::services::ServiceLifecycleState::Running ? 1 : 0;
+                failed += runtimeState.lifecycle == application::services::ServiceLifecycleState::Failed ? 1 : 0;
             }
             application::overview::OverviewSection section;
             section.id = QStringLiteral("services"); section.title = tr("Services and run");
