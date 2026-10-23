@@ -2,6 +2,7 @@
 #include "presentation/assistant/AssistantPage.h"
 #include "application/assistant/AssistantApprovalCoordinator.h"
 #include "application/assistant/AssistantToolRuntime.h"
+#include "application/commands/ICommandSearchProvider.h"
 #include "infrastructure/codex/CodexProcess.h"
 #include "infrastructure/codex/CodexExecutableLocator.h"
 #include "presentation/assistant/AssistantNavigation.h"
@@ -463,6 +464,38 @@ private slots:
         QCOMPARE(registry.recentCommandIds(), QStringList{"nav.assistant"});
         selected = -1; QVERIFY(registry.execute("nav.assistant")); QCOMPARE(selected, 9);
         devhub::application::commands::CommandRegistry nextSession; QVERIFY(nextSession.recentCommandIds().isEmpty());
+    }
+    void plannerPaletteSearchHonorsWorkspaceAvailabilityAndPayload()
+    {
+        devhub::application::commands::CommandRegistry registry;
+        QString openedTask;
+        const auto available = [](const devhub::application::commands::CommandContext& context) {
+            return devhub::application::commands::CommandAvailability{context.hasWorkspace,
+                context.hasWorkspace ? QString{} : QStringLiteral("Select a workspace first.")};
+        };
+        registry.addPayloadCommand(QStringLiteral("planner.open-task"), QStringLiteral("Planner: Open task"),
+            devhub::application::commands::CommandCategory::Workspace,
+            [&openedTask](const QVariant& payload) { openedTask = payload.toString(); }, available);
+        devhub::application::commands::CachedSearchProvider provider(QStringLiteral("Planner tasks"));
+        provider.setEntries({{QStringLiteral("Fix service startup"), QStringLiteral("Open task details · todo"),
+            QStringLiteral("planner.open-task"), QStringLiteral("Planner tasks"), QStringLiteral("task-123")}});
+        auto matches = provider.search(QStringLiteral("service"), registry.context());
+        QCOMPARE(matches.size(), 1);
+        QVERIFY(!registry.execute(matches.first().commandId, matches.first().payload));
+        QVERIFY(openedTask.isEmpty());
+
+        devhub::application::commands::CommandContext context;
+        context.hasWorkspace = true;
+        context.workspaceId = QStringLiteral("workspace-one");
+        registry.setContext(context);
+        matches = provider.search(QStringLiteral("startup"), registry.context());
+        QCOMPARE(matches.size(), 1);
+        QVERIFY(registry.execute(matches.first().commandId, matches.first().payload));
+        QCOMPARE(openedTask, QStringLiteral("task-123"));
+
+        context.hasWorkspace = false;
+        registry.setContext(context);
+        QVERIFY(!registry.execute(QStringLiteral("planner.open-task"), QStringLiteral("task-123")));
     }
 };
 QTEST_MAIN(AssistantUiTest)

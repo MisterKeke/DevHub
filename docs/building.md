@@ -43,6 +43,29 @@ ctest --preset windows-dev-debug
 
 Use the compiler paired with the selected Qt kit. The `windows-dev` preset uses the static-library `x64-mingw-static` vcpkg triplet so libsodium is linked into DevHub. For an MSVC Qt kit, use the `windows-ci` preset and its `x64-windows` triplet instead.
 
+## Workspace Planner verification
+
+From a configured preset build, run the complete registered suite with:
+
+```powershell
+cmake --build --preset windows-dev-debug --parallel
+ctest --preset windows-dev-debug
+```
+
+Planner storage, UI-controller, migration, SomethingQt reader, and QML runtime checks use temporary
+fixtures. The scale profile is opt-in and creates only synthetic data in a temporary test database:
+
+```powershell
+$env:DEVHUB_RUN_PLANNER_PERF = '1'
+ctest --test-dir out/build/windows-dev -C Debug -R '^devhub\.planner$' --verbose
+Remove-Item Env:DEVHUB_RUN_PLANNER_PERF
+```
+
+It reports repository loading, model reset, in-memory search, board status filtering, and an
+estimated model payload at 100, 1,000, and 10,000 tasks. The estimate is not process RSS, and the
+profile does not substitute for a manual signed-in UI run. See
+[Workspace Planner database and import contract](architecture/workspace-planner-database.md).
+
 For a Qt Creator MinGW kit, use the same triplet when configuring:
 
 ```powershell

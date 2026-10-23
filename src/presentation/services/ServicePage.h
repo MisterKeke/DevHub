@@ -12,6 +12,9 @@ public:
     ServicePage(application::services::IServiceDefinitionRepository& repository,
                 application::services::ServiceCoordinator& coordinator, QWidget* parent = nullptr);
     void setWorkspace(QString id, QString root);
+    void focusService(const QString& serviceId);
+signals:
+    void definitionsChanged();
 private:
     void reload();
     void editDefinition(const std::optional<domain::services::ServiceDefinition>& existing = std::nullopt);

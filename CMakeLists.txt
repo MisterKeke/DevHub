@@ -248,6 +248,19 @@ target_include_directories(devhub_workspaces PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(devhub_workspaces PUBLIC project_options devhub_accounts Qt6::Core Qt6::Sql
     PRIVATE project_warnings)
 
+add_library(devhub_planner STATIC
+    src/domain/planner/PlannerTypes.cpp
+    src/domain/planner/PlannerRules.cpp
+    src/application/planner/PlannerValidation.cpp
+    src/application/planner/PlannerService.cpp
+    src/infrastructure/planner/SomethingQtImportReader.h
+    src/infrastructure/planner/SomethingQtImportReader.cpp
+    src/infrastructure/planner/SqlPlannerRepository.cpp
+)
+target_include_directories(devhub_planner PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(devhub_planner PUBLIC project_options devhub_core devhub_database devhub_accounts Qt6::Core Qt6::Sql
+    PRIVATE project_warnings)
+
 add_library(devhub_detection STATIC
     src/application/detection/WorkspaceDetectorRegistry.cpp
     src/application/detection/WorkspaceScanService.cpp
@@ -314,6 +327,10 @@ add_executable(devhub WIN32
     src/presentation/assistant/AssistantPage.cpp
     src/presentation/shell/MainWindow.cpp
     src/presentation/overview/OverviewPage.cpp
+    src/presentation/overview/planner/PlannerTaskModel.cpp
+    src/presentation/overview/planner/PlannerController.cpp
+    src/presentation/overview/planner/PlannerImportController.h
+    src/presentation/overview/planner/PlannerImportController.cpp
     src/presentation/commands/CommandPaletteDialog.cpp
     src/presentation/settings/SettingsWindow.cpp
     src/presentation/settings/AssistantSettingsPanel.cpp
@@ -363,6 +380,7 @@ target_link_libraries(devhub PRIVATE
     devhub_database
     devhub_accounts
     devhub_workspaces
+    devhub_planner
     devhub_detection
     devhub_services
     devhub_ports
@@ -379,6 +397,7 @@ target_link_libraries(devhub PRIVATE
 set_source_files_properties(
     resources/qml/Authentication.qml PROPERTIES QT_RESOURCE_ALIAS Authentication.qml)
 set_source_files_properties(resources/qml/MainShell.qml PROPERTIES QT_RESOURCE_ALIAS MainShell.qml)
+set_source_files_properties(resources/qml/PlannerPanel.qml PROPERTIES QT_RESOURCE_ALIAS PlannerPanel.qml)
 set_source_files_properties(resources/qml/Theme.qml PROPERTIES
     QT_RESOURCE_ALIAS Theme.qml QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(resources/qml/BrandMark.qml PROPERTIES QT_RESOURCE_ALIAS BrandMark.qml)
@@ -394,6 +413,7 @@ qt_add_qml_module(devhub
     QML_FILES
         resources/qml/Authentication.qml
         resources/qml/MainShell.qml
+        resources/qml/PlannerPanel.qml
         resources/qml/Theme.qml
         resources/qml/BrandMark.qml
         resources/qml/DarkField.qml

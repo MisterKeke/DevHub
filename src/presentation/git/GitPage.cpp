@@ -63,6 +63,7 @@ GitPage::GitPage(application::tasks::TaskScheduler& scheduler, QWidget* parent,
     layout->addLayout(previewActions);
     auto* split = new QSplitter(Qt::Horizontal, this);
     auto* tabs = new QTabWidget(split);
+    m_tabs = tabs;
     m_status = new QListWidget(tabs); m_status->setSelectionMode(QAbstractItemView::ExtendedSelection);
     auto* historyTab = new QWidget(tabs);
     auto* historyLayout = new QVBoxLayout(historyTab);
@@ -148,6 +149,11 @@ void GitPage::setWorkspacePath(QString path, std::optional<QUuid> workspaceId) {
     if (!m_path.isEmpty()) refresh();
 }
 void GitPage::refreshNow() { refresh(); }
+void GitPage::focusBranch(QString branch) {
+    m_requestedBranch = std::move(branch);
+    if (m_tabs) m_tabs->setCurrentIndex(2);
+    refresh();
+}
 void GitPage::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
     if (!m_path.isEmpty() && m_refresh->isEnabled()) refresh();
@@ -438,7 +444,10 @@ void GitPage::refresh() {
             m_status->clear(); m_history->clear(); m_branches->clear(); m_diff->clear();
             m_partialErrors->clear(); m_partialErrors->hide();
             if (!snapshot.status.isRepository) {
-                m_state->setText(tr("This workspace is not a Git repository."));
+                m_state->setText(m_requestedBranch.isEmpty()
+                    ? tr("This workspace is not a Git repository.")
+                    : tr("Associated branch ‘%1’ is unavailable. No checkout was performed.").arg(m_requestedBranch));
+                m_requestedBranch.clear();
                 if (!m_operationFeedback.isEmpty()) { m_partialErrors->setText(m_operationFeedback); m_partialErrors->show(); }
                 emit overviewUpdated(tr("This folder is not a Git repository."), {}, tr("Not a repo"), QStringLiteral("warning"));
                 return;
@@ -466,8 +475,11 @@ void GitPage::refresh() {
                     details.append(QStringLiteral("%1%2  %3").arg(QString(file.indexStatus), QString(file.workTreeStatus), path));
             }
             for (const auto& commit : snapshot.history) appendCommit(commit);
-            for (const auto& branch : snapshot.branches)
-                m_branches->addItem(QStringLiteral("%1 %2").arg(branch.current ? QStringLiteral("*") : QString(), branch.name));
+            for (const auto& branch : snapshot.branches) {
+                auto* item = new QListWidgetItem(QStringLiteral("%1 %2").arg(
+                    branch.current ? QStringLiteral("*") : QString(), branch.name), m_branches);
+                item->setData(Qt::UserRole, branch.name);
+            }
             for (const auto& branch : snapshot.remoteBranches)
                 m_branches->addItem(tr("Remote: %1").arg(branch.name));
             QStringList partialErrors;
@@ -478,6 +490,21 @@ void GitPage::refresh() {
             if (!partialErrors.isEmpty()) {
                 m_partialErrors->setText(partialErrors.join(QStringLiteral(" · ")));
                 m_partialErrors->show();
+            }
+            if (!m_requestedBranch.isEmpty()) {
+                bool found = false;
+                for (int row = 0; row < m_branches->count(); ++row) {
+                    auto* item = m_branches->item(row);
+                    if (item->data(Qt::UserRole).toString() == m_requestedBranch) {
+                        m_branches->setCurrentItem(item);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                    m_state->setText(tr("Associated branch ‘%1’ no longer exists. No checkout was performed.")
+                        .arg(m_requestedBranch));
+                m_requestedBranch.clear();
             }
             const int changeCount = m_status->count();
             emit overviewUpdated(tr("%1 · %2 changed file(s)").arg(branchName).arg(changeCount), details,

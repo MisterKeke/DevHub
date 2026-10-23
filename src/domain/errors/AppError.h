@@ -65,7 +65,8 @@ enum class ErrorCode
     AssistantPermissionDenied,
     AssistantLimitExceeded,
     AssistantHistoryUnavailable,
-    InternalFailure
+    InternalFailure,
+    RevisionConflict
 };
 
 struct CorrelationId

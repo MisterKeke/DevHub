@@ -12,6 +12,9 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QQmlEngine>
+#include <QAbstractItemModel>
+#include <QStandardItemModel>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -104,6 +107,130 @@ class RuntimeShell final : public QObject
     QString workspaceActionTone() const { return QStringLiteral("info"); }
 };
 
+class RuntimePlanner final : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(QAbstractItemModel* tasks READ tasks CONSTANT)
+    Q_PROPERTY(QAbstractItemModel* listModel READ listModel CONSTANT)
+    Q_PROPERTY(QAbstractItemModel* calendarModel READ calendarModel CONSTANT)
+    Q_PROPERTY(QAbstractItemModel* undatedModel READ undatedModel CONSTANT)
+    Q_PROPERTY(QString workspaceId MEMBER id CONSTANT)
+    Q_PROPERTY(QString workspaceName MEMBER name CONSTANT)
+    Q_PROPERTY(bool hasWorkspace MEMBER hasWorkspaceValue CONSTANT)
+    Q_PROPERTY(bool loading MEMBER loadingValue CONSTANT)
+    Q_PROPERTY(QString error MEMBER errorValue CONSTANT)
+    Q_PROPERTY(QString view MEMBER viewValue CONSTANT)
+    Q_PROPERTY(bool collapsed MEMBER collapsedValue CONSTANT)
+    Q_PROPERTY(int totalCount MEMBER totalValue CONSTANT)
+    Q_PROPERTY(int inProgressCount MEMBER progressValue CONSTANT)
+    Q_PROPERTY(int completedCount MEMBER completedValue CONSTANT)
+    Q_PROPERTY(int overdueCount MEMBER overdueValue CONSTANT)
+    Q_PROPERTY(int progressPercent MEMBER percentValue CONSTANT)
+    Q_PROPERTY(QString nearestDeadline MEMBER deadlineValue CONSTANT)
+    Q_PROPERTY(QString selectedDate MEMBER selectedDateValue CONSTANT)
+    Q_PROPERTY(QVariantList milestones MEMBER milestoneValues CONSTANT)
+    Q_PROPERTY(QVariantList branchOptions MEMBER branchOptionValues CONSTANT)
+    Q_PROPERTY(QVariantList serviceOptions MEMBER serviceOptionValues CONSTANT)
+    Q_PROPERTY(bool branchLoading MEMBER branchLoadingValue CONSTANT)
+    Q_PROPERTY(QString branchStatus MEMBER branchStatusValue CONSTANT)
+    Q_PROPERTY(QString milestoneFilter MEMBER milestoneFilterValue CONSTANT)
+    Q_PROPERTY(QString gitBranchFilter MEMBER gitBranchFilterValue CONSTANT)
+    Q_PROPERTY(int blockedFilter MEMBER blockedFilterValue CONSTANT)
+    Q_PROPERTY(int overdueFilter MEMBER overdueFilterValue CONSTANT)
+    Q_PROPERTY(QString originFilter MEMBER originFilterValue CONSTANT)
+public:
+    RuntimePlanner()
+    {
+        // boardModel() crosses an invokable boundary and must remain owned by this
+        // stack fixture rather than being collected by the QML engine.
+        QQmlEngine::setObjectOwnership(&empty, QQmlEngine::CppOwnership);
+    }
+    QString id = QStringLiteral("11111111-1111-4111-8111-111111111111");
+    QString name = QStringLiteral("Runtime check");
+    bool hasWorkspaceValue = true;
+    bool loadingValue = false;
+    QString errorValue;
+    QString viewValue = QStringLiteral("board");
+    bool collapsedValue = false;
+    int totalValue = 0, progressValue = 0, completedValue = 0, overdueValue = 0, percentValue = 0;
+    QString deadlineValue = QStringLiteral("No upcoming deadline");
+    QString selectedDateValue;
+    QVariantList milestoneValues;
+    QVariantList branchOptionValues;
+    QVariantList serviceOptionValues;
+    bool branchLoadingValue = false;
+    QString branchStatusValue;
+    QString milestoneFilterValue;
+    QString gitBranchFilterValue;
+    int blockedFilterValue = -1;
+    int overdueFilterValue = -1;
+    QString originFilterValue;
+    QStandardItemModel empty;
+    QAbstractItemModel* tasks() { return &empty; }
+    QAbstractItemModel* listModel() { return &empty; }
+    QAbstractItemModel* calendarModel() { return &empty; }
+    QAbstractItemModel* undatedModel() { return &empty; }
+    Q_INVOKABLE QAbstractItemModel* boardModel(const QString&) { return &empty; }
+    Q_INVOKABLE int statusCount(const QString&) const { return 0; }
+    Q_INVOKABLE QVariantMap taskDetails(const QString&) const { return {}; }
+    Q_INVOKABLE QVariantList dependencyChoices(const QString&) const { return {}; }
+    Q_INVOKABLE int countForDate(const QString&) const { return 0; }
+    Q_INVOKABLE void setView(const QString&) {}
+    Q_INVOKABLE void setCollapsed(bool) {}
+    Q_INVOKABLE void setSearchText(const QString&) {}
+    Q_INVOKABLE void setStatusFilter(const QString&) {}
+    Q_INVOKABLE void setPriorityFilter(const QString&) {}
+    Q_INVOKABLE void setCompletionFilter(int) {}
+    Q_INVOKABLE void setTagFilter(const QString&) {}
+    Q_INVOKABLE void setMilestoneFilter(const QString&) {}
+    Q_INVOKABLE void setGitBranchFilter(const QString&) {}
+    Q_INVOKABLE void setBlockedFilter(int) {}
+    Q_INVOKABLE void setOverdueFilter(int) {}
+    Q_INVOKABLE void setOriginFilter(const QString&) {}
+    Q_INVOKABLE void setSelectedDate(const QString&) {}
+    Q_INVOKABLE void sortList(const QString&, bool) {}
+    Q_INVOKABLE bool saveTask(const QVariantMap&) { return false; }
+    Q_INVOKABLE bool removeTask(const QString&) { return false; }
+    Q_INVOKABLE bool setTaskCompleted(const QString&, bool) { return false; }
+    Q_INVOKABLE bool moveTask(const QString&, const QString&) { return false; }
+    Q_INVOKABLE bool shiftTaskOrder(const QString&, int) { return false; }
+    Q_INVOKABLE QVariantList timeEntries(const QString&) const { return {}; }
+    Q_INVOKABLE bool addTimeEntry(const QString&, const QString&, const QString&) { return false; }
+    Q_INVOKABLE bool removeTimeEntry(const QString&, const QString&) { return false; }
+    Q_INVOKABLE bool removeMilestone(const QString&) { return false; }
+    Q_INVOKABLE bool saveMilestone(const QVariantMap&) { return false; }
+    Q_INVOKABLE bool branchExists(const QString&) const { return false; }
+    Q_INVOKABLE QVariantList branchOptionsForTask(const QString&) const { return {}; }
+    Q_INVOKABLE void openGitBranch(const QString&) {}
+    Q_INVOKABLE bool openGitHubUrl(const QString&) { return false; }
+    Q_INVOKABLE void openWorkspaceFolder() {}
+    Q_INVOKABLE void openWorkspaceNotes() {}
+    Q_INVOKABLE void openGitModule() {}
+    Q_INVOKABLE void openLinkedService(const QString&) {}
+    Q_INVOKABLE void openLinkedServiceLogs(const QString&) {}
+    Q_INVOKABLE void startLinkedService(const QString&) {}
+    Q_INVOKABLE void cancelLinkedServiceStart(const QString&) {}
+    Q_INVOKABLE QVariantList actionRuns(const QString&) const { return {}; }
+    Q_INVOKABLE void requestCreateTask() {}
+    Q_INVOKABLE void requestFocusSearch() {}
+    Q_INVOKABLE void requestOpenTask(const QString&) {}
+    Q_INVOKABLE bool createMilestone(const QString&, const QString&) { return false; }
+    Q_INVOKABLE void clearError() {}
+signals:
+    void changed();
+    void createTaskRequested();
+    void focusSearchRequested();
+    void openTaskDetailsRequested(QString taskId);
+    void actionRunsChanged(QString taskId);
+};
+
+bool hasObjectName(QQuickItem* item, const QString& objectName)
+{
+    if (item->objectName() == objectName) return true;
+    for (auto* child : item->childItems()) if (hasObjectName(child, objectName)) return true;
+    return false;
+}
+
 void polishItems(QQuickItem *item)
 {
     item->ensurePolished();
@@ -116,7 +243,7 @@ void countDelegates(QQuickItem *item, int &workspaceCount, int &overviewCount)
 {
     if (!item->property("workspaceId").toString().isEmpty())
         ++workspaceCount;
-    if (item->property("modelData").toMap().contains(QStringLiteral("title")))
+    if (item->property("modelData").toMap().contains(QStringLiteral("summary")))
         ++overviewCount;
     for (auto *child : item->childItems())
         countDelegates(child, workspaceCount, overviewCount);
@@ -156,6 +283,7 @@ int checkRuntime(QApplication &application, const QString &reportPath, const QSt
     presentation::theme::ThemeManager theme(application);
     RuntimeAuthFlow auth;
     RuntimeShell shell;
+    RuntimePlanner planner;
     presentation::workspaces::WorkspaceListModel workspaces;
     auto workspaceId = domain::workspace::WorkspaceId::fromString(shell.id);
     auto accountId = domain::account::AccountId::fromString(
@@ -187,6 +315,7 @@ int checkRuntime(QApplication &application, const QString &reportPath, const QSt
         context->setContextProperty(QStringLiteral("authFlow"), &auth);
         context->setContextProperty(QStringLiteral("shellController"), &shell);
         context->setContextProperty(QStringLiteral("workspaceModel"), &workspaces);
+        context->setContextProperty(QStringLiteral("plannerController"), &planner);
         engine.load(source(QStringLiteral("Authentication.qml")));
         if (engine.rootObjects().size() != 1 ||
             !qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)))
@@ -237,6 +366,10 @@ int checkRuntime(QApplication &application, const QString &reportPath, const QSt
             else
                 diagnostics.append(
                     QStringLiteral("PASS: MainShell.qml with workspace and overview delegates"));
+            if (!hasObjectName(item, QStringLiteral("workspacePlannerPanel"))) {
+                diagnostics.append(QStringLiteral("FAIL: MainShell.qml did not create the embedded Planner panel"));
+                qmlFailed = true;
+            } else diagnostics.append(QStringLiteral("PASS: embedded Planner panel construction"));
             if (countAssistantNavigation(item) != 1) {
                 diagnostics.append(QStringLiteral("FAIL: Assistant navigation must occupy module index 9 exactly once"));
                 qmlFailed = true;

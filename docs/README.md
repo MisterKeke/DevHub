@@ -15,6 +15,10 @@ records the follow-up native controls, behavioral results and excluded profiles.
 See [assistant-transport.md](architecture/assistant-transport.md) for Phase 1's
 native process prototype, bounded JSONL transport, lifecycle tests and ownership limits.
 
+See [workspace-planner.md](architecture/workspace-planner.md) for the embedded Overview
+Planner architecture and [workspace-planner-database.md](architecture/workspace-planner-database.md)
+for schema version 12, migrations 0009–0012, import ownership, and scale-profile commands.
+
 ## Toolchain pins
 
 - Qt 6.11 API baseline, with a local minimum of Qt 6.11.0 and CI pinned to Qt 6.11.2. The 6.11 line is outside the affected range for the Qt Markdown importer issue CVE-2025-3512; keep CI aligned with reviewed Qt advisories.

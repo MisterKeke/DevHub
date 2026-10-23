@@ -39,7 +39,7 @@ private slots:
             "'note_nodes', 'note_tags', 'notifications', 'ui_state', 'assistant_conversations')")));
         QVERIFY(query.next());
         QCOMPARE(query.value(0).toInt(), 10);
-        QCOMPARE(manager.currentSchemaVersion(), 8);
+        QCOMPARE(manager.currentSchemaVersion(), 12);
         QVERIFY(query.exec(QStringLiteral("PRAGMA table_info(workspaces)")));
         bool hasArchiveTimestamp = false;
         while (query.next()) {
@@ -203,6 +203,63 @@ private slots:
         QVERIFY(query.next());
         QCOMPARE(query.value(0).toString(), QStringLiteral("Existing project"));
         QCOMPARE(query.value(1).toString(), QStringLiteral("2026-10-20T00:00:00Z"));
+    }
+
+    void plannerImportCopyMigrationPreservesExistingProvenance()
+    {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        const QString databasePath = temporaryDirectory.filePath(QStringLiteral("devhub.db"));
+        const QString backupsPath = temporaryDirectory.filePath(QStringLiteral("backups"));
+        const QString migrationsPath = temporaryDirectory.filePath(QStringLiteral("migrations-v9"));
+        QVERIFY(QDir().mkpath(migrationsPath));
+        const QDir bundled(QStringLiteral(":/database/migrations"));
+        for (const QString& name : bundled.entryList({QStringLiteral("*.sql")}, QDir::Files)) {
+            if (name.left(4).toInt() <= 9)
+                QVERIFY(QFile::copy(bundled.filePath(name), QDir(migrationsPath).filePath(name)));
+        }
+        {
+            InternalDatabaseManager versionNine(databasePath, backupsPath, migrationsPath);
+            QVERIFY(versionNine.open());
+            QVERIFY(versionNine.migrate());
+            QCOMPARE(versionNine.currentSchemaVersion(), 9);
+            QSqlQuery seed(versionNine.database());
+            QVERIFY(seed.exec(QStringLiteral(
+                "INSERT INTO accounts(id,username_normalized,display_username,password_hash) "
+                "VALUES('account-a','user-a','User A','hash')")));
+            QVERIFY(seed.exec(QStringLiteral(
+                "INSERT INTO workspaces(id,account_id,display_name,root_path,entered_path,canonical_root_path) "
+                "VALUES('workspace-a','account-a','Workspace A','C:/WorkspaceA','C:/WorkspaceA','C:/WorkspaceA')")));
+            QVERIFY(seed.exec(QStringLiteral(
+                "INSERT INTO planner_tasks(id,workspace_id,title,is_completed,status,created_at_utc,updated_at_utc,source_type) "
+                "VALUES('task-one','workspace-a','Imported task',0,'todo','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','somethingqt')")));
+            QVERIFY(seed.exec(QStringLiteral(
+                "INSERT INTO planner_import_records(task_id,workspace_id,source_type,source_profile_identity,source_task_id,source_revision,source_created_at,source_updated_at,imported_at_utc) "
+                "VALUES('task-one','workspace-a','somethingqt','profile-one','9007199254740995','17','source-created','source-updated','imported-at')")));
+        }
+
+        InternalDatabaseManager current(databasePath, backupsPath);
+        QVERIFY(current.open());
+        QVERIFY(current.migrate());
+        QCOMPARE(current.currentSchemaVersion(), 12);
+        QSqlQuery verify(current.database());
+        QVERIFY(verify.exec(QStringLiteral(
+            "SELECT task_id,source_task_id,source_revision,source_created_at,source_updated_at,copy_number "
+            "FROM planner_import_records WHERE workspace_id='workspace-a'")));
+        QVERIFY(verify.next());
+        QCOMPARE(verify.value(0).toString(), QStringLiteral("task-one"));
+        QCOMPARE(verify.value(1).toString(), QStringLiteral("9007199254740995"));
+        QCOMPARE(verify.value(2).toString(), QStringLiteral("17"));
+        QCOMPARE(verify.value(3).toString(), QStringLiteral("source-created"));
+        QCOMPARE(verify.value(4).toString(), QStringLiteral("source-updated"));
+        QCOMPARE(verify.value(5).toInt(), 1);
+        QVERIFY(!verify.next());
+        QVERIFY(verify.exec(QStringLiteral(
+            "INSERT INTO planner_tasks(id,workspace_id,title,is_completed,status,created_at_utc,updated_at_utc,source_type) "
+            "VALUES('task-two','workspace-a','Second copy',0,'todo','2026-01-02T00:00:00Z','2026-01-02T00:00:00Z','somethingqt')")));
+        QVERIFY(verify.exec(QStringLiteral(
+            "INSERT INTO planner_import_records(task_id,workspace_id,source_type,source_profile_identity,source_task_id,imported_at_utc,copy_number) "
+            "VALUES('task-two','workspace-a','somethingqt','profile-one','9007199254740995','imported-again',2)")));
     }
 
     void currentDatabaseIsUnchanged()
