@@ -7,7 +7,7 @@ Rectangle {
     objectName: "workspacePlannerPanel"
     color: "transparent"
     implicitWidth: 520
-    implicitHeight: plannerController.collapsed ? 82 : plannerContent.implicitHeight
+    implicitHeight: plannerContent.implicitHeight
     property color accent: themeController.accent
     property color surface: themeController.raisedSurface
     property color panel: themeController.panelSurface
@@ -43,6 +43,191 @@ Rectangle {
     property string sortField: "createdAt"
     property bool sortDescending: false
     property var importController: typeof plannerImportController !== "undefined" ? plannerImportController : null
+
+    // Keep every Planner control on the same palette, including popup content.
+    component PlannerButton: Button {
+        id: control
+        property bool primary: false
+        property bool destructive: false
+        property bool compact: false
+        implicitHeight: compact ? 28 : 34
+        implicitWidth: Math.max(compact ? 28 : 78, implicitContentWidth + leftPadding + rightPadding)
+        leftPadding: compact ? 6 : 12
+        rightPadding: leftPadding
+        topPadding: 6; bottomPadding: 6
+        hoverEnabled: true
+        opacity: enabled ? 1 : 0.45
+        contentItem: Text {
+            text: control.text
+            color: control.primary ? "white" : control.destructive ? root.error : root.text
+            font.pixelSize: 11; font.weight: Font.Medium
+            horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+        background: Rectangle {
+            radius: 7
+            color: control.primary ? (control.down ? Qt.darker(root.accent, 1.15) : control.hovered ? themeController.accentHover : root.accent)
+                   : control.down ? root.activeSurface : control.hovered ? root.hoverSurface : control.compact ? "transparent" : root.surface
+            border.width: control.visualFocus ? 2 : 1
+            border.color: control.visualFocus ? root.accent : control.destructive ? root.error : control.compact ? "transparent" : root.border
+        }
+    }
+
+    component PlannerField: TextField {
+        id: control
+        implicitHeight: 36
+        implicitWidth: 180
+        leftPadding: 10; rightPadding: 10
+        color: root.text; placeholderTextColor: root.muted
+        selectionColor: root.accent; selectedTextColor: "white"
+        font.pixelSize: 12
+        selectByMouse: true
+        opacity: enabled ? 1 : 0.45
+        background: Rectangle {
+            radius: 7; color: root.surface
+            border.width: control.activeFocus ? 2 : 1
+            border.color: control.activeFocus ? root.accent : root.border
+        }
+    }
+
+    component PlannerTextArea: TextArea {
+        id: control
+        padding: 10
+        color: root.text; placeholderTextColor: root.muted
+        selectionColor: root.accent; selectedTextColor: "white"
+        font.pixelSize: 12
+        selectByMouse: true
+        wrapMode: TextEdit.Wrap
+        background: Rectangle {
+            radius: 7; color: root.surface
+            border.width: control.activeFocus ? 2 : 1
+            border.color: control.activeFocus ? root.accent : root.border
+        }
+    }
+
+    component PlannerComboBox: ComboBox {
+        id: control
+        implicitHeight: 36
+        implicitWidth: 160
+        leftPadding: 10; rightPadding: 30
+        hoverEnabled: true
+        opacity: enabled ? 1 : 0.45
+        contentItem: Text {
+            text: control.displayText; color: root.text; font.pixelSize: 12
+            verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+        }
+        indicator: Canvas {
+            width: 12; height: 10
+            x: control.width - width - 11; y: (control.height - height) / 2
+            property color strokeColor: root.secondary
+            onStrokeColorChanged: requestPaint()
+            onPaint: {
+                var context = getContext("2d")
+                context.clearRect(0, 0, width, height)
+                context.beginPath()
+                context.moveTo(2, 3); context.lineTo(6, 7); context.lineTo(10, 3)
+                context.lineWidth = 1.5; context.strokeStyle = strokeColor
+                context.stroke()
+            }
+        }
+        background: Rectangle {
+            radius: 7; color: control.down ? root.activeSurface : control.hovered ? root.hoverSurface : root.surface
+            border.width: control.visualFocus ? 2 : 1
+            border.color: control.visualFocus ? root.accent : root.border
+        }
+        delegate: ItemDelegate {
+            required property var model
+            required property int index
+            width: ListView.view.width; height: 34
+            highlighted: control.highlightedIndex === index
+            hoverEnabled: true
+            contentItem: Text {
+                text: control.textRole ? model[control.textRole] : model.modelData
+                color: root.text; font.pixelSize: 12
+                verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+            }
+            background: Rectangle { radius: 5; color: parent.highlighted || parent.hovered ? root.activeSurface : "transparent" }
+        }
+        popup: Popup {
+            y: control.height + 4; width: control.width
+            implicitHeight: Math.min(280, contentItem.implicitHeight + topPadding + bottomPadding)
+            padding: 4; margins: 12
+            contentItem: ListView {
+                clip: true; implicitHeight: contentHeight
+                model: control.popup.visible ? control.delegateModel : null
+                currentIndex: control.highlightedIndex; highlightMoveDuration: 0
+                ScrollIndicator.vertical: ScrollIndicator {}
+            }
+            background: Rectangle { radius: 8; color: root.panel; border.color: root.borderStrong }
+        }
+    }
+
+    component PlannerCheckBox: CheckBox {
+        id: control
+        implicitHeight: Math.max(30, implicitContentHeight + topPadding + bottomPadding)
+        spacing: 8; padding: 4
+        opacity: enabled ? 1 : 0.45
+        indicator: Rectangle {
+            implicitWidth: 18; implicitHeight: 18
+            x: control.leftPadding; y: (control.height - height) / 2
+            radius: 4; color: control.checked ? root.accent : root.surface
+            border.width: control.visualFocus ? 2 : 1
+            border.color: control.visualFocus || control.checked ? root.accent : root.borderStrong
+            Text { anchors.centerIn: parent; text: "✓"; visible: control.checked; color: "white"; font.pixelSize: 13 }
+        }
+        contentItem: Text {
+            text: control.text; color: root.secondary; font.pixelSize: 12
+            leftPadding: control.indicator.width + control.spacing
+            verticalAlignment: Text.AlignVCenter; wrapMode: Text.WordWrap
+        }
+    }
+
+    component PlannerDialog: Dialog {
+        id: control
+        property real preferredWidth: 560
+        property real preferredHeight: 0
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        // The shell creates its overlay before the host window receives a size.
+        // Preserve a usable width during construction so wrapped text can be measured.
+        width: parent && parent.width > 0 ? Math.min(preferredWidth, Math.max(0, parent.width - 32)) : preferredWidth
+        height: parent && parent.height > 0 ? Math.min(preferredHeight > 0 ? preferredHeight : implicitHeight, Math.max(0, parent.height - 32)) : preferredHeight > 0 ? preferredHeight : implicitHeight
+        padding: 18; spacing: 12
+        palette.window: root.panel
+        palette.text: root.text
+        palette.buttonText: root.text
+        palette.base: root.surface
+        palette.button: root.surface
+        palette.highlight: root.accent
+        palette.dark: root.border
+        background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
+        header: Label {
+            text: control.title; color: root.text
+            font.pixelSize: 16; font.weight: Font.DemiBold
+            wrapMode: Text.WordWrap
+            leftPadding: 18; rightPadding: 18; topPadding: 18; bottomPadding: 2
+        }
+        footer: DialogButtonBox {
+            visible: count > 0
+            padding: 18; topPadding: 6; spacing: 8
+            alignment: Qt.AlignRight
+            delegate: PlannerButton {
+                primary: DialogButtonBox.buttonRole === DialogButtonBox.AcceptRole || DialogButtonBox.buttonRole === DialogButtonBox.YesRole
+                destructive: DialogButtonBox.buttonRole === DialogButtonBox.DestructiveRole
+            }
+            background: Item {}
+        }
+        Overlay.modal: Rectangle { color: "#99000000" }
+    }
+
+    component PlannerProgressBar: ProgressBar {
+        id: control
+        implicitHeight: 6
+        background: Rectangle { implicitHeight: 6; implicitWidth: 100; radius: 3; color: root.surface }
+        contentItem: Item {
+            Rectangle { width: control.visualPosition * parent.width; height: parent.height; radius: 3; color: root.success }
+        }
+    }
 
     Component.onCompleted: root.knownWorkspaceId = plannerController.workspaceId
     Connections {
@@ -249,15 +434,19 @@ Rectangle {
         spacing: 10
 
         Rectangle {
+            id: plannerHeader
+            objectName: "plannerHeader"
             Layout.fillWidth: true
             radius: 12
             color: root.panel
             border.color: root.border
-            implicitHeight: plannerController.collapsed ? 70 : 105
-            RowLayout {
+            implicitHeight: headerLayout.implicitHeight + 28
+            GridLayout {
+                id: headerLayout
                 anchors.fill: parent
-                anchors.leftMargin: 16; anchors.rightMargin: 14; anchors.topMargin: 12; anchors.bottomMargin: 12
-                spacing: 14
+                anchors.margins: 14
+                columns: root.width >= 1000 || plannerController.collapsed ? 2 : 1
+                rowSpacing: 12; columnSpacing: 16
                 ColumnLayout {
                     visible: !plannerController.collapsed
                     Layout.fillWidth: true
@@ -267,12 +456,13 @@ Rectangle {
                         Text { text: qsTr("Workspace Planner"); color: root.text; font.pixelSize: 17; font.weight: Font.DemiBold }
                         Rectangle {
                             radius: 9; color: root.activeSurface; border.color: root.borderStrong
-                            implicitWidth: contextLabel.implicitWidth + 16; implicitHeight: 24
+                            implicitWidth: Math.min(180, contextLabel.implicitWidth) + 16; implicitHeight: 24
                             Text { id: contextLabel; anchors.centerIn: parent; text: plannerController.hasWorkspace ? plannerController.workspaceName : qsTr("No workspace"); color: root.secondary; font.pixelSize: 10; elide: Text.ElideRight; width: Math.min(180, implicitWidth) }
                         }
                     }
                     Text { text: plannerController.hasWorkspace ? qsTr("Plan and track work in this workspace") : qsTr("Select a workspace to start planning"); color: root.muted; font.pixelSize: 11 }
-                    RowLayout {
+                    Flow {
+                        Layout.fillWidth: true
                         spacing: 12
                         Repeater {
                             model: [
@@ -284,7 +474,7 @@ Rectangle {
                             delegate: Text { required property var modelData; text: modelData.value + " " + modelData.label; color: modelData.color; font.pixelSize: 10 }
                         }
                         Rectangle { width: 1; height: 14; color: root.border }
-                        Text { text: qsTr("Next: %1").arg(plannerController.nearestDeadline); color: root.muted; font.pixelSize: 10; elide: Text.ElideRight; Layout.maximumWidth: 220 }
+                        Text { text: qsTr("Next: %1").arg(plannerController.nearestDeadline); color: root.muted; font.pixelSize: 10; elide: Text.ElideRight; width: Math.min(220, implicitWidth) }
                     }
                 }
                 ColumnLayout {
@@ -294,26 +484,35 @@ Rectangle {
                         Text { text: qsTr("Workspace Planner"); color: root.text; font.pixelSize: 14; font.weight: Font.DemiBold; Layout.fillWidth: true }
                         Text { text: qsTr("%1% complete").arg(plannerController.progressPercent); color: root.success; font.pixelSize: 11 }
                     }
-                    ProgressBar { Layout.fillWidth: true; from: 0; to: 100; value: plannerController.progressPercent }
+                    PlannerProgressBar { Layout.fillWidth: true; from: 0; to: 100; value: plannerController.progressPercent }
                     Text { text: qsTr("Next deadline: %1").arg(plannerController.nearestDeadline); color: root.muted; font.pixelSize: 10 }
                 }
-                ColumnLayout {
-                    spacing: 6
-                    Button {
+                Flow {
+                    id: headerActions
+                    objectName: "plannerHeaderActions"
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: plannerController.collapsed ? collapseButton.implicitWidth : newTaskButton.implicitWidth + milestonesButton.implicitWidth + importButton.implicitWidth + collapseButton.implicitWidth + spacing * 3
+                    Layout.maximumWidth: headerLayout.columns === 2 ? Layout.preferredWidth : Number.POSITIVE_INFINITY
+                    Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                    spacing: 8
+                    PlannerButton {
+                        id: newTaskButton
+                        objectName: "plannerNewTaskButton"
                         visible: !plannerController.collapsed
-                        text: qsTr("＋ New task")
+                        text: qsTr("+ New task")
                         enabled: plannerController.hasWorkspace
                         onClicked: root.openEditor("")
-                        background: Rectangle { radius: 7; color: parent.enabled ? root.accent : root.activeSurface }
-                        contentItem: Text { text: parent.text; color: parent.enabled ? "white" : root.muted; font.pixelSize: 11; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; leftPadding: 10; rightPadding: 10 }
+                        primary: true
                     }
-                    Button {
+                    PlannerButton {
+                        id: milestonesButton
                         visible: !plannerController.collapsed
                         text: qsTr("Milestones")
                         enabled: plannerController.hasWorkspace
                         onClicked: milestoneManager.open()
                     }
-                    Button {
+                    PlannerButton {
+                        id: importButton
                         visible: !plannerController.collapsed
                         text: qsTr("Import from SomethingQt")
                         enabled: plannerController.hasWorkspace && root.importController !== null
@@ -321,14 +520,13 @@ Rectangle {
                         ToolTip.visible: hovered
                         ToolTip.text: qsTr("Import tasks from SomethingQt")
                         onClicked: { root.importController.openDialog(); importDialog.open() }
-                        background: Rectangle { radius: 7; color: parent.enabled ? root.activeSurface : "transparent"; border.color: parent.enabled ? root.borderStrong : "transparent" }
-                        contentItem: Text { text: parent.text; color: parent.enabled ? root.text : root.muted; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; leftPadding: 8; rightPadding: 8 }
                     }
-                }
-                Button {
-                    text: plannerController.collapsed ? qsTr("Expand") : qsTr("Collapse")
-                    Accessible.name: text + qsTr(" Workspace Planner")
-                    onClicked: plannerController.setCollapsed(!plannerController.collapsed)
+                    PlannerButton {
+                        id: collapseButton
+                        text: plannerController.collapsed ? qsTr("Expand") : qsTr("Collapse")
+                        Accessible.name: text + qsTr(" Workspace Planner")
+                        onClicked: plannerController.setCollapsed(!plannerController.collapsed)
+                    }
                 }
             }
         }
@@ -345,7 +543,7 @@ Rectangle {
                     Layout.fillWidth: true; spacing: 8
                     Repeater {
                         model: [qsTr("Board"), qsTr("List"), qsTr("Calendar")]
-                        delegate: Button {
+                        delegate: PlannerButton {
                             required property int index
                             required property string modelData
                             text: modelData
@@ -354,7 +552,7 @@ Rectangle {
                             contentItem: Text { text: parent.text; color: plannerController.view === ["board", "list", "calendar"][index] ? root.text : root.muted; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; leftPadding: 12; rightPadding: 12 }
                         }
                     }
-                    TextField {
+                    PlannerField {
                         id: searchField
                         Layout.fillWidth: true; Layout.preferredWidth: 190; Layout.minimumWidth: 100
                         placeholderText: qsTr("Search tasks…")
@@ -363,25 +561,26 @@ Rectangle {
                         background: Rectangle { radius: 7; color: root.surface; border.color: searchField.activeFocus ? root.accent : root.border }
                     }
                 }
-                RowLayout {
-                    Layout.fillWidth: true; spacing: 6
-                    ComboBox {
+                GridLayout {
+                    Layout.fillWidth: true; rowSpacing: 6; columnSpacing: 6
+                    columns: width >= 680 ? 4 : 2
+                    PlannerComboBox {
                         id: statusFilter
                         Layout.fillWidth: true; Layout.preferredWidth: 126; Layout.minimumWidth: 85
                         model: [qsTr("All statuses"), qsTr("Backlog"), qsTr("To Do"), qsTr("In Progress"), qsTr("In Review"), qsTr("Done")]
                         onActivated: plannerController.setStatusFilter(index === 0 ? "" : root.statusKeys[index - 1])
                     }
-                    ComboBox {
+                    PlannerComboBox {
                         Layout.fillWidth: true; Layout.preferredWidth: 104; Layout.minimumWidth: 85
                         model: [qsTr("All priorities"), qsTr("High"), qsTr("Medium"), qsTr("Low")]
                         onActivated: plannerController.setPriorityFilter(["", "high", "medium", "low"][index])
                     }
-                    ComboBox {
+                    PlannerComboBox {
                         Layout.fillWidth: true; Layout.preferredWidth: 118; Layout.minimumWidth: 90
                         model: [qsTr("Any completion"), qsTr("Active"), qsTr("Completed")]
                         onActivated: plannerController.setCompletionFilter(index === 0 ? -1 : index === 1 ? 0 : 1)
                     }
-                    TextField {
+                    PlannerField {
                         Layout.fillWidth: true; Layout.preferredWidth: 118; Layout.minimumWidth: 90
                         placeholderText: qsTr("Filter tag")
                         color: root.text; placeholderTextColor: root.muted
@@ -389,35 +588,36 @@ Rectangle {
                         background: Rectangle { radius: 7; color: root.surface; border.color: root.border }
                     }
                 }
-                RowLayout {
-                    Layout.fillWidth: true; spacing: 6
-                    ComboBox {
+                GridLayout {
+                    Layout.fillWidth: true; rowSpacing: 6; columnSpacing: 6
+                    columns: width >= 860 ? 5 : width >= 540 ? 3 : 2
+                    PlannerComboBox {
                         Layout.fillWidth: true; Layout.minimumWidth: 82
                         model: [{ id: "", title: qsTr("All milestones") }].concat(plannerController.milestones)
                         textRole: "title"; valueRole: "id"
                         currentIndex: { for (var mi = 0; mi < model.length; ++mi) if (model[mi].id === plannerController.milestoneFilter) return mi; return 0 }
                         onActivated: plannerController.setMilestoneFilter(currentValue || "")
                     }
-                    ComboBox {
+                    PlannerComboBox {
                         Layout.fillWidth: true; Layout.minimumWidth: 82
                         model: [{ name: "", displayName: qsTr("All branches") }].concat(plannerController.branchOptions)
                         textRole: "displayName"; valueRole: "name"
                         currentIndex: { for (var bi = 0; bi < model.length; ++bi) if (model[bi].name === plannerController.gitBranchFilter) return bi; return 0 }
                         onActivated: plannerController.setGitBranchFilter(currentValue || "")
                     }
-                    ComboBox {
+                    PlannerComboBox {
                         Layout.fillWidth: true; Layout.minimumWidth: 82
                         model: [qsTr("Any blocked state"), qsTr("Blocked"), qsTr("Not blocked")]
                         currentIndex: plannerController.blockedFilter < 0 ? 0 : plannerController.blockedFilter === 1 ? 1 : 2
                         onActivated: plannerController.setBlockedFilter(index === 0 ? -1 : index === 1 ? 1 : 0)
                     }
-                    ComboBox {
+                    PlannerComboBox {
                         Layout.fillWidth: true; Layout.minimumWidth: 82
                         model: [qsTr("Any due date"), qsTr("Overdue"), qsTr("Not overdue")]
                         currentIndex: plannerController.overdueFilter < 0 ? 0 : plannerController.overdueFilter === 1 ? 1 : 2
                         onActivated: plannerController.setOverdueFilter(index === 0 ? -1 : index === 1 ? 1 : 0)
                     }
-                    ComboBox {
+                    PlannerComboBox {
                         Layout.fillWidth: true; Layout.minimumWidth: 82
                         model: [qsTr("Any origin"), qsTr("Local"), qsTr("SomethingQt")]
                         currentIndex: Math.max(0, ["", "local", "somethingqt"].indexOf(plannerController.originFilter))
@@ -463,7 +663,7 @@ Rectangle {
                                             Layout.fillWidth: true
                                             Text { text: modelData.title; color: root.text; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.fillWidth: true }
                                             Text { text: plannerController.statusCount(modelData.key); color: root.muted; font.pixelSize: 10 }
-                                            ToolButton { text: "+"; enabled: plannerController.hasWorkspace; Accessible.name: qsTr("Add task to %1").arg(modelData.title); onClicked: { root.openEditor(""); statusBox.currentIndex = root.statusKeys.indexOf(modelData.key) } }
+                                            PlannerButton { compact: true; text: "+"; enabled: plannerController.hasWorkspace; Accessible.name: qsTr("Add task to %1").arg(modelData.title); onClicked: { root.openEditor(""); statusBox.currentIndex = root.statusKeys.indexOf(modelData.key) } }
                                         }
                                         ListView {
                                             Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 7
@@ -490,7 +690,7 @@ Rectangle {
                                                         Layout.fillWidth: true
                                                         Text { text: title; color: root.text; font.pixelSize: 11; font.weight: Font.DemiBold; wrapMode: Text.WordWrap; Layout.fillWidth: true; MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.openDetails(taskId) } }
                                                         Text { text: priority.toUpperCase(); color: priority === "high" ? root.error : priority === "low" ? root.muted : root.warning; font.pixelSize: 8; font.weight: Font.DemiBold }
-                                                        ToolButton { text: "⋯"; Accessible.name: qsTr("Task details for %1").arg(title); onClicked: root.openDetails(taskId); Layout.preferredWidth: 28 }
+                                                        PlannerButton { compact: true; text: "⋯"; Accessible.name: qsTr("Task details for %1").arg(title); onClicked: root.openDetails(taskId); Layout.preferredWidth: 28 }
                                                     }
                                                     Text { visible: blocked; text: qsTr("BLOCKED"); color: root.warning; font.pixelSize: 8; font.weight: Font.DemiBold }
                                                     RowLayout {
@@ -505,13 +705,13 @@ Rectangle {
                                                     Text { visible: gitBranch.length > 0; text: "⑂  " + gitBranch; color: root.info; font.pixelSize: 9; elide: Text.ElideMiddle; Layout.fillWidth: true }
                                                     RowLayout {
                                                         Layout.fillWidth: true; spacing: 2
-                                                        ComboBox {
+                                                        PlannerComboBox {
                                                             Layout.fillWidth: true; Layout.preferredHeight: 28
                                                             model: root.statusLabels; currentIndex: Math.max(0, root.statusKeys.indexOf(status))
-                                                            onActivated: plannerController.moveTask(taskId, root.statusKeys[index])
+                                                            onActivated: function(statusIndex) { plannerController.moveTask(taskId, root.statusKeys[statusIndex]) }
                                                         }
-                                                        ToolButton { text: "↑"; Accessible.name: qsTr("Move task earlier"); onClicked: plannerController.shiftTaskOrder(taskId, -1) }
-                                                        ToolButton { text: "↓"; Accessible.name: qsTr("Move task later"); onClicked: plannerController.shiftTaskOrder(taskId, 1) }
+                                                        PlannerButton { compact: true; text: "↑"; Accessible.name: qsTr("Move task earlier"); onClicked: plannerController.shiftTaskOrder(taskId, -1) }
+                                                        PlannerButton { compact: true; text: "↓"; Accessible.name: qsTr("Move task later"); onClicked: plannerController.shiftTaskOrder(taskId, 1) }
                                                     }
                                                 }
                                             }
@@ -529,20 +729,27 @@ Rectangle {
                     Rectangle {
                         Layout.fillWidth: true; height: 34; color: root.surface; radius: 6
                         RowLayout {
-                            anchors.fill: parent; spacing: 4
-                            Button { text: qsTr("Done"); onClicked: root.sortBy("completed"); Layout.preferredWidth: 42 }
-                            Button { text: qsTr("Task title"); onClicked: root.sortBy("title"); Layout.fillWidth: true }
-                            Button { visible: root.width >= 720; text: qsTr("Priority"); onClicked: root.sortBy("priority"); Layout.preferredWidth: 68 }
-                            Button { visible: root.width >= 720; text: qsTr("Due date"); onClicked: root.sortBy("dueDate"); Layout.preferredWidth: 80 }
-                            Button { text: qsTr("Status"); onClicked: root.sortBy("status"); Layout.preferredWidth: 96 }
+                            anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 4; spacing: 4
+                            PlannerButton {
+                                id: completedColumnHeader
+                                objectName: "plannerListCompletedHeader"
+                                text: qsTr("Done"); onClicked: root.sortBy("completed")
+                                Layout.preferredWidth: Math.max(58, implicitContentWidth + leftPadding + rightPadding)
+                            }
+                            PlannerButton { text: qsTr("Task title"); onClicked: root.sortBy("title"); Layout.fillWidth: true }
+                            PlannerButton { visible: root.width >= 720; text: qsTr("Priority"); onClicked: root.sortBy("priority"); Layout.preferredWidth: 68 }
+                            PlannerButton { visible: root.width >= 720; text: qsTr("Due date"); onClicked: root.sortBy("dueDate"); Layout.preferredWidth: 80 }
+                            PlannerButton { text: qsTr("Status"); onClicked: root.sortBy("status"); Layout.preferredWidth: 96 }
                             Item { Layout.preferredWidth: 64 }
                         }
                     }
                     ListView {
+                        objectName: "plannerTaskList"
                         Layout.fillWidth: true; Layout.preferredHeight: 310; clip: true; spacing: 2
                         model: plannerController.listModel
                         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
                         delegate: Rectangle {
+                            required property int index
                             required property string taskId
                             required property string title
                             required property bool completed
@@ -555,29 +762,31 @@ Rectangle {
                             required property int subtaskCount
                             required property bool overdue
                             required property bool blocked
-                            width: ListView.view.width; height: 58; color: index % 2 ? root.panel : root.surface; radius: 5
+                            width: ListView.view.width; height: Math.max(58, listTaskContent.implicitHeight + 12)
+                            color: index % 2 ? root.panel : root.surface; radius: 5
                             RowLayout {
+                                id: listTaskContent
                                 anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 4; spacing: 4
-                                CheckBox { checked: completed; Accessible.name: qsTr("Mark %1 complete").arg(title); onClicked: plannerController.setTaskCompleted(taskId, checked); Layout.preferredWidth: 38 }
+                                PlannerCheckBox { checked: completed; Accessible.name: qsTr("Mark %1 complete").arg(title); onClicked: plannerController.setTaskCompleted(taskId, checked); Layout.preferredWidth: completedColumnHeader.Layout.preferredWidth }
                                 ColumnLayout {
                                     Layout.fillWidth: true; spacing: 1
-                                    Text { text: title; color: completed ? root.muted : root.text; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true; MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.openDetails(taskId) } }
+                                    Text { text: title; color: completed ? root.secondary : root.text; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true; MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.openDetails(taskId) } }
                                     Text {
                                         visible: root.width < 720
                                         text: qsTr("%1 priority · %2 · due %3").arg(priority).arg(difficulty.length ? difficulty : qsTr("not set")).arg(dueDate.length ? dueDate : qsTr("no date"))
-                                        color: overdue ? root.error : root.muted; font.pixelSize: 8; elide: Text.ElideRight; Layout.fillWidth: true
+                                        color: overdue ? root.error : root.muted; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true
                                     }
                                     Text {
                                         text: qsTr("%1 · %2 · %3").arg(subtaskCount ? qsTr("%1 subtasks").arg(subtaskCount) : qsTr("No subtasks")).arg(tags.length ? tags.join(", ") : qsTr("No tags")).arg(gitBranch.length ? gitBranch : qsTr("No branch"))
-                                        color: root.muted; font.pixelSize: 8; elide: Text.ElideRight; Layout.fillWidth: true
+                                        color: root.muted; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true
                                     }
-                                    Text { visible: blocked; text: qsTr("Blocked"); color: root.warning; font.pixelSize: 8 }
+                                    Text { visible: blocked; text: qsTr("Blocked"); color: root.warning; font.pixelSize: 10 }
                                 }
-                                Text { visible: root.width >= 720; text: priority; color: priority === "high" ? root.error : priority === "low" ? root.muted : root.warning; font.pixelSize: 9; Layout.preferredWidth: 68 }
-                                Text { visible: root.width >= 720; text: dueDate.length ? dueDate : "—"; color: overdue ? root.error : root.secondary; font.pixelSize: 9; Layout.preferredWidth: 80 }
-                                ComboBox { Layout.preferredWidth: 96; Layout.preferredHeight: 30; model: root.statusLabels; currentIndex: Math.max(0, root.statusKeys.indexOf(status)); onActivated: plannerController.moveTask(taskId, root.statusKeys[index]) }
-                                ToolButton { text: "✎"; Accessible.name: qsTr("Edit %1").arg(title); onClicked: root.openEditor(taskId); Layout.preferredWidth: 30 }
-                                ToolButton { text: "⋯"; Accessible.name: qsTr("Task details for %1").arg(title); onClicked: root.openDetails(taskId); Layout.preferredWidth: 30 }
+                                Text { visible: root.width >= 720; text: priority; color: priority === "high" ? root.error : priority === "low" ? root.muted : root.warning; font.pixelSize: 11; Layout.preferredWidth: 68 }
+                                Text { visible: root.width >= 720; text: dueDate.length ? dueDate : "—"; color: overdue ? root.error : root.secondary; font.pixelSize: 11; Layout.preferredWidth: 80 }
+                                PlannerComboBox { Layout.preferredWidth: 96; Layout.preferredHeight: 30; model: root.statusLabels; currentIndex: Math.max(0, root.statusKeys.indexOf(status)); onActivated: function(statusIndex) { plannerController.moveTask(taskId, root.statusKeys[statusIndex]) } }
+                                PlannerButton { compact: true; text: "✎"; Accessible.name: qsTr("Edit %1").arg(title); onClicked: root.openEditor(taskId); Layout.preferredWidth: 30 }
+                                PlannerButton { compact: true; text: "⋯"; Accessible.name: qsTr("Task details for %1").arg(title); onClicked: root.openDetails(taskId); Layout.preferredWidth: 30 }
                             }
                         }
                     }
@@ -588,10 +797,10 @@ Rectangle {
                     Layout.fillWidth: true; spacing: 8
                     RowLayout {
                         Layout.fillWidth: true
-                        ToolButton { text: "‹"; Accessible.name: qsTr("Previous month"); onClicked: root.calendarMonth = new Date(root.calendarMonth.getFullYear(), root.calendarMonth.getMonth() - 1, 1) }
+                        PlannerButton { compact: true; text: "‹"; Accessible.name: qsTr("Previous month"); onClicked: root.calendarMonth = new Date(root.calendarMonth.getFullYear(), root.calendarMonth.getMonth() - 1, 1) }
                         Text { text: root.calendarTitle(); color: root.text; font.pixelSize: 13; font.weight: Font.DemiBold; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter }
-                        ToolButton { text: qsTr("Today"); onClicked: { root.calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1); plannerController.setSelectedDate(root.isoDate(new Date())) } }
-                        ToolButton { text: "›"; Accessible.name: qsTr("Next month"); onClicked: root.calendarMonth = new Date(root.calendarMonth.getFullYear(), root.calendarMonth.getMonth() + 1, 1) }
+                        PlannerButton { compact: true; text: qsTr("Today"); onClicked: { root.calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1); plannerController.setSelectedDate(root.isoDate(new Date())) } }
+                        PlannerButton { compact: true; text: "›"; Accessible.name: qsTr("Next month"); onClicked: root.calendarMonth = new Date(root.calendarMonth.getFullYear(), root.calendarMonth.getMonth() + 1, 1) }
                     }
                     GridLayout {
                         Layout.fillWidth: true; columns: 7; rowSpacing: 4; columnSpacing: 4
@@ -629,7 +838,7 @@ Rectangle {
                     RowLayout {
                         Layout.fillWidth: true
                         Text { text: plannerController.selectedDate.length ? qsTr("Tasks due %1").arg(plannerController.selectedDate) : qsTr("Select a date"); color: root.text; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                        CheckBox { id: showUndated; text: qsTr("Show undated tasks") }
+                        PlannerCheckBox { id: showUndated; text: qsTr("Show undated tasks") }
                     }
                     ListView {
                         id: calendarList
@@ -643,8 +852,8 @@ Rectangle {
                                 anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 5
                                 Text { text: title; color: root.text; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideRight }
                                 Text { text: priority; color: root.warning; font.pixelSize: 9 }
-                                ToolButton { text: "⋯"; Accessible.name: qsTr("Task details for %1").arg(title); onClicked: root.openDetails(taskId) }
-                                ToolButton { text: "✎"; onClicked: root.openEditor(taskId) }
+                                PlannerButton { compact: true; text: "⋯"; Accessible.name: qsTr("Task details for %1").arg(title); onClicked: root.openDetails(taskId) }
+                                PlannerButton { compact: true; text: "✎"; onClicked: root.openEditor(taskId) }
                             }
                         }
                     }
@@ -666,8 +875,8 @@ Rectangle {
                                 anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 5
                                 Text { text: title; color: root.text; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideRight }
                                 Text { text: priority; color: root.warning; font.pixelSize: 9 }
-                                ToolButton { text: "⋯"; Accessible.name: qsTr("Task details for %1").arg(title); onClicked: root.openDetails(taskId) }
-                                ToolButton { text: "✎"; onClicked: root.openEditor(taskId) }
+                                PlannerButton { compact: true; text: "⋯"; Accessible.name: qsTr("Task details for %1").arg(title); onClicked: root.openDetails(taskId) }
+                                PlannerButton { compact: true; text: "✎"; onClicked: root.openEditor(taskId) }
                             }
                         }
                     }
@@ -676,64 +885,71 @@ Rectangle {
         }
     }
 
-    Dialog {
+    PlannerDialog {
         id: editor
+        objectName: "plannerTaskEditor"
         modal: true; title: editorTaskId.length ? qsTr("Edit Planner task") : qsTr("New Planner task")
-        width: Math.min(760, Math.max(500, root.width)); height: 720
-        anchors.centerIn: Overlay.overlay
+        preferredWidth: 760; preferredHeight: 720
         closePolicy: Popup.NoAutoClose
-        background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
+        onOpened: { editorScroll.contentItem.contentY = 0; titleField.forceActiveFocus() }
+        Shortcut { sequence: "Escape"; enabled: editor.opened && !discardDialog.visible && !milestoneManager.visible && !milestoneEditor.visible; onActivated: root.requestEditorClose() }
         contentItem: ColumnLayout {
-            spacing: 8
+            spacing: 12
             ScrollView {
+                id: editorScroll
+                objectName: "plannerTaskEditorScroll"
                 Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                contentWidth: availableWidth
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                rightPadding: 12
+                ScrollBar.vertical.policy: ScrollBar.AlwaysOn
                 ColumnLayout {
-                    width: Math.max(520, editor.availableWidth - 18); spacing: 10
+                    width: editorScroll.availableWidth; spacing: 12
                     Text { text: qsTr("General"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
-                    TextField { id: titleField; Layout.fillWidth: true; placeholderText: qsTr("Task title"); color: root.text; onTextChanged: root.editorDirty = true }
-                    TextArea { id: descriptionField; Layout.fillWidth: true; Layout.preferredHeight: 62; placeholderText: qsTr("Description"); color: root.text; wrapMode: TextEdit.Wrap; onTextChanged: root.editorDirty = true }
+                    PlannerField { id: titleField; objectName: "plannerTaskTitle"; Layout.fillWidth: true; placeholderText: qsTr("Task title"); Accessible.name: qsTr("Task title"); onTextChanged: root.editorDirty = true }
+                    PlannerTextArea { id: descriptionField; Layout.fillWidth: true; Layout.preferredHeight: 62; placeholderText: qsTr("Description"); color: root.text; wrapMode: TextEdit.Wrap; onTextChanged: root.editorDirty = true }
                     GridLayout {
-                        Layout.fillWidth: true; columns: 2
-                        Label { text: qsTr("Priority"); color: root.secondary }
-                        ComboBox { id: priorityBox; model: [qsTr("Low"), qsTr("Medium"), qsTr("High")]; onActivated: root.editorDirty = true }
+                        Layout.fillWidth: true; columns: 2; columnSpacing: 18; rowSpacing: 8
+                        Label { Layout.preferredWidth: 120; text: qsTr("Priority"); color: root.secondary }
+                        PlannerComboBox { id: priorityBox; objectName: "plannerTaskPriority"; Layout.fillWidth: true; Accessible.name: qsTr("Priority"); model: [qsTr("Low"), qsTr("Medium"), qsTr("High")]; onActivated: root.editorDirty = true }
                         Label { text: qsTr("Difficulty"); color: root.secondary }
-                        ComboBox { id: difficultyBox; model: [qsTr("Not set"), qsTr("Easy"), qsTr("Medium"), qsTr("Hard")]; onActivated: root.editorDirty = true }
+                        PlannerComboBox { id: difficultyBox; Layout.fillWidth: true; Accessible.name: qsTr("Difficulty"); model: [qsTr("Not set"), qsTr("Easy"), qsTr("Medium"), qsTr("Hard")]; onActivated: root.editorDirty = true }
                         Label { text: qsTr("Kanban status"); color: root.secondary }
-                        ComboBox { id: statusBox; model: root.statusLabels; onActivated: { completionBox.checked = index === 4; root.editorDirty = true } }
+                        PlannerComboBox { id: statusBox; Layout.fillWidth: true; Accessible.name: qsTr("Kanban status"); model: root.statusLabels; onActivated: { completionBox.checked = index === 4; root.editorDirty = true } }
                         Label { text: qsTr("Completed"); color: root.secondary }
-                        CheckBox { id: completionBox; onToggled: { if (checked) statusBox.currentIndex = 4; else if (statusBox.currentIndex === 4) statusBox.currentIndex = 1; root.editorDirty = true } }
+                        PlannerCheckBox { id: completionBox; Accessible.name: qsTr("Completed"); onToggled: { if (checked) statusBox.currentIndex = 4; else if (statusBox.currentIndex === 4) statusBox.currentIndex = 1; root.editorDirty = true } }
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
                     Text { text: qsTr("Dates and planning"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
                     GridLayout {
-                        Layout.fillWidth: true; columns: 2
-                        Label { text: qsTr("Start date"); color: root.secondary }
-                        TextField { id: startField; placeholderText: "YYYY-MM-DD"; color: root.text; onTextChanged: root.editorDirty = true }
+                        Layout.fillWidth: true; columns: 2; columnSpacing: 18; rowSpacing: 8
+                        Label { Layout.preferredWidth: 120; text: qsTr("Start date"); color: root.secondary }
+                        PlannerField { id: startField; Layout.fillWidth: true; Accessible.name: qsTr("Start date"); placeholderText: "YYYY-MM-DD"; onTextChanged: root.editorDirty = true }
                         Label { text: qsTr("Due date"); color: root.secondary }
-                        TextField { id: dueField; placeholderText: "YYYY-MM-DD"; color: root.text; onTextChanged: root.editorDirty = true }
+                        PlannerField { id: dueField; Layout.fillWidth: true; Accessible.name: qsTr("Due date"); placeholderText: "YYYY-MM-DD"; onTextChanged: root.editorDirty = true }
                         Label { text: qsTr("Estimated minutes"); color: root.secondary }
-                        TextField {
-                            id: estimateField; placeholderText: qsTr("Optional"); color: root.text
+                        PlannerField {
+                            id: estimateField; Layout.fillWidth: true; Accessible.name: qsTr("Estimated minutes"); placeholderText: qsTr("Optional")
                             validator: IntValidator { bottom: 0 }
                             onTextChanged: root.editorDirty = true
                         }
                         Label { text: qsTr("Time recorded"); color: root.secondary }
-                        Label { text: qsTr("%1 minutes · manage entries in task details").arg(detail.actualTrackedMinutes || 0); color: root.muted; wrapMode: Text.WordWrap }
+                        Label { Layout.fillWidth: true; text: qsTr("%1 minutes · manage entries in task details").arg(detail.actualTrackedMinutes || 0); color: root.muted; wrapMode: Text.WordWrap }
                         Label { text: qsTr("Milestone"); color: root.secondary }
-                        ComboBox {
+                        PlannerComboBox {
                             id: milestoneBox; Layout.fillWidth: true
                             model: [{ id: "", title: qsTr("No milestone") }].concat(plannerController.milestones)
                             textRole: "title"; valueRole: "id"; onActivated: root.editorDirty = true
                         }
                     }
-                    Button { text: qsTr("Manage milestones…"); onClicked: milestoneManager.open() }
+                    PlannerButton { text: qsTr("Manage milestones…"); onClicked: milestoneManager.open() }
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
                     Text { text: qsTr("Organization"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
-                    TextField { id: tagsField; Layout.fillWidth: true; placeholderText: qsTr("Tags, separated by commas"); color: root.text; onTextChanged: root.editorDirty = true }
+                    PlannerField { id: tagsField; Layout.fillWidth: true; placeholderText: qsTr("Tags, separated by commas"); color: root.text; onTextChanged: root.editorDirty = true }
                     RowLayout {
                         Layout.fillWidth: true
                         Text { text: qsTr("Subtasks"); color: root.secondary; Layout.fillWidth: true }
-                        Button { text: qsTr("＋ Add subtask"); onClicked: { subtaskDraft.append({ subtaskKey: "", title: "", completed: false }); root.editorDirty = true } }
+                        PlannerButton { text: qsTr("＋ Add subtask"); onClicked: { subtaskDraft.append({ subtaskKey: "", title: "", completed: false }); root.editorDirty = true } }
                     }
                     ListView {
                         Layout.fillWidth: true; Layout.preferredHeight: Math.min(150, Math.max(42, contentHeight)); clip: true; spacing: 3
@@ -741,40 +957,41 @@ Rectangle {
                         delegate: RowLayout {
                             required property int index; required property string subtaskKey; required property string title; required property bool completed
                             width: ListView.view.width
-                            CheckBox { checked: completed; onToggled: { subtaskDraft.setProperty(index, "completed", checked); root.editorDirty = true } }
-                            TextField { Layout.fillWidth: true; text: title; placeholderText: qsTr("Subtask"); color: root.text; onTextChanged: { subtaskDraft.setProperty(index, "title", text); root.editorDirty = true } }
-                            ToolButton { text: "×"; Accessible.name: qsTr("Remove subtask"); onClicked: { subtaskDraft.remove(index); root.editorDirty = true } }
+                            PlannerCheckBox { checked: completed; onToggled: { subtaskDraft.setProperty(index, "completed", checked); root.editorDirty = true } }
+                            PlannerField { Layout.fillWidth: true; text: title; placeholderText: qsTr("Subtask"); color: root.text; onTextChanged: { subtaskDraft.setProperty(index, "title", text); root.editorDirty = true } }
+                            PlannerButton { compact: true; text: "×"; Accessible.name: qsTr("Remove subtask"); onClicked: { subtaskDraft.remove(index); root.editorDirty = true } }
                         }
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        ComboBox { id: dependencyBox; Layout.fillWidth: true; model: plannerController.dependencyChoices(editorTaskId); textRole: "title"; valueRole: "taskId"; onActivated: root.selectedDependencyId = currentValue }
-                        Button { text: qsTr("Add dependency"); enabled: dependencyBox.currentIndex >= 0; onClicked: { var id = dependencyBox.currentValue; if (id && root.selectedDependencyIds.indexOf(id) < 0) { root.selectedDependencyIds = root.selectedDependencyIds.concat([id]); root.editorDirty = true } dependencyBox.currentIndex = -1 } }
+                        PlannerComboBox { id: dependencyBox; Layout.fillWidth: true; model: plannerController.dependencyChoices(editorTaskId); textRole: "title"; valueRole: "taskId"; onActivated: root.selectedDependencyId = currentValue }
+                        PlannerButton { text: qsTr("Add dependency"); enabled: dependencyBox.currentIndex >= 0; onClicked: { var id = dependencyBox.currentValue; if (id && root.selectedDependencyIds.indexOf(id) < 0) { root.selectedDependencyIds = root.selectedDependencyIds.concat([id]); root.editorDirty = true } dependencyBox.currentIndex = -1 } }
                     }
                     Flow {
                         Layout.fillWidth: true; spacing: 5
                         Repeater {
                             model: root.selectedDependencyIds
                             delegate: Rectangle {
+                                required property int index
                                 required property string modelData
                                 radius: 8; color: root.activeSurface; implicitWidth: dependencyName.implicitWidth + 34; implicitHeight: 26
                                 RowLayout {
                                     anchors.fill: parent; anchors.leftMargin: 8
                                     Text { id: dependencyName; text: root.dependencyTitle(modelData); color: root.secondary; font.pixelSize: 9; Layout.fillWidth: true }
-                                    ToolButton { text: "×"; onClicked: { var next = root.selectedDependencyIds.slice(0); next.splice(index, 1); root.selectedDependencyIds = next; root.editorDirty = true } }
+                                    PlannerButton { compact: true; text: "×"; onClicked: { var next = root.selectedDependencyIds.slice(0); next.splice(index, 1); root.selectedDependencyIds = next; root.editorDirty = true } }
                                 }
                             }
                         }
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
                     Text { text: qsTr("Development"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
-                    ComboBox {
+                    PlannerComboBox {
                         id: branchBox; Layout.fillWidth: true; enabled: !plannerController.branchLoading
                         model: root.editorBranchOptions(editorTaskId)
                         textRole: "displayName"; valueRole: "name"
                         onActivated: root.editorDirty = true
                     }
-                    ComboBox {
+                    PlannerComboBox {
                         id: serviceBox; Layout.fillWidth: true
                         model: root.editorServiceOptions(editorTaskId)
                         textRole: "name"; valueRole: "id"
@@ -782,11 +999,11 @@ Rectangle {
                     }
                     Text { text: qsTr("Starting a linked service requires an explicit click. Task text is never used as a command."); color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     Text { visible: plannerController.branchLoading; text: qsTr("Loading local branches…"); color: root.muted; font.pixelSize: 9 }
-                    TextField { id: issueField; Layout.fillWidth: true; placeholderText: qsTr("GitHub Issue URL"); color: root.text; onTextChanged: root.editorDirty = true }
-                    TextField { id: pullRequestField; Layout.fillWidth: true; placeholderText: qsTr("GitHub Pull Request URL"); color: root.text; onTextChanged: root.editorDirty = true }
-                    TextField { id: blockedField; Layout.fillWidth: true; placeholderText: qsTr("Blocked reason (optional)"); color: root.text; onTextChanged: root.editorDirty = true }
+                    PlannerField { id: issueField; Layout.fillWidth: true; placeholderText: qsTr("GitHub Issue URL"); color: root.text; onTextChanged: root.editorDirty = true }
+                    PlannerField { id: pullRequestField; Layout.fillWidth: true; placeholderText: qsTr("GitHub Pull Request URL"); color: root.text; onTextChanged: root.editorDirty = true }
+                    PlannerField { id: blockedField; Layout.fillWidth: true; placeholderText: qsTr("Blocked reason (optional)"); color: root.text; onTextChanged: root.editorDirty = true }
                     Text { text: qsTr("Planner notes"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
-                    TextArea { id: notesField; Layout.fillWidth: true; Layout.preferredHeight: 84; placeholderText: qsTr("Developer notes, separate from the task description"); color: root.text; wrapMode: TextEdit.Wrap; onTextChanged: root.editorDirty = true }
+                    PlannerTextArea { id: notesField; Layout.fillWidth: true; Layout.preferredHeight: 84; placeholderText: qsTr("Developer notes, separate from the task description"); color: root.text; wrapMode: TextEdit.Wrap; onTextChanged: root.editorDirty = true }
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border; visible: editorTaskId.length > 0 }
                     Text { visible: editorTaskId.length > 0; text: qsTr("Source information"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
                     Text {
@@ -803,34 +1020,38 @@ Rectangle {
             }
             Text { id: editorMessage; visible: text.length > 0; Layout.fillWidth: true; color: root.error; font.pixelSize: 10; wrapMode: Text.WordWrap }
             RowLayout {
+                objectName: "plannerTaskEditorActions"
                 Layout.fillWidth: true
                 Item { Layout.fillWidth: true }
-                Button { text: qsTr("Cancel"); onClicked: root.requestEditorClose() }
-                Button {
+                PlannerButton { text: qsTr("Cancel"); onClicked: root.requestEditorClose() }
+                PlannerButton {
                     text: qsTr("Save task"); enabled: plannerController.hasWorkspace; onClicked: root.saveEditor()
-                    background: Rectangle { radius: 6; color: root.accent }
-                    contentItem: Text { text: parent.text; color: "white"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; leftPadding: 12; rightPadding: 12 }
+                    primary: true
                 }
             }
         }
     }
 
-    Dialog {
+    PlannerDialog {
         id: discardDialog; modal: true; title: qsTr("Discard unsaved changes?"); standardButtons: Dialog.Discard | Dialog.Cancel
-        width: 380
-        anchors.centerIn: Overlay.overlay
-        onAccepted: { root.editorDirty = false; editor.close() }
+        objectName: "plannerDiscardDialog"
+        preferredWidth: 420
+        contentItem: Text { text: qsTr("Your changes to this task will be lost."); color: root.secondary; font.pixelSize: 12; wrapMode: Text.WordWrap }
+        onDiscarded: { root.editorDirty = false; editor.close(); close() }
+        onRejected: titleField.forceActiveFocus()
     }
-    Dialog {
+    PlannerDialog {
         id: detailsDialog; modal: true; title: qsTr("Task details"); standardButtons: Dialog.Close
-        width: Math.min(700, Math.max(460, root.width)); height: Math.min(680, root.height + 260); anchors.centerIn: Overlay.overlay
-        background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
+        preferredWidth: 700; preferredHeight: 680
         contentItem: ColumnLayout {
             spacing: 8
             ScrollView {
+                id: detailsScroll
                 Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                contentWidth: availableWidth
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                 ColumnLayout {
-                    width: Math.max(420, detailsDialog.availableWidth - 28); spacing: 9
+                    width: detailsScroll.availableWidth; spacing: 9
                     Text { text: root.detail.title || ""; color: root.text; font.pixelSize: 18; font.weight: Font.DemiBold; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     Text { text: qsTr("General"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
                     Text { text: root.detail.description || qsTr("No description."); color: root.secondary; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true }
@@ -844,28 +1065,28 @@ Rectangle {
                     RowLayout {
                         Layout.fillWidth: true
                         Text { Layout.fillWidth: true; text: root.detail.gitBranch ? qsTr("%1 · %2").arg(root.detail.gitBranch).arg(root.branchIsPresent(root.detail.gitBranch) ? qsTr("exists") : qsTr("missing")) : qsTr("No branch associated"); color: root.branchIsPresent(root.detail.gitBranch) ? root.info : root.warning; font.pixelSize: 10; elide: Text.ElideMiddle }
-                        Button { visible: !!root.detail.gitBranch; text: qsTr("Open in Git"); onClicked: plannerController.openGitBranch(root.detail.gitBranch) }
+                        PlannerButton { visible: !!root.detail.gitBranch; text: qsTr("Open in Git"); onClicked: plannerController.openGitBranch(root.detail.gitBranch) }
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        Button { visible: !!root.detail.githubIssueUrl; text: qsTr("Open Issue"); onClicked: plannerController.openGitHubUrl(root.detail.githubIssueUrl) }
-                        Button { visible: !!root.detail.githubPullRequestUrl; text: qsTr("Open Pull Request"); onClicked: plannerController.openGitHubUrl(root.detail.githubPullRequestUrl) }
+                        PlannerButton { visible: !!root.detail.githubIssueUrl; text: qsTr("Open Issue"); onClicked: plannerController.openGitHubUrl(root.detail.githubIssueUrl) }
+                        PlannerButton { visible: !!root.detail.githubPullRequestUrl; text: qsTr("Open Pull Request"); onClicked: plannerController.openGitHubUrl(root.detail.githubPullRequestUrl) }
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
                     Text { text: qsTr("Development actions"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
                     Text { text: root.detail.linkedServiceId ? (root.detail.linkedServiceAvailable ? qsTr("Linked service · %1").arg(root.detail.serviceName) : qsTr("Linked service is unavailable in the active workspace.")) : qsTr("No configured service is linked to this task."); color: root.detail.linkedServiceAvailable ? root.secondary : root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     Flow {
                         Layout.fillWidth: true; spacing: 6
-                        Button { text: qsTr("Open Git"); enabled: !!plannerController.hasWorkspace; onClicked: plannerController.openGitModule() }
-                        Button { text: qsTr("Repository folder"); enabled: !!plannerController.hasWorkspace && !!root.detail.workspaceId; onClicked: plannerController.openWorkspaceFolder() }
-                        Button { text: qsTr("Workspace notes"); enabled: !!plannerController.hasWorkspace; onClicked: plannerController.openWorkspaceNotes() }
-                        Button { text: qsTr("View service"); enabled: !!root.detail.linkedServiceAvailable; onClicked: plannerController.openLinkedService(root.detail.taskId) }
-                        Button { text: qsTr("Related logs"); enabled: !!root.detail.linkedServiceAvailable; onClicked: plannerController.openLinkedServiceLogs(root.detail.taskId) }
+                        PlannerButton { text: qsTr("Open Git"); enabled: !!plannerController.hasWorkspace; onClicked: plannerController.openGitModule() }
+                        PlannerButton { text: qsTr("Repository folder"); enabled: !!plannerController.hasWorkspace && !!root.detail.workspaceId; onClicked: plannerController.openWorkspaceFolder() }
+                        PlannerButton { text: qsTr("Workspace notes"); enabled: !!plannerController.hasWorkspace; onClicked: plannerController.openWorkspaceNotes() }
+                        PlannerButton { text: qsTr("View service"); enabled: !!root.detail.linkedServiceAvailable; onClicked: plannerController.openLinkedService(root.detail.taskId) }
+                        PlannerButton { text: qsTr("Related logs"); enabled: !!root.detail.linkedServiceAvailable; onClicked: plannerController.openLinkedServiceLogs(root.detail.taskId) }
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        Button { visible: !root.actionIsStarting(); enabled: !!root.detail.linkedServiceAvailable; text: qsTr("Start linked service"); onClicked: { plannerController.startLinkedService(root.detail.taskId); root.refreshDetails(root.detail.taskId); detailsMessage.text = plannerController.error } }
-                        Button { visible: root.actionIsStarting(); text: qsTr("Cancel start"); onClicked: { plannerController.cancelLinkedServiceStart(root.detail.taskId); detailsMessage.text = plannerController.error } }
+                        PlannerButton { visible: !root.actionIsStarting(); enabled: !!root.detail.linkedServiceAvailable; text: qsTr("Start linked service"); onClicked: { plannerController.startLinkedService(root.detail.taskId); root.refreshDetails(root.detail.taskId); detailsMessage.text = plannerController.error } }
+                        PlannerButton { visible: root.actionIsStarting(); text: qsTr("Cancel start"); onClicked: { plannerController.cancelLinkedServiceStart(root.detail.taskId); detailsMessage.text = plannerController.error } }
                         Text { visible: !root.detail.linkedServiceAvailable; text: qsTr("Choose an existing service in the Development section to enable service actions."); color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     }
                     Repeater {
@@ -874,7 +1095,7 @@ Rectangle {
                             required property var modelData
                             Layout.fillWidth: true
                             Text { Layout.fillWidth: true; text: qsTr("%1 · %2 · %3 ms%4").arg(modelData.status).arg(modelData.startedAt).arg(modelData.durationMs).arg(modelData.errorSummary ? " · " + modelData.errorSummary : ""); color: modelData.succeeded ? root.success : modelData.finished ? root.error : root.info; font.pixelSize: 9; wrapMode: Text.WordWrap }
-                            Button { visible: !!modelData.logReference; text: qsTr("Logs"); enabled: !!root.detail.linkedServiceAvailable; onClicked: plannerController.openLinkedServiceLogs(root.detail.taskId) }
+                            PlannerButton { visible: !!modelData.logReference; text: qsTr("Logs"); enabled: !!root.detail.linkedServiceAvailable; onClicked: plannerController.openLinkedServiceLogs(root.detail.taskId) }
                         }
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
@@ -893,18 +1114,18 @@ Rectangle {
                             required property var modelData
                             Layout.fillWidth: true
                             Text { Layout.fillWidth: true; text: qsTr("%1 min · %2 · %3").arg(modelData.durationMinutes).arg(modelData.note || qsTr("No note")).arg(modelData.recordedAt || ""); color: root.secondary; font.pixelSize: 9; wrapMode: Text.WordWrap }
-                            ToolButton { text: "×"; Accessible.name: qsTr("Remove time entry"); onClicked: { if (plannerController.removeTimeEntry(root.detail.taskId, modelData.id)) root.refreshDetails(root.detail.taskId); detailsMessage.text = plannerController.error } }
+                            PlannerButton { compact: true; text: "×"; Accessible.name: qsTr("Remove time entry"); onClicked: { if (plannerController.removeTimeEntry(root.detail.taskId, modelData.id)) root.refreshDetails(root.detail.taskId); detailsMessage.text = plannerController.error } }
                         }
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        TextField {
+                        PlannerField {
                             id: timeMinutesField; Layout.preferredWidth: 100
                             placeholderText: qsTr("Minutes"); validator: IntValidator { bottom: 1 }
                             color: root.text
                         }
-                        TextField { id: timeNoteField; Layout.fillWidth: true; placeholderText: qsTr("Entry note (optional)"); color: root.text }
-                        Button { text: qsTr("Record"); onClicked: { if (plannerController.addTimeEntry(root.detail.taskId, timeMinutesField.text, timeNoteField.text)) { timeMinutesField.clear(); timeNoteField.clear(); root.refreshDetails(root.detail.taskId) } detailsMessage.text = plannerController.error } }
+                        PlannerField { id: timeNoteField; Layout.fillWidth: true; placeholderText: qsTr("Entry note (optional)"); color: root.text }
+                        PlannerButton { text: qsTr("Record"); onClicked: { if (plannerController.addTimeEntry(root.detail.taskId, timeMinutesField.text, timeNoteField.text)) { timeMinutesField.clear(); timeNoteField.clear(); root.refreshDetails(root.detail.taskId) } detailsMessage.text = plannerController.error } }
                     }
                     Text { id: detailsMessage; visible: text.length > 0; text: ""; color: root.error; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
@@ -921,22 +1142,20 @@ Rectangle {
             RowLayout {
                 Layout.fillWidth: true
                 Item { Layout.fillWidth: true }
-                Button { text: qsTr("Delete"); onClicked: root.requestDelete(root.detail.taskId) }
-                Button { text: qsTr("Edit"); onClicked: root.editFromDetails() }
+                PlannerButton { text: qsTr("Delete"); onClicked: root.requestDelete(root.detail.taskId) }
+                PlannerButton { text: qsTr("Edit"); onClicked: root.editFromDetails() }
             }
         }
     }
-    Dialog {
+    PlannerDialog {
         id: milestoneManager; modal: true; title: qsTr("Workspace milestones"); standardButtons: Dialog.Close
-        width: Math.min(680, Math.max(480, root.width)); height: Math.min(620, root.height + 180)
-        anchors.centerIn: Overlay.overlay
-        background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
+        preferredWidth: 680; preferredHeight: 620
         contentItem: ColumnLayout {
             spacing: 8
             RowLayout {
                 Layout.fillWidth: true
                 Text { text: qsTr("Milestone progress is calculated from tasks assigned in this workspace."); color: root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                Button { text: qsTr("＋ New milestone"); onClicked: { milestoneManager.close(); root.openMilestoneEditor("") } }
+                PlannerButton { text: qsTr("＋ New milestone"); onClicked: { milestoneManager.close(); root.openMilestoneEditor("") } }
             }
             ListView {
                 Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 6
@@ -951,78 +1170,73 @@ Rectangle {
                             Layout.fillWidth: true
                             Text { text: modelData.title; color: root.text; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideRight }
                             Text { text: modelData.completed ? qsTr("Complete") : qsTr("Active"); color: modelData.completed ? root.success : root.muted; font.pixelSize: 9 }
-                            ToolButton { text: "✎"; Accessible.name: qsTr("Edit milestone"); onClicked: { milestoneManager.close(); root.openMilestoneEditor(modelData.id) } }
-                            ToolButton { text: "×"; Accessible.name: qsTr("Delete milestone"); onClicked: { root.selectedMilestoneId = modelData.id; removeMilestoneDialog.open() } }
+                            PlannerButton { compact: true; text: "✎"; Accessible.name: qsTr("Edit milestone"); onClicked: { milestoneManager.close(); root.openMilestoneEditor(modelData.id) } }
+                            PlannerButton { compact: true; text: "×"; Accessible.name: qsTr("Delete milestone"); onClicked: { root.selectedMilestoneId = modelData.id; removeMilestoneDialog.open() } }
                         }
                         Text { visible: !!modelData.description; text: modelData.description; color: root.secondary; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         RowLayout {
                             Layout.fillWidth: true
-                            ProgressBar { Layout.fillWidth: true; from: 0; to: 100; value: modelData.progress }
+                            PlannerProgressBar { Layout.fillWidth: true; from: 0; to: 100; value: modelData.progress }
                             Text { text: qsTr("%1% · %2/%3 tasks").arg(modelData.progress).arg(modelData.completedTaskCount).arg(modelData.taskCount); color: root.secondary; font.pixelSize: 9 }
                             Text { text: modelData.dueDate ? qsTr("Due %1").arg(modelData.dueDate) : qsTr("No due date"); color: root.muted; font.pixelSize: 9 }
                         }
-                        Button { text: qsTr("View tasks"); onClicked: { plannerController.setMilestoneFilter(modelData.id); milestoneManager.close() } }
+                        PlannerButton { text: qsTr("View tasks"); onClicked: { plannerController.setMilestoneFilter(modelData.id); milestoneManager.close() } }
                     }
                 }
             }
             Text { visible: plannerController.milestones.length === 0; Layout.fillWidth: true; text: qsTr("No milestones yet."); color: root.muted; horizontalAlignment: Text.AlignHCenter }
         }
     }
-    Dialog {
+    PlannerDialog {
         id: milestoneEditor; modal: true; title: root.selectedMilestoneId ? qsTr("Edit milestone") : qsTr("New milestone")
-        width: Math.min(520, Math.max(400, root.width)); anchors.centerIn: Overlay.overlay
-        background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
+        preferredWidth: 520
         contentItem: ColumnLayout {
             spacing: 8
-            TextField { id: milestoneTitleField; Layout.fillWidth: true; placeholderText: qsTr("Milestone title"); color: root.text }
-            TextArea { id: milestoneDescriptionField; Layout.fillWidth: true; Layout.preferredHeight: 76; placeholderText: qsTr("Description"); color: root.text; wrapMode: TextEdit.Wrap }
+            PlannerField { id: milestoneTitleField; Layout.fillWidth: true; placeholderText: qsTr("Milestone title"); color: root.text }
+            PlannerTextArea { id: milestoneDescriptionField; Layout.fillWidth: true; Layout.preferredHeight: 76; placeholderText: qsTr("Description"); color: root.text; wrapMode: TextEdit.Wrap }
             GridLayout {
                 Layout.fillWidth: true; columns: 2
                 Label { text: qsTr("Start date"); color: root.secondary }
-                TextField { id: milestoneStartField; placeholderText: "YYYY-MM-DD"; color: root.text }
+                PlannerField { id: milestoneStartField; Layout.fillWidth: true; placeholderText: "YYYY-MM-DD" }
                 Label { text: qsTr("Target date"); color: root.secondary }
-                TextField { id: milestoneDueField; placeholderText: "YYYY-MM-DD"; color: root.text }
+                PlannerField { id: milestoneDueField; Layout.fillWidth: true; placeholderText: "YYYY-MM-DD" }
                 Label { text: qsTr("Status"); color: root.secondary }
-                CheckBox { id: milestoneCompletedField; text: qsTr("Complete") }
+                PlannerCheckBox { id: milestoneCompletedField; text: qsTr("Complete") }
             }
             Text { id: milestoneMessage; visible: text.length > 0; Layout.fillWidth: true; color: root.error; font.pixelSize: 10; wrapMode: Text.WordWrap }
             RowLayout {
                 Layout.fillWidth: true
                 Item { Layout.fillWidth: true }
-                Button { text: qsTr("Cancel"); onClicked: milestoneEditor.close() }
-                Button { text: qsTr("Save milestone"); onClicked: root.saveMilestoneEditor() }
+                PlannerButton { text: qsTr("Cancel"); onClicked: milestoneEditor.close() }
+                PlannerButton { text: qsTr("Save milestone"); primary: true; onClicked: root.saveMilestoneEditor() }
             }
         }
     }
-    Dialog {
+    PlannerDialog {
         id: removeMilestoneDialog; modal: true; title: qsTr("Delete milestone?"); standardButtons: Dialog.Yes | Dialog.Cancel
-        width: 420; anchors.centerIn: Overlay.overlay
+        preferredWidth: 420
         contentItem: Text { text: qsTr("Tasks in this workspace will stay intact and be removed from the milestone."); color: root.secondary; wrapMode: Text.WordWrap }
         onAccepted: root.removeSelectedMilestone()
     }
-    Dialog {
+    PlannerDialog {
         id: deleteDialog; modal: true; title: qsTr("Delete task?"); standardButtons: Dialog.Yes | Dialog.Cancel
-        width: 380
-        anchors.centerIn: Overlay.overlay
+        preferredWidth: 380
         contentItem: Text { text: qsTr("This permanently removes the task and its Planner details from this workspace."); color: root.secondary; wrapMode: Text.WordWrap }
         onAccepted: root.confirmDelete()
     }
 
-    Dialog {
+    PlannerDialog {
         id: importDialog
         modal: true
         title: qsTr("Import tasks from SomethingQt")
-        width: Math.min(980, Math.max(640, root.width + 420))
-        height: Math.min(760, root.height + 360)
-        anchors.centerIn: Overlay.overlay
+        preferredWidth: 980; preferredHeight: 760
         standardButtons: Dialog.Close
-        background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
         onClosed: if (root.importController) root.importController.closeDialog()
         contentItem: ColumnLayout {
             spacing: 9
             RowLayout {
                 Layout.fillWidth: true; spacing: 7
-                TextField {
+                PlannerField {
                     id: sourceProfilePath
                     Layout.fillWidth: true
                     enabled: root.importController && !root.importController.importing
@@ -1033,8 +1247,8 @@ Rectangle {
                     color: root.text; placeholderTextColor: root.muted
                     background: Rectangle { radius: 6; color: root.surface; border.color: sourceProfilePath.activeFocus ? root.accent : root.border }
                 }
-                Button { text: qsTr("Browse…"); enabled: root.importController !== null && !root.importController.importing; onClicked: root.importController.browseProfile() }
-                Button { text: root.importController && root.importController.loading ? qsTr("Checking…") : qsTr("Verify"); enabled: root.importController !== null && !root.importController.loading && !root.importController.importing; onClicked: { root.importController.setProfilePath(sourceProfilePath.text); root.importController.verifyConnection() } }
+                PlannerButton { text: qsTr("Browse…"); enabled: root.importController !== null && !root.importController.importing; onClicked: root.importController.browseProfile() }
+                PlannerButton { text: root.importController && root.importController.loading ? qsTr("Checking…") : qsTr("Verify"); enabled: root.importController !== null && !root.importController.loading && !root.importController.importing; onClicked: { root.importController.setProfilePath(sourceProfilePath.text); root.importController.verifyConnection() } }
             }
             Text {
                 Layout.fillWidth: true
@@ -1045,7 +1259,7 @@ Rectangle {
             Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
             RowLayout {
                 Layout.fillWidth: true; spacing: 7
-                TextField {
+                PlannerField {
                     id: sourceSearch
                     Layout.fillWidth: true
                     text: root.importController ? root.importController.searchText : ""
@@ -1054,20 +1268,20 @@ Rectangle {
                     color: root.text; placeholderTextColor: root.muted
                     background: Rectangle { radius: 6; color: root.surface; border.color: sourceSearch.activeFocus ? root.accent : root.border }
                 }
-                ComboBox {
+                PlannerComboBox {
                     id: sourceTagFilter
                     Layout.preferredWidth: 150
                     model: (root.importController ? [qsTr("All tags")].concat(root.importController.sourceTags) : [qsTr("All tags")])
                     currentIndex: root.importController && root.importController.tagFilter.length > 0 ? Math.max(0, model.indexOf(root.importController.tagFilter)) : 0
                     onActivated: if (root.importController) root.importController.setTagFilter(index === 0 ? "" : currentText)
                 }
-                ComboBox {
+                PlannerComboBox {
                     Layout.preferredWidth: 120
                     model: [qsTr("Any priority"), qsTr("High"), qsTr("Medium"), qsTr("Low")]
                     currentIndex: root.importController ? Math.max(0, ["", "high", "medium", "low"].indexOf(root.importController.priorityFilter)) : 0
                     onActivated: if (root.importController) root.importController.setPriorityFilter(["", "high", "medium", "low"][index])
                 }
-                ComboBox {
+                PlannerComboBox {
                     Layout.preferredWidth: 125
                     model: [qsTr("Any completion"), qsTr("Incomplete"), qsTr("Complete")]
                     currentIndex: root.importController ? root.importController.completionFilter + 1 : 0
@@ -1077,7 +1291,7 @@ Rectangle {
             RowLayout {
                 Layout.fillWidth: true; spacing: 8
                 Text { text: qsTr("Import:"); color: root.secondary; font.pixelSize: 10 }
-                ComboBox {
+                PlannerComboBox {
                     id: importMode
                     Layout.preferredWidth: 205
                     textRole: "text"; valueRole: "value"
@@ -1088,7 +1302,7 @@ Rectangle {
                     ]
                 }
                 Text { text: qsTr("Destination Workspace:"); color: root.secondary; font.pixelSize: 10 }
-                ComboBox {
+                PlannerComboBox {
                     id: destinationWorkspace
                     Layout.fillWidth: true
                     model: root.importController ? root.importController.workspaceOptions : []
@@ -1119,7 +1333,7 @@ Rectangle {
                         spacing: 4
                         Repeater {
                             model: root.importController ? root.importController.sourceTags : []
-                            delegate: CheckBox {
+                            delegate: PlannerCheckBox {
                                 required property string modelData
                                 text: modelData
                                 checked: root.importController ? root.importController.isImportTagSelected(modelData) : false
@@ -1132,8 +1346,8 @@ Rectangle {
             RowLayout {
                 Layout.fillWidth: true; spacing: 7
                 Text { text: qsTr("%1 source tasks · %2 selected").arg(root.importController ? root.importController.totalCount : 0).arg(root.importController ? root.importController.selectedCount : 0); color: root.secondary; font.pixelSize: 10; Layout.fillWidth: true }
-                Button { text: qsTr("Select all visible"); enabled: root.importController && root.importController.tasks.length > 0; onClicked: root.importController.selectAllVisible() }
-                Button { text: qsTr("Clear selection"); enabled: root.importController && root.importController.selectedCount > 0; onClicked: root.importController.clearSelection() }
+                PlannerButton { text: qsTr("Select all visible"); enabled: root.importController && root.importController.tasks.length > 0; onClicked: root.importController.selectAllVisible() }
+                PlannerButton { text: qsTr("Clear selection"); enabled: root.importController && root.importController.selectedCount > 0; onClicked: root.importController.clearSelection() }
             }
             Rectangle {
                 Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 180
@@ -1148,7 +1362,7 @@ Rectangle {
                         color: modelData.selected ? root.activeSurface : "transparent"
                         RowLayout {
                             anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6; spacing: 7
-                            CheckBox {
+                            PlannerCheckBox {
                                 checked: modelData.selected
                                 onToggled: if (root.importController) root.importController.selectTask(modelData.sourceTaskId, checked)
                             }
@@ -1161,7 +1375,7 @@ Rectangle {
                                 }
                             }
                             Text { visible: modelData.importCount > 0; text: qsTr("Imported ×%1").arg(modelData.importCount); color: root.warning; font.pixelSize: 9 }
-                            ToolButton { text: qsTr("Preview"); onClicked: if (root.importController) { root.importController.previewTask(modelData.sourceTaskId); sourcePreviewDialog.open() } }
+                            PlannerButton { compact: true; text: qsTr("Preview"); onClicked: if (root.importController) { root.importController.previewTask(modelData.sourceTaskId); sourcePreviewDialog.open() } }
                         }
                     }
                     Text { anchors.centerIn: parent; visible: sourceTaskList.count === 0 && root.importController && root.importController.verified && !root.importController.loading; text: qsTr("No tasks match these filters."); color: root.muted; font.pixelSize: 11 }
@@ -1170,10 +1384,10 @@ Rectangle {
             }
             RowLayout {
                 Layout.fillWidth: true; spacing: 8
-                Button { text: qsTr("Previous"); enabled: root.importController && root.importController.page > 0 && !root.importController.loading; onClicked: root.importController.previousPage() }
+                PlannerButton { text: qsTr("Previous"); enabled: root.importController && root.importController.page > 0 && !root.importController.loading; onClicked: root.importController.previousPage() }
                 Text { text: root.importController ? qsTr("Page %1 · %2 tasks").arg(root.importController.page + 1).arg(root.importController.totalCount) : ""; color: root.muted; font.pixelSize: 9; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter }
-                Button { text: qsTr("Next"); enabled: root.importController && (root.importController.page + 1) * root.importController.pageSize < root.importController.totalCount && !root.importController.loading; onClicked: root.importController.nextPage() }
-                Button {
+                PlannerButton { text: qsTr("Next"); enabled: root.importController && (root.importController.page + 1) * root.importController.pageSize < root.importController.totalCount && !root.importController.loading; onClicked: root.importController.nextPage() }
+                PlannerButton {
                     text: root.importController && root.importController.loading && !root.importController.importing ? qsTr("Preparing…") : qsTr("Review import…")
                     enabled: root.importController && root.importController.verified && !root.importController.loading && !root.importController.importing && root.importController.destinationWorkspaceId.length > 0
                     onClicked: root.importController.prepareImport(importMode.currentValue)
@@ -1181,28 +1395,29 @@ Rectangle {
                     contentItem: Text { text: parent.text; color: parent.enabled ? "white" : root.muted; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; leftPadding: 10; rightPadding: 10 }
                 }
             }
-            ProgressBar { Layout.fillWidth: true; visible: root.importController && root.importController.importing; from: 0; to: 100; value: root.importController ? root.importController.progress : 0 }
+            PlannerProgressBar { Layout.fillWidth: true; visible: root.importController && root.importController.importing; from: 0; to: 100; value: root.importController ? root.importController.progress : 0 }
             RowLayout {
                 Layout.fillWidth: true
                 Text { Layout.fillWidth: true; visible: root.importController && root.importController.importing; text: root.importController ? root.importController.progressMessage : ""; color: root.secondary; font.pixelSize: 9; wrapMode: Text.WordWrap }
-                Button { visible: root.importController && root.importController.importing; text: qsTr("Cancel import"); onClicked: root.importController.cancelImport() }
+                PlannerButton { visible: root.importController && root.importController.importing; text: qsTr("Cancel import"); onClicked: root.importController.cancelImport() }
             }
             Text { Layout.fillWidth: true; visible: root.importController && root.importController.error.length > 0; text: root.importController ? root.importController.error : ""; color: root.error; font.pixelSize: 10; wrapMode: Text.WordWrap }
             Text { Layout.fillWidth: true; visible: root.importController && root.importController.resultMessage.length > 0; text: root.importController ? root.importController.resultMessage : ""; color: root.success; font.pixelSize: 10; wrapMode: Text.WordWrap }
         }
     }
 
-    Dialog {
+    PlannerDialog {
         id: sourcePreviewDialog
         modal: true; title: qsTr("SomethingQt task preview")
-        width: Math.min(700, root.width + 250); height: Math.min(650, root.height + 220)
-        anchors.centerIn: Overlay.overlay
+        preferredWidth: 700; preferredHeight: 650
         standardButtons: Dialog.Close
-        background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
         contentItem: ScrollView {
+            id: previewScroll
             clip: true
+            contentWidth: availableWidth
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             ColumnLayout {
-                width: sourcePreviewDialog.availableWidth; spacing: 8
+                width: previewScroll.availableWidth; spacing: 8
                 Text { text: root.importController && root.importController.preview.title ? root.importController.preview.title : qsTr("Loading task…"); color: root.text; font.pixelSize: 17; font.weight: Font.DemiBold; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                 Text { text: root.importController ? qsTr("Source ID %1 · revision %2 · %3 · %4 priority · %5 difficulty · deadline %6").arg(root.importController.preview.sourceTaskId || "—").arg(root.importController.preview.revision || "—").arg(root.importController.preview.completed ? qsTr("Complete") : qsTr("Incomplete")).arg(root.importController.preview.priority || "—").arg(root.importController.preview.difficulty || qsTr("not set")).arg(root.importController.preview.dueDate || qsTr("none")) : ""; color: root.secondary; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                 Text { text: qsTr("Description"); color: root.secondary; font.pixelSize: 10; font.weight: Font.DemiBold }
@@ -1222,12 +1437,11 @@ Rectangle {
         }
     }
 
-    Dialog {
+    PlannerDialog {
         id: importConfirmationDialog
         modal: true; title: qsTr("Confirm task import")
-        width: 460; anchors.centerIn: Overlay.overlay
+        preferredWidth: 460
         standardButtons: Dialog.Cancel | Dialog.Ok
-        background: Rectangle { color: root.panel; radius: 12; border.color: root.borderStrong }
         onOpened: additionalCopies.checked = false
         contentItem: ColumnLayout {
             spacing: 9
@@ -1237,7 +1451,7 @@ Rectangle {
                 color: root.text; font.pixelSize: 12; wrapMode: Text.WordWrap
             }
             Text { Layout.fillWidth: true; text: qsTr("Existing source tasks are skipped by default. Imported tasks become independent DevHub copies; later changes or deletion in SomethingQt will not synchronize."); color: root.secondary; font.pixelSize: 10; wrapMode: Text.WordWrap }
-            CheckBox { id: additionalCopies; text: qsTr("Import another independent copy of tasks already imported here"); checked: false }
+            PlannerCheckBox { id: additionalCopies; text: qsTr("Import another independent copy of tasks already imported here"); checked: false }
         }
         onAccepted: if (root.importController) root.importController.startImport(additionalCopies.checked)
     }

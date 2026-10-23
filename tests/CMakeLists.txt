@@ -243,6 +243,17 @@ set_tests_properties(devhub.planner-ui PROPERTIES TIMEOUT 60
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}")
 
+find_package(Qt6 6.11.0 REQUIRED COMPONENTS QuickTest)
+qt_add_executable(devhub_planner_layout_tests planner_layout_test.cpp)
+target_link_libraries(devhub_planner_layout_tests PRIVATE Qt6::QuickTest project_options project_warnings)
+target_compile_definitions(devhub_planner_layout_tests PRIVATE
+    QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+add_test(NAME devhub.planner-layout COMMAND devhub_planner_layout_tests)
+set_tests_properties(devhub.planner-layout PROPERTIES
+    TIMEOUT 30
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
 qt_add_executable(devhub_somethingqt_import_tests somethingqt_import_test.cpp)
 target_link_libraries(devhub_somethingqt_import_tests PRIVATE
     devhub_planner Qt6::Core Qt6::Sql Qt6::Test project_options project_warnings)
