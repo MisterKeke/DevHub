@@ -10,7 +10,7 @@ ToastManager::ToastManager(QWidget& owner, QObject* parent) : QObject(parent), m
 {
     m_toast = new QLabel(&owner, Qt::ToolTip);
     m_toast->setWordWrap(true); m_toast->setMinimumWidth(280); m_toast->setMaximumWidth(420);
-    m_toast->setStyleSheet(QStringLiteral("QLabel { background:%1; color:%2; border:1px solid %3; border-radius:8px; padding:14px; }")
+    m_toast->setStyleSheet(QStringLiteral("QLabel { background:%1; color:%2; border:1px solid %3; border-radius: 0px; padding:14px; }")
         .arg(devhub::presentation::theme::ThemePalette::color(devhub::presentation::theme::ColorToken::RaisedSurface).name(),
              devhub::presentation::theme::ThemePalette::color(devhub::presentation::theme::ColorToken::TextPrimary).name(),
              devhub::presentation::theme::ThemePalette::color(devhub::presentation::theme::ColorToken::BorderStrong).name()));

@@ -7,6 +7,7 @@ DarkField {
     echoMode: revealed ? TextInput.Normal : TextInput.Password
     rightPadding: 54
     Button {
+        font.family: Theme.fontFamily
         id: revealButton
         anchors.right: parent.right
         anchors.rightMargin: 4
@@ -17,6 +18,7 @@ DarkField {
         text: field.revealed ? "◉" : "◎"
         onClicked: field.revealed = !field.revealed
         contentItem: Label {
+            font.family: Theme.fontFamily
             text: revealButton.text
             color: Theme.textSecondary
             horizontalAlignment: Text.AlignHCenter

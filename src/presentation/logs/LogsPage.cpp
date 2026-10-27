@@ -10,7 +10,6 @@
 #include <QComboBox>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
@@ -72,7 +71,7 @@ LogsPage::LogsPage(ILogSourceRepository& repository, application::services::Serv
     m_proxy = new LogFilterProxyModel(this); m_proxy->setSourceModel(m_model);
     m_linesView = new QListView(this); m_linesView->setAccessibleName(tr("Filtered log entries")); m_linesView->setModel(m_proxy); m_linesView->setUniformItemSizes(true);
     m_linesView->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    m_linesView->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    m_linesView->setFont(font());
     layout->addWidget(m_linesView, 1);
     m_status = new QLabel(this); layout->addWidget(m_status);
 

@@ -43,9 +43,11 @@ AccentButton::AccentButton(const QString& text, QWidget* parent)
 {
     setObjectName(QStringLiteral("accentButton"));
     setMinimumHeight(ThemeTokens::size(devhub::presentation::theme::SizeToken::PrimaryAction));
-    setStyleSheet(QStringLiteral("QPushButton#accentButton { background: %1; border: 1px solid %1; border-radius: 6px; font-weight: 600; padding: 8px 14px; } QPushButton#accentButton:hover { background: %2; } QPushButton#accentButton:pressed { background: %3; }")
+    setStyleSheet(QStringLiteral("QPushButton#accentButton { color: %4; background: %1; border: 1px solid %1; border-radius: 0px; font-weight: 600; padding: 8px 14px; } QPushButton#accentButton:hover { background: %2; } QPushButton#accentButton:pressed { background: %3; } QPushButton#accentButton:focus { border: 2px solid %5; } QPushButton#accentButton:disabled { color: %6; background: %7; border-color: %7; }")
                       .arg(colorName(ColorToken::Accent), colorName(ColorToken::AccentHover),
-                           colorName(ColorToken::AccentPressed)));
+                           colorName(ColorToken::AccentPressed), colorName(ColorToken::WindowBackground),
+                           colorName(ColorToken::FocusRing), colorName(ColorToken::TextMuted),
+                           colorName(ColorToken::RaisedSurface)));
 }
 
 SecondaryButton::SecondaryButton(const QString& text, QWidget* parent)
@@ -167,7 +169,7 @@ CardWidget::CardWidget(QWidget* parent)
     : QFrame(parent)
 {
     setObjectName(QStringLiteral("cardWidget"));
-    setStyleSheet(QStringLiteral("QFrame#cardWidget { background: %1; border: 1px solid %2; border-radius: 8px; }")
+    setStyleSheet(QStringLiteral("QFrame#cardWidget { background: %1; border: 1px solid %2; border-radius: 0px; }")
                       .arg(colorName(ColorToken::PanelSurface), colorName(ColorToken::BorderSubtle)));
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(ThemeTokens::spacing(devhub::presentation::theme::SpaceToken::Four),
@@ -185,7 +187,7 @@ StatusBadge::StatusBadge(QString text, QString status, QWidget* parent)
         : status == QStringLiteral("warning") ? ColorToken::Warning
         : status == QStringLiteral("error") ? ColorToken::Error : ColorToken::Info;
     setObjectName(QStringLiteral("statusBadge"));
-    setStyleSheet(QStringLiteral("QFrame#statusBadge { background: %1; border: 1px solid %2; border-radius: 999px; }")
+    setStyleSheet(QStringLiteral("QFrame#statusBadge { background: %1; border: 1px solid %2; border-radius: 0px; }")
                       .arg(colorName(ColorToken::RaisedSurface), colorName(token)));
     auto* layout = new QHBoxLayout(this);
     layout->setContentsMargins(9, 4, 9, 4);
@@ -216,7 +218,7 @@ InlineErrorWidget::InlineErrorWidget(QString message, QWidget* parent)
     : QFrame(parent)
 {
     setObjectName(QStringLiteral("inlineError"));
-    setStyleSheet(QStringLiteral("QFrame#inlineError { background: %1; border: 1px solid %2; border-radius: 6px; }")
+    setStyleSheet(QStringLiteral("QFrame#inlineError { background: %1; border: 1px solid %2; border-radius: 0px; }")
                       .arg(colorName(ColorToken::PanelSurface), colorName(ColorToken::Error)));
     auto* layout = new QHBoxLayout(this);
     layout->setContentsMargins(12, 8, 12, 8);

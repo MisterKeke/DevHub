@@ -2,7 +2,6 @@
 
 #include <QApplication>
 #include <QFontDatabase>
-#include <QFontInfo>
 
 namespace devhub::presentation::theme {
 
@@ -22,9 +21,9 @@ int ThemeTokens::spacing(SpaceToken token) noexcept
 int ThemeTokens::radius(RadiusToken token) noexcept
 {
     switch (token) {
-    case RadiusToken::Control: return 6;
-    case RadiusToken::Card: return 8;
-    case RadiusToken::Pill: return 999;
+    case RadiusToken::Control:
+    case RadiusToken::Card:
+    case RadiusToken::Pill: return 0;
     }
     return 0;
 }
@@ -42,10 +41,23 @@ int ThemeTokens::size(SizeToken token) noexcept
     return 0;
 }
 
+QString ThemeTokens::fontFamily()
+{
+    // Resolve once for both Widgets and Quick; fonts are supplied by the OS.
+    static const QString family = [] {
+        const auto available = QFontDatabase::families();
+        for (const auto& candidate : {QStringLiteral("Cascadia Code"),
+                                      QStringLiteral("Cascadia Mono"), QStringLiteral("Consolas")}) {
+            if (available.contains(candidate, Qt::CaseInsensitive)) return candidate;
+        }
+        return QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
+    }();
+    return family;
+}
+
 QFont ThemeTokens::font(TypographyToken token)
 {
     QFont result = QApplication::font();
-    QString family = QStringLiteral("Segoe UI");
     int pointSize = 10;
     switch (token) {
     case TypographyToken::WindowTitle: pointSize = 16; break;
@@ -54,13 +66,13 @@ QFont ThemeTokens::font(TypographyToken token)
     case TypographyToken::Body: pointSize = 10; break;
     case TypographyToken::Metadata: pointSize = 9; break;
     case TypographyToken::Monospace:
-        family = QFontDatabase::families().contains(QStringLiteral("Cascadia Mono"))
-            ? QStringLiteral("Cascadia Mono") : QStringLiteral("Consolas");
         pointSize = 9;
         result.setStyleHint(QFont::Monospace);
         break;
     }
-    result.setFamily(family);
+    result.setFamily(fontFamily());
+    result.setStyleHint(QFont::Monospace);
+    result.setWeight(QFont::Normal);
     result.setPointSize(pointSize);
     if (token == TypographyToken::WindowTitle || token == TypographyToken::PageTitle
         || token == TypographyToken::CardTitle) {

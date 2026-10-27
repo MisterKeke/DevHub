@@ -12,6 +12,7 @@ enum class ThemeVariant;
 class ThemeManager final : public QObject
 {
     Q_OBJECT
+    Q_PROPERTY(QString fontFamily READ fontFamily CONSTANT)
     Q_PROPERTY(QColor accent READ accent NOTIFY themeChanged)
     Q_PROPERTY(QColor accentHover READ accentHover NOTIFY themeChanged)
     Q_PROPERTY(QColor background READ background NOTIFY themeChanged)
@@ -31,6 +32,7 @@ class ThemeManager final : public QObject
     Q_PROPERTY(QColor info READ info NOTIFY themeChanged)
 public:
     explicit ThemeManager(QApplication& application);
+    [[nodiscard]] QString fontFamily() const;
     [[nodiscard]] bool reducedMotion() const noexcept;
     void setReducedMotion(bool enabled);
     [[nodiscard]] QColor accent() const;

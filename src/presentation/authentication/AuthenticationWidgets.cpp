@@ -54,7 +54,7 @@ UnlockWidget::UnlockWidget(QString username, QWidget* parent)
     lockTile->setPixmap(devhub::presentation::icons::IconLoader::icon(
         devhub::presentation::icons::IconName::Lock,
         ThemePalette::color(ColorToken::Accent), 36).pixmap(36, 36));
-    lockTile->setStyleSheet(QStringLiteral("background: %1; border: 1px solid %2; border-radius: 16px;")
+    lockTile->setStyleSheet(QStringLiteral("background: %1; border: 1px solid %2; border-radius: 0px;")
         .arg(ThemePalette::color(ColorToken::RaisedSurface).name(),
              ThemePalette::color(ColorToken::BorderStrong).name()));
     auto* title = new QLabel(tr("Unlock Workspace Hub"), this);

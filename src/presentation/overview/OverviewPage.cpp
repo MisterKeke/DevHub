@@ -192,7 +192,7 @@ void OverviewPage::updateCards()
             card.status->setText(it->statusLabel);
             card.status->setStyleSheet(QStringLiteral(
                 "QLabel#overviewStatus { color: %1; background: %2; border: 1px solid %1;"
-                " border-radius: 9px; padding: 2px 8px; font-size: 9pt; }")
+                " border-radius: 0px; padding: 2px 8px; font-size: 9pt; }")
                 .arg(devhub::presentation::theme::ThemePalette::color(tone).name(),
                      devhub::presentation::theme::ThemePalette::color(
                          devhub::presentation::theme::ColorToken::RaisedSurface).name()));
@@ -240,7 +240,8 @@ void OverviewPage::updateFreshness()
         const bool stale = it->updatedAt.secsTo(QDateTime::currentDateTimeUtc()) > 300;
         card.freshness->setText(tr("%1 · updated %2").arg(stale ? tr("Stale") : tr("Current"),
             it->updatedAt.toLocalTime().toString(QStringLiteral("HH:mm:ss"))));
-        card.freshness->setStyleSheet(stale ? QStringLiteral("color: #e0a94f;") : QString{});
+        card.freshness->setStyleSheet(stale ? QStringLiteral("color: %1;").arg(
+            devhub::presentation::theme::ThemePalette::color(devhub::presentation::theme::ColorToken::Warning).name()) : QString{});
     }
 }
 

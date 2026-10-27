@@ -41,6 +41,7 @@ public:
     [[nodiscard]] static int spacing(SpaceToken token) noexcept;
     [[nodiscard]] static int radius(RadiusToken token) noexcept;
     [[nodiscard]] static int size(SizeToken token) noexcept;
+    [[nodiscard]] static QString fontFamily();
     [[nodiscard]] static QFont font(TypographyToken token);
 };
 

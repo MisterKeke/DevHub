@@ -26,7 +26,7 @@ void ThemeProxyStyle::drawPrimitive(PrimitiveElement element,
         pen.setWidth(2);
         painter->setPen(pen);
         painter->setBrush(Qt::NoBrush);
-        painter->drawRoundedRect(option->rect.adjusted(1, 1, -2, -2), 4, 4);
+        painter->drawRect(option->rect.adjusted(1, 1, -2, -2));
         painter->restore();
         return;
     }

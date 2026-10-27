@@ -2,17 +2,19 @@ import QtQuick
 import QtQuick.Controls
 
 TextField {
+    font.family: Theme.fontFamily
     id: field
     implicitHeight: Theme.controlHeight
     leftPadding: 14
     rightPadding: 14
     color: Theme.text
     selectionColor: Theme.accent
-    placeholderTextColor: "#82717d"
+    selectedTextColor: Theme.onAccent
+    placeholderTextColor: Theme.textSecondary
     background: Rectangle {
         radius: Theme.radiusSmall
-        color: "#1a1118"
+        color: Theme.background
         border.width: field.activeFocus ? 2 : 1
-        border.color: field.activeFocus ? Theme.accent : Theme.borderSoft
+        border.color: field.activeFocus ? Theme.focus : Theme.border
     }
 }

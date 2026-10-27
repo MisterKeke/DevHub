@@ -716,7 +716,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     card->setMaximumWidth(620);
     card->setStyleSheet(QStringLiteral(
         "QFrame#cardWidget { background: %1;"
-        " border: 1px solid %2; border-radius: 18px; }")
+        " border: 1px solid %2; border-radius: 0px; }")
         .arg(ThemePalette::color(ColorToken::PanelSurface).name(),
              ThemePalette::color(ColorToken::BorderStrong).name()));
     m_unlockWidget = new devhub::presentation::authentication::UnlockWidget(

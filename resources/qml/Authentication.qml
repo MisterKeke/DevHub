@@ -30,7 +30,7 @@ Window {
     Rectangle { width: parent.width * 1.25; height: 90; x: -width * 0.16; y: -height * 0.60; color: Theme.activeSurface; opacity: 0.58 }
     Rectangle { width: parent.width * 1.1; height: 120; x: parent.width * 0.50; y: parent.height * 0.20; rotation: -41; color: Theme.background; border.color: Theme.border; border.width: 1; opacity: 0.74 }
     Rectangle { width: parent.width * 0.82; height: 90; x: -parent.width * 0.28; y: parent.height * 0.79; rotation: -41; color: Theme.background; border.color: Theme.border; border.width: 1; opacity: 0.75 }
-    Rectangle { anchors.fill: parent; anchors.margins: 1; color: "transparent"; border.color: Theme.borderSoft; radius: 13 }
+    Rectangle { anchors.fill: parent; anchors.margins: 1; color: "transparent"; border.color: Theme.borderSoft; radius: 0 }
 
     RowLayout {
         anchors.left: parent.left
@@ -45,10 +45,11 @@ Window {
         RowLayout {
             spacing: 10
             BrandMark { Layout.preferredWidth: 40; Layout.preferredHeight: 40 }
-            Label { text: "DevHub"; color: root.foreground; font.pixelSize: 23; font.weight: Font.DemiBold }
+            Label { font.family: Theme.fontFamily; text: "DevHub"; color: root.foreground; font.pixelSize: 23; font.weight: Font.DemiBold }
         }
         Item { Layout.fillWidth: true }
         Label {
+            font.family: Theme.fontFamily
             text: qsTr("A better developer workflow, locally.")
             color: root.secondary
             font.pixelSize: 15
@@ -61,11 +62,11 @@ Window {
         width: Math.min(650, root.width - 48)
         height: Math.min(root.height - 116, authFlow.accountExists ? 690 : 760)
         anchors.centerIn: parent
-        radius: 18
+        radius: 0
         color: Theme.surface
         border.color: root.border
         border.width: 1
-        Rectangle { anchors.fill: parent; anchors.margins: 1; radius: 17; color: "transparent"; border.color: Theme.borderSoft }
+        Rectangle { anchors.fill: parent; anchors.margins: 1; radius: 0; color: "transparent"; border.color: Theme.borderSoft }
 
         ColumnLayout {
             anchors.fill: parent
@@ -74,6 +75,7 @@ Window {
             Item { Layout.fillHeight: true; Layout.maximumHeight: 12 }
             BrandMark { Layout.alignment: Qt.AlignHCenter; Layout.preferredWidth: 54; Layout.preferredHeight: 54 }
             Label {
+                font.family: Theme.fontFamily
                 Layout.fillWidth: true
                 text: "DevHub"
                 color: root.foreground
@@ -85,12 +87,13 @@ Window {
                 Layout.alignment: Qt.AlignHCenter
                 Layout.preferredWidth: 72
                 Layout.preferredHeight: 72
-                radius: 16
+                radius: 0
                 color: root.surfaceRaised
                 border.color: root.border
                 LockMark { anchors.centerIn: parent; width: 38; height: 38 }
             }
             Label {
+                font.family: Theme.fontFamily
                 Layout.fillWidth: true
                 text: authFlow.accountExists ? qsTr("Unlock Workspace Hub") : qsTr("Create your local account")
                 color: root.foreground
@@ -99,6 +102,7 @@ Window {
                 font.weight: Font.DemiBold
             }
             Label {
+                font.family: Theme.fontFamily
                 Layout.fillWidth: true
                 Layout.maximumWidth: 500
                 Layout.alignment: Qt.AlignHCenter
@@ -115,7 +119,7 @@ Window {
                 Layout.fillWidth: true
                 spacing: 14
                 visible: authFlow.accountExists
-                Label { text: qsTr("Master Password"); color: root.foreground; font.pixelSize: 14 }
+                Label { font.family: Theme.fontFamily; text: qsTr("Master Password"); color: root.foreground; font.pixelSize: 14 }
                 PasswordField {
                     id: signInPassword
                     Layout.fillWidth: true
@@ -126,14 +130,15 @@ Window {
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    CheckBox { id: remember; checked: root.keepSession; onToggled: root.keepSession = checked; text: qsTr("Remember for this session"); palette.text: root.foreground }
+                    CheckBox { font.family: Theme.fontFamily; id: remember; checked: root.keepSession; onToggled: root.keepSession = checked; text: qsTr("Remember for this session"); palette.text: root.foreground }
                     Item { Layout.fillWidth: true }
                     Button {
+                        font.family: Theme.fontFamily
                         id: forgotPasswordButton
                         flat: true
                         text: qsTr("Forgot password?")
                         onClicked: { authFlow.clearMessage(); resetDialog.open() }
-                        contentItem: Label { text: forgotPasswordButton.text; color: root.accent; horizontalAlignment: Text.AlignRight }
+                        contentItem: Label { font.family: Theme.fontFamily; text: forgotPasswordButton.text; color: root.accent; horizontalAlignment: Text.AlignRight }
                     }
                 }
             }
@@ -141,25 +146,26 @@ Window {
                 Layout.fillWidth: true
                 spacing: 11
                 visible: !authFlow.accountExists
-                Label { text: qsTr("Username"); color: root.foreground; font.pixelSize: 14 }
-                TextField { id: createUsername; Layout.fillWidth: true; implicitHeight: 46; maximumLength: 128; placeholderText: qsTr("Username"); color: root.foreground; background: Rectangle { radius: 8; color: Theme.background; border.color: createUsername.activeFocus ? root.accent : root.borderSoft } }
-                Label { text: qsTr("Password"); color: root.foreground; font.pixelSize: 14 }
+                Label { font.family: Theme.fontFamily; text: qsTr("Username"); color: root.foreground; font.pixelSize: 14 }
+                TextField { font.family: Theme.fontFamily; id: createUsername; Layout.fillWidth: true; implicitHeight: 46; maximumLength: 128; placeholderText: qsTr("Username"); color: root.foreground; background: Rectangle { radius: 0; color: Theme.background; border.color: createUsername.activeFocus ? Theme.focus : root.border } }
+                Label { font.family: Theme.fontFamily; text: qsTr("Password"); color: root.foreground; font.pixelSize: 14 }
                 PasswordField { id: createPassword; Layout.fillWidth: true; placeholderText: qsTr("Password") }
-                Label { text: qsTr("Confirm password"); color: root.foreground; font.pixelSize: 14 }
+                Label { font.family: Theme.fontFamily; text: qsTr("Confirm password"); color: root.foreground; font.pixelSize: 14 }
                 PasswordField {
                     id: confirmPassword
                     Layout.fillWidth: true
                     placeholderText: qsTr("Confirm password")
                     Keys.onReturnPressed: createButton.clicked()
                 }
-                Label { Layout.fillWidth: true; text: qsTr("Your account is stored locally. DevHub controls access to this app; it does not encrypt your workspace files, source code, databases, logs, or notes."); wrapMode: Text.WordWrap; color: root.secondary; font.pixelSize: 12 }
+                Label { font.family: Theme.fontFamily; Layout.fillWidth: true; text: qsTr("Your account is stored locally. DevHub controls access to this app; it does not encrypt your workspace files, source code, databases, logs, or notes."); wrapMode: Text.WordWrap; color: root.secondary; font.pixelSize: 12 }
             }
-            Label { Layout.fillWidth: true; visible: authFlow.message.length > 0; text: authFlow.message; wrapMode: Text.WordWrap; color: Theme.error; font.pixelSize: 13 }
+            Label { font.family: Theme.fontFamily; Layout.fillWidth: true; visible: authFlow.message.length > 0; text: authFlow.message; wrapMode: Text.WordWrap; color: Theme.error; font.pixelSize: 13 }
             Item { Layout.fillHeight: true; Layout.minimumHeight: 2 }
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 12
                 Button {
+                    font.family: Theme.fontFamily
                     id: unlockButton
                     visible: authFlow.accountExists
                     Layout.fillWidth: true; Layout.preferredWidth: 7; implicitHeight: 50
@@ -169,78 +175,84 @@ Window {
                     contentItem: RowLayout {
                         spacing: 8
                         Item { Layout.fillWidth: true }
-                        LockMark { Layout.preferredWidth: 20; Layout.preferredHeight: 20; color: root.foreground }
-                        Label { text: unlockButton.text; color: root.foreground; font.pixelSize: 16; font.weight: Font.DemiBold }
+                        LockMark { Layout.preferredWidth: 20; Layout.preferredHeight: 20; color: Theme.onAccent }
+                        Label { font.family: Theme.fontFamily; text: unlockButton.text; color: Theme.onAccent; font.pixelSize: 16; font.weight: Font.DemiBold }
                         Item { Layout.fillWidth: true }
                     }
-                    background: Rectangle { radius: 9; gradient: Gradient { GradientStop { position: 0; color: root.accent } GradientStop { position: 1; color: Theme.accentSecondary } } }
+                    background: Rectangle { radius: 0; color: unlockButton.down ? Qt.darker(root.accent, 1.2) : unlockButton.hovered ? Theme.accentSecondary : root.accent; border.width: unlockButton.visualFocus ? 2 : 1; border.color: unlockButton.visualFocus ? Theme.focus : root.accent; opacity: unlockButton.enabled ? 1 : 0.48 }
                 }
                 Button {
+                    font.family: Theme.fontFamily
                     id: createButton
                     visible: !authFlow.accountExists
                     Layout.fillWidth: true; Layout.preferredWidth: authFlow.accountExists ? 7 : 400; implicitHeight: 50
                     enabled: !authFlow.busy
                     text: authFlow.busy ? qsTr("Creating account…") : qsTr("Create Account")
                     onClicked: { const p = createPassword.text; const c = confirmPassword.text; createPassword.clear(); confirmPassword.clear(); authFlow.createAccount(createUsername.text, p, c) }
-                    contentItem: Label { text: createButton.text; color: root.foreground; font.pixelSize: 16; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { radius: 9; color: root.accent }
+                    contentItem: Label { font.family: Theme.fontFamily; text: createButton.text; color: Theme.onAccent; font.pixelSize: 16; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { radius: 0; color: createButton.down ? Qt.darker(root.accent, 1.2) : createButton.hovered ? Theme.accentSecondary : root.accent; border.width: createButton.visualFocus ? 2 : 1; border.color: createButton.visualFocus ? Theme.focus : root.accent; opacity: createButton.enabled ? 1 : 0.48 }
                 }
                 Button {
+                    font.family: Theme.fontFamily
                     id: quitButton
                     Layout.preferredWidth: authFlow.accountExists ? 3 : 140
                     Layout.fillWidth: true
                     implicitHeight: 50
                     text: qsTr("Quit")
                     onClicked: authFlow.quit()
-                    contentItem: Label { text: quitButton.text; color: root.foreground; font.pixelSize: 15; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { radius: 9; color: Theme.surfaceRaised; border.color: Theme.border }
+                    contentItem: Label { font.family: Theme.fontFamily; text: quitButton.text; color: root.foreground; font.pixelSize: 15; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { radius: 0; color: quitButton.down ? Theme.activeSurface : quitButton.hovered ? Theme.hoverSurface : Theme.surfaceRaised; border.width: quitButton.visualFocus ? 2 : 1; border.color: quitButton.visualFocus ? Theme.focus : Theme.border }
                 }
             }
             Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.borderSoft; Layout.topMargin: 8; Layout.bottomMargin: 4 }
             RowLayout {
                 Layout.alignment: Qt.AlignHCenter
-                Label { text: "♢"; color: root.accent; font.pixelSize: 20 }
-                Label { text: qsTr("Local-only protection for your developer workspace."); color: root.secondary; font.pixelSize: 13 }
+                Label { font.family: Theme.fontFamily; text: "♢"; color: root.accent; font.pixelSize: 20 }
+                Label { font.family: Theme.fontFamily; text: qsTr("Local-only protection for your developer workspace."); color: root.secondary; font.pixelSize: 13 }
             }
             Item { Layout.fillHeight: true; Layout.maximumHeight: 4 }
         }
     }
 
     Dialog {
+        font.family: Theme.fontFamily
         id: resetDialog
         modal: true
         title: qsTr("Reset local DevHub profile")
         width: Math.min(480, root.width - 40)
         anchors.centerIn: parent
         standardButtons: Dialog.NoButton
-        background: Rectangle { color: root.surface; border.color: root.border; radius: 12 }
+        background: Rectangle { color: root.surface; border.color: root.border; radius: 0 }
         contentItem: ColumnLayout {
             spacing: 12
             Label {
+                font.family: Theme.fontFamily
                 Layout.fillWidth: true
                 text: qsTr("DevHub has no email recovery. Resetting creates a new local profile and moves the old DevHub database and account folders into a timestamped recovery folder. Workspace folders, source files, and other external data stay where they are. The old profile is not imported automatically.")
                 wrapMode: Text.WordWrap
                 color: root.foreground
             }
-            Label { text: qsTr("Type RESET to confirm this profile reset."); color: root.foreground }
-            TextField { id: resetConfirmation; Layout.fillWidth: true; placeholderText: "RESET"; color: root.foreground; background: Rectangle { color: Theme.background; border.color: resetConfirmation.activeFocus ? root.accent : root.borderSoft; radius: 7 } }
-            Label { Layout.fillWidth: true; visible: authFlow.message.length > 0; text: authFlow.message; wrapMode: Text.WordWrap; color: Theme.error }
+            Label { font.family: Theme.fontFamily; text: qsTr("Type RESET to confirm this profile reset."); color: root.foreground }
+            TextField { font.family: Theme.fontFamily; id: resetConfirmation; Layout.fillWidth: true; placeholderText: "RESET"; color: root.foreground; background: Rectangle { color: Theme.background; border.color: resetConfirmation.activeFocus ? Theme.focus : root.border; radius: 0 } }
+            Label { font.family: Theme.fontFamily; Layout.fillWidth: true; visible: authFlow.message.length > 0; text: authFlow.message; wrapMode: Text.WordWrap; color: Theme.error }
             RowLayout {
                 Item { Layout.fillWidth: true }
                 Button {
+                    font.family: Theme.fontFamily
                     id: cancelResetButton
                     text: qsTr("Cancel")
                     onClicked: resetDialog.close()
-                    contentItem: Label { text: cancelResetButton.text; color: root.foreground; horizontalAlignment: Text.AlignHCenter }
-                    background: Rectangle { radius: 7; color: Theme.surfaceRaised; border.color: Theme.border }
+                    contentItem: Label { font.family: Theme.fontFamily; text: cancelResetButton.text; color: root.foreground; horizontalAlignment: Text.AlignHCenter }
+                    background: Rectangle { radius: 0; color: Theme.surfaceRaised; border.color: Theme.border }
                 }
                 Button {
+                    font.family: Theme.fontFamily
                     id: resetButton
                     text: qsTr("Reset Profile")
                     enabled: !authFlow.busy && resetConfirmation.text === "RESET"
                     onClicked: authFlow.resetProfile(resetConfirmation.text)
-                    contentItem: Label { text: resetButton.text; color: root.foreground; horizontalAlignment: Text.AlignHCenter }
-                    background: Rectangle { radius: 7; color: root.accent }
+                    contentItem: Label { font.family: Theme.fontFamily; text: resetButton.text; color: root.foreground; horizontalAlignment: Text.AlignHCenter }
+                    background: Rectangle { radius: 0; color: root.accent }
                 }
             }
         }

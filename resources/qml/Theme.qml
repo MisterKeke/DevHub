@@ -2,6 +2,12 @@ pragma Singleton
 import QtQuick
 
 QtObject {
+    // The fallback also supports standalone QML layout fixtures.
+    readonly property string fontFamily: typeof themeController.fontFamily === "string"
+                                         ? themeController.fontFamily : "Cascadia Code"
+    readonly property color onAccent: typeof themeController.background !== "undefined"
+                                      ? themeController.background : "#080F24"
+    readonly property color focus: themeController.info
     readonly property color background: themeController.background
     readonly property color backgroundRaised: themeController.raisedSurface
     readonly property color surface: themeController.panelSurface
@@ -19,8 +25,8 @@ QtObject {
     readonly property color warning: themeController.warning
     readonly property color error: themeController.error
     readonly property color info: themeController.info
-    readonly property int radiusSmall: 8
-    readonly property int radiusMedium: 12
-    readonly property int radiusLarge: 18
+    readonly property int radiusSmall: 0
+    readonly property int radiusMedium: 0
+    readonly property int radiusLarge: 0
     readonly property int controlHeight: 46
 }

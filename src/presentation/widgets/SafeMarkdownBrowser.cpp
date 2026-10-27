@@ -27,7 +27,7 @@ SafeMarkdownBrowser::SafeMarkdownBrowser(QWidget* parent, ResourcePolicy policy)
     setOpenLinks(false); setOpenExternalLinks(false); setReadOnly(true);
     setTextInteractionFlags(Qt::TextBrowserInteraction);
     setLineWrapMode(QTextEdit::WidgetWidth);
-    document()->setDefaultStyleSheet(QStringLiteral("pre, code { font-family: monospace; }"));
+    document()->setDefaultStyleSheet(QStringLiteral("pre, code { font-family: '%1'; }").arg(font().family()));
 }
 QVariant SafeMarkdownBrowser::loadResource(int type, const QUrl& name)
 {
