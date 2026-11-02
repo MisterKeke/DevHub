@@ -347,10 +347,9 @@ set_tests_properties(devhub.feature-regressions PROPERTIES
 
 qt_add_executable(devhub_reliability_tests
     reliability_test.cpp
-    $<TARGET_OBJECTS:devhub_notes_ui_test_support>
     ../resources/database_migrations.qrc
 )
-target_link_libraries(devhub_reliability_tests PRIVATE devhub_accounts devhub_ports devhub_file_services
+target_link_libraries(devhub_reliability_tests PRIVATE devhub_notes_ui_test_support devhub_accounts devhub_ports
     Qt6::Widgets Qt6::Test project_options project_warnings)
 add_test(NAME devhub.reliability COMMAND devhub_reliability_tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/reliability-tests.txt,txt")
