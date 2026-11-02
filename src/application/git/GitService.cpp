@@ -185,7 +185,7 @@ shared::common::Result<QVector<GitRemote>> GitService::remotes(const QString& di
 }
 shared::common::Result<QVector<GitCommit>> GitService::history(const QString& directory, int offset, int limit,
     const tasks::CancellationToken& cancellation) const {
-    const QString format = QStringLiteral("%H%x00%h%x00%s%x00%an%x00%ae%x00%aI%x1e");
+    const QString format = QStringLiteral("%H%x00%h%x00%an%x00%ae%x00%aI%x00%cI%x00%B%x1e");
     GitCommand command{QStringLiteral("history"), {QStringLiteral("log"), QStringLiteral("--all"), QStringLiteral("--date=iso-strict"),
         QStringLiteral("--format=") + format, QStringLiteral("--skip=%1").arg(qMax(0, offset)),
         QStringLiteral("-n%1").arg(qBound(1, limit, 200))}, directory};
@@ -198,14 +198,75 @@ shared::common::Result<QVector<GitCommit>> GitService::history(const QString& di
         if (record.startsWith("\r\n")) record.remove(0, 2);
         else if (record.startsWith('\n')) record.remove(0, 1);
         if (record.trimmed().isEmpty()) continue;
-        const auto fields = record.split('\0'); if (fields.size() < 6) continue;
+        const auto fields = record.split('\0'); if (fields.size() < 7) continue;
         GitCommit commit; commit.objectId = QString::fromLatin1(fields[0]); commit.abbreviatedObjectId = QString::fromLatin1(fields[1]);
-        commit.subject = QString::fromUtf8(fields[2]); commit.author = QString::fromUtf8(fields[3]); commit.email = QString::fromUtf8(fields[4]);
-        commit.authoredAt = QDateTime::fromString(QString::fromUtf8(fields[5]), Qt::ISODateWithMs);
-        if (!commit.authoredAt.isValid()) commit.authoredAt = QDateTime::fromString(QString::fromUtf8(fields[5]), Qt::ISODate);
+        commit.author = QString::fromUtf8(fields[2]); commit.email = QString::fromUtf8(fields[3]);
+        commit.authoredAt = QDateTime::fromString(QString::fromUtf8(fields[4]), Qt::ISODateWithMs);
+        if (!commit.authoredAt.isValid()) commit.authoredAt = QDateTime::fromString(QString::fromUtf8(fields[4]), Qt::ISODate);
+        commit.committedAt = QDateTime::fromString(QString::fromUtf8(fields[5]), Qt::ISODateWithMs);
+        if (!commit.committedAt.isValid()) commit.committedAt = QDateTime::fromString(QString::fromUtf8(fields[5]), Qt::ISODate);
+        commit.message = QString::fromUtf8(fields[6]).trimmed();
+        commit.subject = commit.message.section(QLatin1Char('\n'), 0, 0).trimmed();
         commits.append(std::move(commit));
     }
     return shared::common::Result<QVector<GitCommit>>::success(std::move(commits));
+}
+shared::common::Result<QVector<GitCommit>> GitService::branchHistory(const QString& directory,
+    const QString& branch, const QString& baseRef, int limit, const tasks::CancellationToken& cancellation) const {
+    if (!validBranchName(m_runner, directory, branch, cancellation))
+        return shared::common::Result<QVector<GitCommit>>::failure(
+            invalidGitInput(QStringLiteral("The task's linked branch is not available in this repository."),
+                            QStringLiteral("read Planner branch activity")));
+    if (!baseRef.isEmpty() && !validRevision(m_runner, directory, baseRef, cancellation))
+        return shared::common::Result<QVector<GitCommit>>::failure(
+            invalidGitInput(QStringLiteral("The linked branch comparison base is unavailable."),
+                            QStringLiteral("read Planner branch activity")));
+    const QString format = QStringLiteral("%H%x00%h%x00%an%x00%ae%x00%aI%x00%cI%x00%B%x1e");
+    QStringList arguments{QStringLiteral("log"), QStringLiteral("--date=iso-strict"),
+        QStringLiteral("--format=") + format, QStringLiteral("--max-count=%1").arg(qBound(1, limit, 200)), branch};
+    if (!baseRef.isEmpty()) arguments.append(QStringLiteral("^%1").arg(baseRef));
+    GitCommand command{QStringLiteral("planner-branch-history"), arguments, directory,
+                       std::chrono::milliseconds(15000)};
+    const auto result = m_runner.run(command, cancellation);
+    if (result.exitCode != 0 || result.cancelled || result.timedOut)
+        return shared::common::Result<QVector<GitCommit>>::failure(commandError(result, command.operation));
+    QVector<GitCommit> commits;
+    for (QByteArray record : result.standardOutput.split(0x1e)) {
+        if (record.startsWith("\r\n")) record.remove(0, 2);
+        else if (record.startsWith('\n')) record.remove(0, 1);
+        if (record.trimmed().isEmpty()) continue;
+        const auto fields = record.split('\0'); if (fields.size() < 7) continue;
+        GitCommit commit; commit.objectId=QString::fromLatin1(fields[0]);
+        commit.abbreviatedObjectId=QString::fromLatin1(fields[1]); commit.author=QString::fromUtf8(fields[2]);
+        commit.email=QString::fromUtf8(fields[3]);
+        commit.authoredAt=QDateTime::fromString(QString::fromUtf8(fields[4]), Qt::ISODateWithMs);
+        if (!commit.authoredAt.isValid()) commit.authoredAt=QDateTime::fromString(QString::fromUtf8(fields[4]), Qt::ISODate);
+        commit.committedAt=QDateTime::fromString(QString::fromUtf8(fields[5]), Qt::ISODateWithMs);
+        if (!commit.committedAt.isValid()) commit.committedAt=QDateTime::fromString(QString::fromUtf8(fields[5]), Qt::ISODate);
+        commit.message=QString::fromUtf8(fields[6]).trimmed();
+        commit.subject=commit.message.section(QLatin1Char('\n'),0,0).trimmed();
+        commits.append(std::move(commit));
+    }
+    return shared::common::Result<QVector<GitCommit>>::success(std::move(commits));
+}
+shared::common::Result<bool> GitService::commitReachableFromAnyRef(const QString& directory,
+    const QString& commitSha, const tasks::CancellationToken& cancellation) const {
+    static const QRegularExpression fullSha(QStringLiteral("^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$"));
+    if (!fullSha.match(commitSha).hasMatch())
+        return shared::common::Result<bool>::failure(invalidGitInput(
+            QStringLiteral("Choose a full Git commit ID."), QStringLiteral("check commit availability")));
+    const auto object = m_runner.run({QStringLiteral("commit-availability-object"),
+        {QStringLiteral("cat-file"), QStringLiteral("-e"), commitSha + QStringLiteral("^{commit}")},
+        directory, std::chrono::milliseconds(5000), false, true}, cancellation);
+    if (object.cancelled || object.timedOut)
+        return shared::common::Result<bool>::failure(commandError(object, QStringLiteral("check commit availability")));
+    if (object.exitCode != 0) return shared::common::Result<bool>::success(false);
+    const auto refs = m_runner.run({QStringLiteral("commit-availability-refs"),
+        {QStringLiteral("for-each-ref"), QStringLiteral("--contains=") + commitSha,
+         QStringLiteral("--format=%(refname)")}, directory, std::chrono::milliseconds(5000), false, true}, cancellation);
+    if (refs.cancelled || refs.timedOut || refs.exitCode != 0)
+        return shared::common::Result<bool>::failure(commandError(refs, QStringLiteral("check commit availability")));
+    return shared::common::Result<bool>::success(!refs.standardOutput.trimmed().isEmpty());
 }
 shared::common::Result<GitDiff> GitService::diff(const QString& directory, bool staged, const QString& commit,
     const tasks::CancellationToken& cancellation) const {

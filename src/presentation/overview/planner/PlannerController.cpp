@@ -13,6 +13,8 @@
 #include <QSet>
 #include <QRegularExpression>
 #include <QUuid>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <algorithm>
 
 namespace devhub::presentation::overview::planner {
@@ -51,15 +53,27 @@ QStringList stringsFrom(const QVariant& value)
 }
 QString errorText(const auto& result)
 { return result.error().userMessage.isEmpty() ? QObject::tr("The Planner change could not be saved.") : result.error().userMessage; }
+
+struct BranchActivityScan final
+{
+    QVector<application::git::GitCommit> commits;
+    QString comparisonBase;
+    QString branch;
+    QHash<QString, bool> reachability;
+    bool branchMissing = false;
+    bool browsingLocalHistory = false;
+};
 }
 
 PlannerController::PlannerController(application::planner::PlannerService& service,
     application::settings::SettingsService& settings,
     application::workspaces::WorkspaceContext& workspaceContext, QObject* parent,
     application::tasks::TaskScheduler* scheduler,
-    application::planner::TaskNoteLinkService* taskNoteLinks)
+    application::planner::TaskNoteLinkService* taskNoteLinks,
+    application::planner::PlannerActivityService* activityService)
     : QObject(parent), m_service(service), m_settings(settings), m_workspaceContext(workspaceContext),
-      m_scheduler(scheduler), m_taskNoteLinks(taskNoteLinks), m_tasks(), m_list(), m_calendar(), m_undated()
+      m_scheduler(scheduler), m_taskNoteLinks(taskNoteLinks), m_activityService(activityService),
+      m_tasks(), m_list(), m_calendar(), m_undated()
 {
     // These models are value members (or QObject children) owned by this controller.
     // In particular, boardModel() returns a model through an invokable; Qt otherwise
@@ -98,6 +112,9 @@ std::optional<PlannerStatus> PlannerController::parseStatus(const QString& value
 void PlannerController::workspaceChanged(const QString& id, const QString& absolutePath)
 {
     m_branchTask.cancel();
+    m_gitActivityTask.cancel();
+    ++m_gitActivityGeneration;
+    m_gitCommitSuggestions.clear(); m_gitActivityStatus.clear(); m_gitActivityTaskId.clear();
     m_localBranches.clear();
     m_branchOptions.clear();
     m_branchStatus.clear();
@@ -256,6 +273,8 @@ void PlannerController::setSessionAllowed(bool allowed)
     ++m_loadGeneration;
     if (!allowed) {
         m_branchTask.cancel();
+        m_gitActivityTask.cancel(); ++m_gitActivityGeneration;
+        m_gitCommitSuggestions.clear(); m_gitActivityStatus.clear(); m_gitActivityTaskId.clear();
         ++m_branchGeneration;
         m_localBranches.clear(); m_branchOptions.clear(); m_branchStatus.clear(); m_branchLoading = false;
         m_tasks.clear(); m_workspaceId.clear(); m_workspaceName.clear(); m_milestones.clear();
@@ -394,6 +413,247 @@ QVariantMap PlannerController::taskDetails(const QString& id) const
     }
     values.insert(QStringLiteral("actionRuns"), actionRuns(id));
     return values;
+}
+
+QString PlannerController::taskReferenceForTask(const QString& taskId) const
+{
+    if (!hasWorkspace()) return {};
+    const auto* task = taskById(taskId);
+    return task && task->workspaceId == m_workspaceId
+        ? application::planner::PlannerActivityService::taskReference(taskId) : QString{};
+}
+
+QVariantList PlannerController::activityEvents(const QString& taskId, const QString& filter) const
+{
+    if (!hasWorkspace() || !m_activityService || !taskById(taskId) || taskById(taskId)->workspaceId != m_workspaceId)
+        return {};
+    auto events = m_activityService->listEvents(m_workspaceId, taskId, 100, 0);
+    if (!events) return {};
+    QVariantList rows;
+    auto matches = [&filter](const QString& type, const QString& origin) {
+        if (filter == QStringLiteral("git")) return type.startsWith(QStringLiteral("git.")) || type.startsWith(QStringLiteral("pr."));
+        if (filter == QStringLiteral("task")) return type.startsWith(QStringLiteral("task.")) || type.startsWith(QStringLiteral("note."));
+        if (filter == QStringLiteral("services")) return origin == QStringLiteral("service");
+        if (filter == QStringLiteral("builds")) return type.startsWith(QStringLiteral("build.")) || type.startsWith(QStringLiteral("test."));
+        return true;
+    };
+    for (const auto& event : events.value()) {
+        if (!matches(event.eventType, event.origin)) continue;
+        rows.append(QVariantMap{{QStringLiteral("id"), event.id}, {QStringLiteral("eventType"), event.eventType},
+            {QStringLiteral("occurredAt"), event.occurredAtUtc.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))},
+            {QStringLiteral("observedAt"), event.observedAtUtc.isValid() ? event.observedAtUtc.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) : QString{}},
+            {QStringLiteral("origin"), event.origin}, {QStringLiteral("description"), event.description},
+            {QStringLiteral("metadata"), event.metadataJson}, {QStringLiteral("externalRefType"), event.externalRefType},
+            {QStringLiteral("externalRefId"), event.externalRefId}});
+    }
+    if (filter == QStringLiteral("all") || filter == QStringLiteral("services")) {
+        const auto runs = m_service.listActionRuns(m_workspaceId, taskId, 20);
+        if (runs) for (const auto& run : runs.value()) {
+            const QString status = !run.finishedAtUtc.isValid() ? tr("Starting")
+                : run.succeeded.value_or(false) ? tr("Succeeded") : tr("Failed");
+            const QString when = (run.finishedAtUtc.isValid() ? run.finishedAtUtc : run.startedAtUtc)
+                .toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+            rows.append(QVariantMap{{QStringLiteral("id"), QStringLiteral("service:%1").arg(run.id)},
+                {QStringLiteral("eventType"), QStringLiteral("service.action")},
+                {QStringLiteral("occurredAt"), when}, {QStringLiteral("origin"), QStringLiteral("service")},
+                {QStringLiteral("description"), tr("Saved service action · %1 · %2").arg(run.actionId, status)},
+                {QStringLiteral("metadata"), run.errorSummary}, {QStringLiteral("externalRefType"), QStringLiteral("service")},
+                {QStringLiteral("externalRefId"), run.actionId}, {QStringLiteral("logReference"), run.logReference}});
+        }
+    }
+    std::sort(rows.begin(), rows.end(), [](const QVariant& left, const QVariant& right) {
+        return left.toMap().value(QStringLiteral("occurredAt")).toString()
+            > right.toMap().value(QStringLiteral("occurredAt")).toString();
+    });
+    if (rows.size() > 50) rows = rows.mid(0, 50);
+    return rows;
+}
+
+QVariantList PlannerController::gitCommitAssociations(const QString& taskId) const
+{
+    if (!hasWorkspace() || !m_activityService || !taskById(taskId) || taskById(taskId)->workspaceId != m_workspaceId)
+        return {};
+    const auto links = m_activityService->listGitCommits(m_workspaceId, taskId);
+    if (!links) return {};
+    QVariantList rows;
+    for (const auto& link : links.value())
+        rows.append(QVariantMap{{QStringLiteral("sha"),link.commitSha},
+            {QStringLiteral("shortSha"),link.commitSha.left(12)}, {QStringLiteral("subject"),link.subject},
+            {QStringLiteral("source"),link.associationSource}, {QStringLiteral("branch"),link.branchName},
+            {QStringLiteral("authoredAt"),link.authoredAtUtc.isValid() ? link.authoredAtUtc.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) : QString{}},
+            {QStringLiteral("committedAt"),link.committedAtUtc.isValid() ? link.committedAtUtc.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) : QString{}},
+            {QStringLiteral("observedAt"),link.observedAtUtc.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))},
+            {QStringLiteral("availability"),link.availability}});
+    return rows;
+}
+
+void PlannerController::refreshGitActivity(const QString& taskId, bool browseLocalCommits)
+{
+    if (!hasWorkspace() || !m_scheduler || !m_activityService) {
+        setFailure(tr("Git activity refresh is unavailable. Select a workspace and sign in first.")); return;
+    }
+    const auto taskResult = m_service.getTask(m_workspaceId, taskId);
+    if (!taskResult || taskResult.value().workspaceId != m_workspaceId) {
+        setFailure(taskResult ? tr("This task is no longer available in the active workspace.") : errorText(taskResult)); return;
+    }
+    const auto knownLinks = m_activityService->listGitCommits(m_workspaceId, taskId);
+    if (!knownLinks) { setFailure(errorText(knownLinks)); return; }
+    m_gitActivityTask.cancel();
+    const quint64 generation = ++m_gitActivityGeneration;
+    const QString workspace = m_workspaceId, path = m_workspacePath, branch = taskResult.value().gitBranch;
+    m_gitActivityTaskId = taskId; m_gitCommitSuggestions.clear();
+    m_gitActivityStatus = tr("Scanning up to 100 commits and checking saved links…"); emit changed();
+    application::tasks::TaskRequest request;
+    request.moduleKey = QStringLiteral("planner-git-activity");
+    const QUuid workspaceUuid(workspace); if (!workspaceUuid.isNull()) request.workspaceId = workspaceUuid;
+    request.generation = generation;
+    const auto known = knownLinks.value();
+    m_gitActivityTask = m_scheduler->submit<BranchActivityScan>(request,
+        [path, branch, browseLocalCommits, known](const application::tasks::TaskContext& context) {
+            application::git::GitExecutableLocator locator;
+            const auto executable = locator.locate();
+            if (!executable) return shared::common::Result<BranchActivityScan>::failure(executable.error());
+            application::git::GitService git{application::git::GitCommandRunner(executable.value().path)};
+            BranchActivityScan scan; scan.branch = browseLocalCommits ? QString{} : branch;
+            scan.browsingLocalHistory = browseLocalCommits;
+            if (browseLocalCommits || branch.isEmpty()) {
+                auto history = git.history(path, 0, 100, context.cancellationToken);
+                if (!history) return shared::common::Result<BranchActivityScan>::failure(history.error());
+                scan.commits = std::move(history).value();
+            }
+            else {
+                const auto branches = git.branches(path, false, context.cancellationToken);
+                if (!branches) return shared::common::Result<BranchActivityScan>::failure(branches.error());
+                const auto found = std::find_if(branches.value().cbegin(), branches.value().cend(),
+                    [&branch](const auto& item) { return item.name == branch; });
+                if (found == branches.value().cend()) scan.branchMissing = true;
+                else {
+                    scan.comparisonBase = found->upstream;
+                    const auto history = git.branchHistory(path, branch, scan.comparisonBase, 100, context.cancellationToken);
+                    if (!history) return shared::common::Result<BranchActivityScan>::failure(history.error());
+                    scan.commits = std::move(history).value();
+                }
+            }
+            const qsizetype availabilityCheckCount = qMin<qsizetype>(known.size(), 100);
+            for (qsizetype index = 0; index < availabilityCheckCount; ++index) {
+                if (context.cancellationToken.isCancellationRequested())
+                    return shared::common::Result<BranchActivityScan>::failure(domain::errors::AppError::failure(
+                        domain::errors::ErrorCode::OperationCancelled, domain::errors::ErrorCategory::Git,
+                        QObject::tr("Git activity refresh was cancelled."), {}, QStringLiteral("refresh Planner Git activity")));
+                const QString sha = known.at(index).commitSha;
+                const auto reachable = git.commitReachableFromAnyRef(path, sha, context.cancellationToken);
+                if (!reachable) return shared::common::Result<BranchActivityScan>::failure(reachable.error());
+                scan.reachability.insert(sha, reachable.value());
+            }
+            return shared::common::Result<BranchActivityScan>::success(std::move(scan));
+        }, [this, generation, workspace, taskId](shared::common::TaskOutcome<BranchActivityScan> outcome) {
+            if (generation != m_gitActivityGeneration || workspace != m_workspaceId || taskId != m_gitActivityTaskId) return;
+            if (std::holds_alternative<shared::common::OperationCancelled>(outcome)) {
+                m_gitActivityStatus = tr("Git activity scan cancelled."); emit changed(); return;
+            }
+            auto result = std::get<shared::common::Result<BranchActivityScan>>(std::move(outcome));
+            if (!result) { m_gitActivityStatus = errorText(result); emit changed(); return; }
+            const BranchActivityScan scan = std::move(result).value();
+            const auto known = m_activityService->listGitCommits(workspace, taskId);
+            if (!known) { m_gitActivityStatus = errorText(known); emit changed(); return; }
+            QHash<QString, QString> previousAvailability;
+            for (const auto& row : known.value()) previousAvailability.insert(row.commitSha, row.availability);
+            int availabilityChanges = 0;
+            for (auto it = scan.reachability.cbegin(); it != scan.reachability.cend(); ++it) {
+                const QString availability = it.value() ? QStringLiteral("reachable") : QStringLiteral("unavailable");
+                if (previousAvailability.value(it.key()) != availability) ++availabilityChanges;
+                const auto saved = m_activityService->setGitCommitAvailability(workspace, taskId, it.key(),
+                    availability);
+                if (!saved) { m_gitActivityStatus = errorText(saved); emit activityChanged(taskId); emit changed(); return; }
+                ++availabilityChanges;
+            }
+            if (scan.branchMissing) {
+                m_gitCommitSuggestions.clear();
+                m_gitActivityStatus = tr("The linked branch is missing. Checked availability for %1 saved commit(s); %2 state change(s) recorded.")
+                    .arg(scan.reachability.size()).arg(availabilityChanges);
+                emit activityChanged(taskId); emit changed(); return;
+            }
+            QSet<QString> linked;
+            for (const auto& row : known.value()) linked.insert(row.commitSha);
+            int referenced = 0;
+            for (const auto& commit : scan.commits) {
+                if (linked.contains(commit.objectId.toLower())) continue;
+                if (application::planner::PlannerActivityService::messageReferencesTask(
+                        commit.message.isEmpty() ? commit.subject : commit.message, taskId)) {
+                    const auto saved = m_activityService->linkGitCommit(workspace, taskId, commit,
+                        QStringLiteral("message"), scan.branch);
+                    if (saved) { linked.insert(commit.objectId.toLower()); ++referenced; }
+                    else m_gitActivityStatus = errorText(saved);
+                }
+            }
+            for (const auto& commit : scan.commits) {
+                if (linked.contains(commit.objectId.toLower())) continue;
+                const QString source = scan.branch.isEmpty() ? QStringLiteral("manual") : QStringLiteral("branch");
+                m_gitCommitSuggestions.append(QVariantMap{{QStringLiteral("sha"),commit.objectId},
+                    {QStringLiteral("shortSha"),commit.abbreviatedObjectId}, {QStringLiteral("subject"),commit.subject},
+                    {QStringLiteral("author"),commit.author}, {QStringLiteral("authoredAt"),commit.authoredAt.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))},
+                    {QStringLiteral("committedAt"),commit.committedAt.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))},
+                    {QStringLiteral("branch"),scan.branch}, {QStringLiteral("source"),source}});
+            }
+            const QString baseText = scan.comparisonBase.isEmpty()
+                ? tr("no comparison base; recent commits reachable from the branch")
+                : tr("commits unique to %1 relative to %2").arg(scan.branch, scan.comparisonBase);
+            const QString branchText = scan.browsingLocalHistory ? tr("recent local history")
+                : scan.branch.isEmpty() ? tr("recent local history") : baseText;
+            m_gitActivityStatus = tr("Reviewed %1 commit(s) from %2; %3 DEVHUB reference(s) linked; checked %4 saved link(s). Suggestions require review.")
+                .arg(scan.commits.size()).arg(branchText).arg(referenced).arg(scan.reachability.size());
+            emit activityChanged(taskId);
+            emit changed();
+        });
+}
+
+bool PlannerController::linkSuggestedGitCommit(const QString& taskId, const QString& sha)
+{
+    if (!hasWorkspace() || !m_activityService || taskId != m_gitActivityTaskId) return false;
+    const auto found = std::find_if(m_gitCommitSuggestions.cbegin(), m_gitCommitSuggestions.cend(),
+        [&sha](const QVariant& row) { return row.toMap().value(QStringLiteral("sha")).toString() == sha; });
+    if (found == m_gitCommitSuggestions.cend()) return false;
+    const QVariantMap row = found->toMap();
+    application::git::GitCommit commit; commit.objectId = sha; commit.abbreviatedObjectId = row.value(QStringLiteral("shortSha")).toString();
+    commit.subject = row.value(QStringLiteral("subject")).toString(); commit.author = row.value(QStringLiteral("author")).toString();
+    commit.authoredAt = QDateTime::fromString(row.value(QStringLiteral("authoredAt")).toString(), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    commit.committedAt = QDateTime::fromString(row.value(QStringLiteral("committedAt")).toString(), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    const auto saved = m_activityService->linkGitCommit(m_workspaceId, taskId, commit,
+        row.value(QStringLiteral("source")).toString(), row.value(QStringLiteral("branch")).toString());
+    if (!saved) { setFailure(errorText(saved)); return false; }
+    m_gitCommitSuggestions.removeAt(static_cast<qsizetype>(std::distance(m_gitCommitSuggestions.cbegin(), found)));
+    m_gitActivityStatus = tr("Commit linked to this task."); emit activityChanged(taskId); emit changed(); return true;
+}
+
+bool PlannerController::linkSuggestedGitCommits(const QString& taskId, const QVariantList& shas)
+{
+    if (shas.isEmpty()) return false;
+    for (const QVariant& value : shas) {
+        if (!linkSuggestedGitCommit(taskId, value.toString())) return false;
+    }
+    return true;
+}
+
+bool PlannerController::unlinkGitCommit(const QString& taskId, const QString& sha)
+{
+    if (!hasWorkspace() || !m_activityService || !taskById(taskId) || taskById(taskId)->workspaceId != m_workspaceId)
+        return false;
+    const auto removed = m_activityService->unlinkGitCommit(m_workspaceId, taskId, sha);
+    if (!removed) { setFailure(errorText(removed)); return false; }
+    m_gitActivityStatus = tr("Git association removed; its history entry was retained."); emit activityChanged(taskId); emit changed(); return true;
+}
+
+void PlannerController::openGitCommit(const QString& taskId, const QString& sha)
+{
+    if (!hasWorkspace() || sha.isEmpty() || !taskById(taskId) || taskById(taskId)->workspaceId != m_workspaceId) return;
+    const auto links = m_activityService ? m_activityService->listGitCommits(m_workspaceId, taskId)
+        : shared::common::Result<QVector<domain::planner::PlannerGitCommitAssociation>>::failure(
+            domain::errors::AppError::failure(domain::errors::ErrorCode::InvalidArgument,
+                domain::errors::ErrorCategory::Workspace, tr("Git commit history is unavailable."), {},
+                QStringLiteral("open Planner Git commit")));
+    if (!links || std::none_of(links.value().cbegin(), links.value().cend(),
+        [&sha](const auto& row) { return row.commitSha == sha; })) return;
+    emit openGitCommitRequested(sha);
 }
 
 QVariantList PlannerController::linkedNotes(const QString& taskId)

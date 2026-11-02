@@ -122,6 +122,36 @@ struct PlannerActionRun final
     QString logReference;
 };
 
+struct PlannerActivityEvent final
+{
+    QString id;
+    QString workspaceId;
+    QString taskId;
+    QString eventType;
+    QDateTime occurredAtUtc;
+    QDateTime observedAtUtc;
+    QString origin;
+    QString description;
+    QString metadataJson = QStringLiteral("{}");
+    QString externalRefType;
+    QString externalRefId;
+};
+
+struct PlannerGitCommitAssociation final
+{
+    QString workspaceId;
+    QString taskId;
+    QString commitSha;
+    QString associationSource;
+    QString branchName;
+    QString subject;
+    QString author;
+    QDateTime authoredAtUtc;
+    QDateTime committedAtUtc;
+    QDateTime observedAtUtc;
+    QString availability = QStringLiteral("reachable");
+};
+
 struct PlannerTaskFilter final
 {
     QString searchText;

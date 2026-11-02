@@ -54,6 +54,27 @@ QStringList splitStatements(const QString& source)
     bool bracketQuoted = false;
     bool lineComment = false;
     bool blockComment = false;
+    bool triggerStatement = false;
+    int triggerBlockDepth = 0;
+    int triggerCaseDepth = 0;
+    QString token;
+    const auto finishToken = [&] {
+        if (token.isEmpty()) return;
+        const QString word = token.toUpper();
+        if (!triggerStatement && word == QStringLiteral("TRIGGER")
+            && QRegularExpression(QStringLiteral("^\\s*CREATE\\s+(?:TEMP\\s+)?TRIGGER\\b"), QRegularExpression::CaseInsensitiveOption)
+                .match(current).hasMatch())
+            triggerStatement = true;
+        if (triggerStatement) {
+            if (word == QStringLiteral("BEGIN")) triggerBlockDepth = 1;
+            else if (word == QStringLiteral("CASE") && triggerBlockDepth > 0) ++triggerCaseDepth;
+            else if (word == QStringLiteral("END") && triggerBlockDepth > 0) {
+                if (triggerCaseDepth > 0) --triggerCaseDepth;
+                else --triggerBlockDepth;
+            }
+        }
+        token.clear();
+    };
 
     for (qsizetype index = 0; index < source.size(); ++index) {
         const QChar character = source.at(index);
@@ -73,6 +94,14 @@ QStringList splitStatements(const QString& source)
             }
             continue;
         }
+        if (!singleQuoted && !doubleQuoted && !backtickQuoted && !bracketQuoted
+            && (character.isLetterOrNumber() || character == QLatin1Char('_'))) {
+            token.append(character);
+            current.append(character);
+            continue;
+        }
+        if (!singleQuoted && !doubleQuoted && !backtickQuoted && !bracketQuoted)
+            finishToken();
         if (!singleQuoted && !doubleQuoted && !backtickQuoted && !bracketQuoted) {
             if (character == QLatin1Char('-') && next == QLatin1Char('-')) {
                 lineComment = true;
@@ -85,10 +114,17 @@ QStringList splitStatements(const QString& source)
                 continue;
             }
             if (character == QLatin1Char(';')) {
+                if (triggerStatement && triggerBlockDepth > 0) {
+                    current.append(character);
+                    continue;
+                }
                 if (!current.trimmed().isEmpty()) {
                     statements.append(current.trimmed());
                 }
                 current.clear();
+                triggerStatement = false;
+                triggerBlockDepth = 0;
+                triggerCaseDepth = 0;
                 continue;
             }
         }
@@ -111,6 +147,7 @@ QStringList splitStatements(const QString& source)
         }
         current.append(character);
     }
+    finishToken();
     if (!current.trimmed().isEmpty()) {
         statements.append(current.trimmed());
     }

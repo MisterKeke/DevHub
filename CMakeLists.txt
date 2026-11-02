@@ -253,12 +253,14 @@ add_library(devhub_planner STATIC
     src/domain/planner/PlannerRules.cpp
     src/application/planner/PlannerValidation.cpp
     src/application/planner/PlannerService.cpp
+    src/application/planner/PlannerActivityService.cpp
     src/application/planner/TaskNoteLinkService.cpp
     src/infrastructure/planner/SqlTaskNoteLinkRepository.h
     src/infrastructure/planner/SqlTaskNoteLinkRepository.cpp
     src/infrastructure/planner/SomethingQtImportReader.h
     src/infrastructure/planner/SomethingQtImportReader.cpp
     src/infrastructure/planner/SqlPlannerRepository.cpp
+    src/infrastructure/planner/SqlPlannerActivityRepository.cpp
 )
 target_include_directories(devhub_planner PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(devhub_planner PUBLIC project_options devhub_core devhub_database devhub_accounts Qt6::Core Qt6::Sql

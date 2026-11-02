@@ -57,7 +57,7 @@ namespace devhub::application::overview { class OverviewStateComposer; }
 namespace devhub::application::commands { class CommandRegistry; }
 namespace devhub::application::commands { class CachedSearchProvider; }
 namespace devhub::application::settings { class SettingsService; }
-namespace devhub::application::planner { class PlannerService; class TaskNoteLinkService; }
+namespace devhub::application::planner { class PlannerService; class PlannerActivityService; class TaskNoteLinkService; }
 namespace devhub::application::lifecycle { class ShutdownCoordinator; }
 namespace devhub::application::support { class SupportBundleBuilder; }
 namespace devhub::presentation::theme { class ThemeManager; }
@@ -103,6 +103,7 @@ public:
                application::files::IExternalEditorLauncher& editorLauncher,
                application::settings::SettingsService& settingsService,
                application::planner::PlannerService& plannerService,
+               application::planner::PlannerActivityService& plannerActivityService,
                application::planner::TaskNoteLinkService& taskNoteLinks,
                presentation::theme::ThemeManager& themeManager,
                application::events::ApplicationEventHub& eventHub,

@@ -1,6 +1,8 @@
 #include "../src/application/planner/PlannerService.h"
+#include "../src/application/planner/PlannerActivityService.h"
 #include "../src/infrastructure/database/InternalDatabaseManager.h"
 #include "../src/infrastructure/planner/SqlPlannerRepository.h"
+#include "../src/infrastructure/planner/SqlPlannerActivityRepository.h"
 #include "../src/shared/identifiers/IdGenerator.h"
 #include "../src/shared/time/ApplicationClock.h"
 #include "../src/infrastructure/planner/SomethingQtImportReader.h"
@@ -11,6 +13,7 @@
 #include <QElapsedTimer>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QUuid>
 #include <QtTest/QtTest>
@@ -37,7 +40,7 @@ class PlannerTest final : public QObject
         QVERIFY2(opened, opened ? "" : qPrintable(opened.error().technicalMessage));
         const auto migrated = m_database->migrate();
         QVERIFY2(migrated, migrated ? "" : qPrintable(migrated.error().technicalMessage));
-        QCOMPARE(m_database->currentSchemaVersion(), 13);
+        QCOMPARE(m_database->currentSchemaVersion(), 14);
         QSqlQuery query(m_database->database());
         QVERIFY(query.exec(
             QStringLiteral(
@@ -60,11 +63,18 @@ class PlannerTest final : public QObject
             *m_database, std::move(account).value()));
         m_service.reset(
             new application::planner::PlannerService(*m_repository, m_validation, m_ids, m_clock));
+        auto activityAccount = domain::account::AccountId::fromString(m_accountId);
+        QVERIFY(activityAccount);
+        m_activityRepository.reset(new infrastructure::planner::SqlPlannerActivityRepository(
+            *m_database, std::move(activityAccount).value()));
+        m_activityService.reset(new application::planner::PlannerActivityService(*m_activityRepository, m_clock));
     }
 
     void cleanup()
     {
         m_service.reset();
+        m_activityService.reset();
+        m_activityRepository.reset();
         m_repository.reset();
         if (m_database)
         {
@@ -181,6 +191,120 @@ class PlannerTest final : public QObject
         }
     }
 
+    void activityHistoryTracksPersistedChangesAndReviewedGitLinks()
+    {
+        domain::planner::PlannerTask draft;
+        draft.title = QStringLiteral("Authentication");
+        auto task = m_service->createTask(m_workspaceA, draft);
+        QVERIFY(task);
+        auto activity = m_activityService->listEvents(m_workspaceA, task.value().id);
+        QVERIFY(activity);
+        QCOMPARE(activity.value().size(), 1);
+        QCOMPARE(activity.value().first().eventType, QStringLiteral("task.created"));
+        QVERIFY(QJsonDocument::fromJson(activity.value().first().metadataJson.toUtf8()).isObject());
+
+        const QString reference = application::planner::PlannerActivityService::taskReference(task.value().id);
+        QString compactId = task.value().id;
+        compactId.remove(QLatin1Char('-'));
+        QCOMPARE(reference, QStringLiteral("DEVHUB-%1").arg(compactId.toUpper()));
+        QVERIFY(application::planner::PlannerActivityService::messageReferencesTask(
+            QStringLiteral("Fix %1: add validation").arg(reference), task.value().id));
+        QVERIFY(!application::planner::PlannerActivityService::messageReferencesTask(
+            QStringLiteral("X%1: unrelated context").arg(reference), task.value().id));
+
+        auto moved = m_service->moveTask(m_workspaceA, task.value().id, 1,
+            domain::planner::PlannerStatus::InProgress);
+        QVERIFY(moved);
+        activity = m_activityService->listEvents(m_workspaceA, task.value().id);
+        QVERIFY(activity);
+        QCOMPARE(activity.value().size(), 2);
+        QCOMPARE(activity.value().first().eventType, QStringLiteral("task.status"));
+        QVERIFY(activity.value().first().metadataJson.contains(QStringLiteral("in_progress")));
+
+        QSqlQuery failEvent(m_database->database());
+        QVERIFY(failEvent.exec(QStringLiteral(
+            "CREATE TRIGGER fail_activity_event BEFORE INSERT ON planner_activity_events "
+            "WHEN NEW.event_type='task.priority' BEGIN SELECT RAISE(ABORT,'activity write rejected'); END")));
+        auto failedUpdate = moved.value();
+        failedUpdate.priority = QStringLiteral("high");
+        QVERIFY(!m_service->updateTask(failedUpdate, 2));
+        auto unchanged = m_service->getTask(m_workspaceA, task.value().id);
+        QVERIFY(unchanged);
+        QCOMPARE(unchanged.value().priority, QStringLiteral("medium"));
+        QVERIFY(failEvent.exec(QStringLiteral("DROP TRIGGER fail_activity_event")));
+
+        auto descriptionUpdate = unchanged.value();
+        descriptionUpdate.description = QStringLiteral("private task description");
+        auto descriptionSaved = m_service->updateTask(descriptionUpdate, 2);
+        QVERIFY(descriptionSaved);
+        activity = m_activityService->listEvents(m_workspaceA, task.value().id);
+        QVERIFY(std::any_of(activity.value().cbegin(), activity.value().cend(), [](const auto& row) {
+            return row.eventType == QStringLiteral("task.updated")
+                && row.description == QStringLiteral("Task text changed")
+                && !row.metadataJson.contains(QStringLiteral("private task description"));
+        }));
+
+        application::git::GitCommit commit;
+        commit.objectId = QString(40, QLatin1Char('a'));
+        commit.abbreviatedObjectId = commit.objectId.left(12);
+        commit.subject = QStringLiteral("Add login validation");
+        commit.message = QStringLiteral("DEVHUB-0123456789ABCDEF0123456789ABCDEF Add login validation");
+        commit.author = QStringLiteral("DevHub Test");
+        commit.authoredAt = QDateTime::fromString(QStringLiteral("2024-01-02T03:04:05Z"), Qt::ISODate);
+        commit.committedAt = QDateTime::fromString(QStringLiteral("2024-01-02T03:05:05Z"), Qt::ISODate);
+        auto linkedCommit = m_activityService->linkGitCommit(m_workspaceA, task.value().id, commit, QStringLiteral("manual"));
+        QVERIFY2(linkedCommit, qPrintable(linkedCommit.error().technicalMessage));
+        QVERIFY(m_activityService->linkGitCommit(m_workspaceA, task.value().id, commit, QStringLiteral("manual")));
+        auto links = m_activityService->listGitCommits(m_workspaceA, task.value().id);
+        QVERIFY(links);
+        QCOMPARE(links.value().size(), 1);
+        QCOMPARE(links.value().first().availability, QStringLiteral("reachable"));
+        QCOMPARE(links.value().first().committedAtUtc.toUTC(), commit.committedAt.toUTC());
+        activity = m_activityService->listEvents(m_workspaceA, task.value().id);
+        QVERIFY(activity);
+        QCOMPARE(std::count_if(activity.value().cbegin(), activity.value().cend(), [](const auto& row) {
+            return row.eventType == QStringLiteral("git.commit");
+        }), 1);
+        const auto gitEvent = *std::find_if(activity.value().cbegin(), activity.value().cend(), [](const auto& row) {
+            return row.eventType == QStringLiteral("git.commit");
+        });
+        QCOMPARE(gitEvent.occurredAtUtc.toUTC(), commit.authoredAt.toUTC());
+        QVERIFY(gitEvent.observedAtUtc.isValid());
+        QVERIFY(gitEvent.observedAtUtc > gitEvent.occurredAtUtc);
+
+        QVERIFY(m_activityService->setGitCommitAvailability(
+            m_workspaceA, task.value().id, commit.objectId, QStringLiteral("unavailable")));
+        QCOMPARE(m_activityService->listGitCommits(m_workspaceA, task.value().id).value().first().availability,
+                 QStringLiteral("unavailable"));
+        activity = m_activityService->listEvents(m_workspaceA, task.value().id);
+        QVERIFY(std::any_of(activity.value().cbegin(), activity.value().cend(), [](const auto& row) {
+            return row.eventType == QStringLiteral("git.commit.availability");
+        }));
+        QVERIFY(m_activityService->setGitCommitAvailability(
+            m_workspaceA, task.value().id, commit.objectId, QStringLiteral("reachable")));
+
+        QVERIFY(m_activityService->unlinkGitCommit(m_workspaceA, task.value().id, commit.objectId));
+        QVERIFY(m_activityService->listGitCommits(m_workspaceA, task.value().id).value().isEmpty());
+        activity = m_activityService->listEvents(m_workspaceA, task.value().id);
+        QVERIFY(std::any_of(activity.value().cbegin(), activity.value().cend(), [](const auto& row) {
+            return row.eventType == QStringLiteral("git.commit.unlinked");
+        }));
+
+        domain::planner::PlannerTask importedDraft;
+        importedDraft.title = QStringLiteral("Independent import");
+        importedDraft.sourceProfileIdentity = QStringLiteral("source-profile");
+        importedDraft.sourceTaskId = QStringLiteral("42");
+        auto imported = m_service->importTask(m_workspaceA, importedDraft);
+        QVERIFY(imported);
+        QVERIFY(m_activityService->listEvents(m_workspaceA, imported.value().id).value().isEmpty());
+
+        domain::planner::PlannerTask otherDraft;
+        otherDraft.title = QStringLiteral("Other workspace task");
+        auto other = m_service->createTask(m_workspaceB, otherDraft);
+        QVERIFY(other);
+        QVERIFY(m_activityService->listEvents(m_workspaceA, other.value().id).value().isEmpty());
+    }
+
     void taskCrudTagsSubtasksUnicodeAndPagination()
     {
         domain::planner::PlannerTask draft;
@@ -248,7 +372,16 @@ class PlannerTest final : public QObject
         QCOMPARE(read.value().subtasks.size(), 2);
         domain::planner::PlannerTask secondDraft;
         secondDraft.title = QStringLiteral("other");
-        QVERIFY(m_service->createTask(m_workspaceA, secondDraft));
+        auto dependencyTask = m_service->createTask(m_workspaceA, secondDraft);
+        QVERIFY(dependencyTask);
+        QVERIFY(m_service->addDependency(m_workspaceA, created.value().id, dependencyTask.value().id, 7));
+        QVERIFY(m_service->removeDependency(m_workspaceA, created.value().id, dependencyTask.value().id, 8));
+        const auto activity = m_activityService->listEvents(m_workspaceA, created.value().id);
+        QVERIFY(activity);
+        const auto relationshipCount = std::count_if(activity.value().cbegin(), activity.value().cend(), [](const auto& row) {
+            return row.eventType == QStringLiteral("task.relationship");
+        });
+        QCOMPARE(relationshipCount, 9); // Tag, subtask, and dependency changes are captured; creation itself stays one event.
         domain::planner::PlannerTaskFilter filter;
         filter.searchText = QStringLiteral("計画");
         filter.limit = 1;
@@ -306,6 +439,14 @@ class PlannerTest final : public QObject
         auto reopened = m_service->setCompleted(m_workspaceA, a.value().id, 4, false);
         QVERIFY(reopened);
         QCOMPARE(reopened.value().status, domain::planner::PlannerStatus::Todo);
+        const auto completionActivity = m_activityService->listEvents(m_workspaceA, a.value().id);
+        QVERIFY(completionActivity);
+        QCOMPARE(std::count_if(completionActivity.value().cbegin(), completionActivity.value().cend(), [](const auto& row) {
+            return row.eventType == QStringLiteral("task.completion");
+        }), 2);
+        QCOMPARE(std::count_if(completionActivity.value().cbegin(), completionActivity.value().cend(), [](const auto& row) {
+            return row.eventType == QStringLiteral("task.status");
+        }), 3); // In progress, done, then reopened to To Do.
 
         domain::planner::PlannerMilestone milestone;
         milestone.title = QStringLiteral("Release 1");
@@ -608,7 +749,7 @@ class PlannerTest final : public QObject
         archive.addBindValue(m_workspaceA);
         archive.addBindValue(m_accountId);
         QVERIFY(archive.exec());
-        QCOMPARE(m_database->currentSchemaVersion(), 13);
+        QCOMPARE(m_database->currentSchemaVersion(), 14);
     }
 
     void importedTaskFailureRollsBackTaskTagsSubtasksAndProvenance()
@@ -731,6 +872,8 @@ class PlannerTest final : public QObject
         trigger = QSqlQuery();
         const QString path = m_database->databaseFilePath();
         QVERIFY(m_database->close());
+        m_activityService.reset();
+        m_activityRepository.reset();
         m_repository.reset();
         m_service.reset();
         m_database.reset();
@@ -744,6 +887,11 @@ class PlannerTest final : public QObject
             *m_database, std::move(account).value()));
         m_service.reset(
             new application::planner::PlannerService(*m_repository, m_validation, m_ids, m_clock));
+        auto activityAccount = domain::account::AccountId::fromString(m_accountId);
+        QVERIFY(activityAccount);
+        m_activityRepository.reset(new infrastructure::planner::SqlPlannerActivityRepository(
+            *m_database, std::move(activityAccount).value()));
+        m_activityService.reset(new application::planner::PlannerActivityService(*m_activityRepository, m_clock));
         auto persisted = m_service->getTask(m_workspaceA, task.value().id);
         QVERIFY(persisted);
         QCOMPARE(persisted.value().title, draft.title);
@@ -769,7 +917,8 @@ class PlannerTest final : public QObject
         QSqlQuery query(m_database->database());
         for (const QString &table :
              {QStringLiteral("planner_task_tags"), QStringLiteral("planner_subtasks"),
-              QStringLiteral("planner_task_dependencies")})
+              QStringLiteral("planner_task_dependencies"), QStringLiteral("planner_activity_events"),
+              QStringLiteral("planner_task_git_commits")})
         {
             query.prepare(
                 QStringLiteral("SELECT COUNT(*) FROM %1 WHERE workspace_id=? AND task_id=?")
@@ -790,10 +939,12 @@ class PlannerTest final : public QObject
     std::unique_ptr<QTemporaryDir> m_temporary;
     std::unique_ptr<infrastructure::database::InternalDatabaseManager> m_database;
     std::unique_ptr<infrastructure::planner::SqlPlannerRepository> m_repository;
+    std::unique_ptr<infrastructure::planner::SqlPlannerActivityRepository> m_activityRepository;
     application::planner::PlannerValidation m_validation;
     shared::identifiers::UuidIdGenerator m_ids;
     shared::time::SystemApplicationClock m_clock;
     std::unique_ptr<application::planner::PlannerService> m_service;
+    std::unique_ptr<application::planner::PlannerActivityService> m_activityService;
 };
 // NOLINTEND(readability-convert-member-functions-to-static,readability-function-cognitive-complexity)
 

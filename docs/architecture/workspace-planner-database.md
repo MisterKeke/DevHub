@@ -27,6 +27,8 @@ and does not checkpoint or change the source journal mode.
 | `planner_time_entries` | Manual work duration history; task tracked time is its aggregate. |
 | `planner_action_runs` | Bounded metadata for an explicitly started saved-service action; it does not duplicate service output. |
 | `planner_task_note_links` | Stable-ID many-to-many links to same-workspace Notes records; a fixed note-kind discriminator lets the composite foreign key reject folders. Titles and Markdown remain owned by Notes. |
+| `planner_activity_events` | Append-only task and cross-module timeline events with observed and occurrence timestamps, safe JSON metadata, external references, and deduplication keys. |
+| `planner_task_git_commits` | Stable per-task SHA associations with manual, branch-review, or message-reference provenance and availability state. |
 
 Titles, descriptions, notes, tags, and source IDs are stored as text without a character-count
 truncation step. Source task IDs and revisions are read as SQLite integers and converted directly
@@ -41,9 +43,15 @@ workspace. `planner_action_runs` currently accepts the allow-listed `service.sta
 Completed history is capped at 20 rows per task, in addition to any in-progress run. Error summaries
 are capped at 512 characters and log references identify the existing bounded service log source.
 
+Task change events are inserted by SQLite triggers in the same statement transaction as the task
+write. Local task creation is recorded; imported SomethingQt rows deliberately receive no created
+event. Git links store full SHAs, author time and separate DevHub observation time. Commit diffs and
+service output are never copied to activity metadata. Task deletion cascades activity and commit
+associations with the owning task.
+
 ## Migration history
 
-The current database schema version is **13**. Embedded migration files are immutable once
+The current database schema version is **14**. Embedded migration files are immutable once
 released and are applied transactionally by `InternalDatabaseManager`.
 
 | Version | Migration | Change |
@@ -53,6 +61,7 @@ released and are applied transactionally by `InternalDatabaseManager`.
 | 11 | `0011_planner_time_entries_and_indexes.sql` | Adds manual time entries and indexes for branch, origin, milestone, due-date, priority/status, and time-history queries. |
 | 12 | `0012_planner_service_actions.sql` | Adds saved-service association and per-task action-run history. |
 | 13 | `0013_planner_task_note_links.sql` | Adds account/workspace-safe task-to-note links with composite foreign keys and note deletion cascades. |
+| 14 | `0014_planner_activity_history.sql` | Adds transactional Planner activity history and task-to-Git commit associations. |
 
 Fresh-install, existing-installation upgrade, provenance preservation, foreign-key checks,
 transaction rollback, refusal of a newer schema, and corruption handling are covered by

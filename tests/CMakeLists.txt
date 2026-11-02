@@ -209,6 +209,9 @@ target_link_libraries(devhub_database_tests PRIVATE
     project_warnings
 )
 add_test(NAME devhub.database-migrations COMMAND devhub_database_tests)
+set_tests_properties(devhub.database-migrations PROPERTIES
+    ENVIRONMENT "QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}")
 
 qt_add_executable(devhub_planner_tests
     planner_test.cpp
@@ -217,10 +220,12 @@ qt_add_executable(devhub_planner_tests
 )
 target_link_libraries(devhub_planner_tests PRIVATE
     devhub_planner devhub_workspaces Qt6::Core Qt6::Sql Qt6::Test project_options project_warnings)
-add_test(NAME devhub.planner COMMAND devhub_planner_tests)
+add_test(NAME devhub.planner COMMAND devhub_planner_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/planner-tests.txt,txt"
+    -o "-,txt")
 set_tests_properties(devhub.planner PROPERTIES
     TIMEOUT 45
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}")
 
 qt_add_executable(devhub_task_note_link_tests
