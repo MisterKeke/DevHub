@@ -157,6 +157,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
                        application::files::IExternalEditorLauncher& editorLauncher,
                        application::settings::SettingsService& settingsService,
                        application::planner::PlannerService& plannerService,
+                       application::planner::PlannerActivityService& plannerActivityService,
                        application::planner::TaskNoteLinkService& taskNoteLinks,
                        presentation::theme::ThemeManager& themeManager,
                        application::events::ApplicationEventHub& eventHub,
@@ -483,7 +484,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     m_overviewComposer = new application::overview::OverviewStateComposer(this);
     m_overviewPage = new devhub::presentation::overview::OverviewPage(*m_commandRegistry, m_pageHost);
     m_plannerController = new devhub::presentation::overview::planner::PlannerController(
-        plannerService, m_settingsService, m_workspaceContext, this, &m_scheduler, &taskNoteLinks);
+        plannerService, m_settingsService, m_workspaceContext, this, &m_scheduler, &taskNoteLinks,
+        &plannerActivityService);
     m_plannerImportController = new devhub::presentation::overview::planner::PlannerImportController(
         plannerService, m_workspaceManager, m_workspaceContext, m_scheduler, m_assistantToolRuntime,
         m_settingsService, m_session, this);
@@ -491,6 +493,12 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         m_plannerController, &devhub::presentation::overview::planner::PlannerController::refresh);
     m_pageHost->addWidget(m_overviewPage);
     auto* gitPage = new devhub::presentation::git::GitPage(m_scheduler, m_pageHost, &m_settingsService);
+    connect(m_plannerController,
+        &devhub::presentation::overview::planner::PlannerController::openGitCommitRequested,
+        this, [this, gitPage](const QString& sha) {
+            gitPage->focusCommit(sha);
+            selectQuickModule(1);
+        });
     connect(m_plannerController,
         &devhub::presentation::overview::planner::PlannerController::openGitBranchRequested,
         this, [this, gitPage](const QString& branch) {

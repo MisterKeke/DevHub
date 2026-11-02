@@ -17,6 +17,11 @@ public:
         const tasks::CancellationToken& cancellation = {}) const;
     [[nodiscard]] shared::common::Result<QVector<GitCommit>> history(const QString& directory, int offset = 0,
         int limit = 50, const tasks::CancellationToken& cancellation = {}) const;
+    [[nodiscard]] shared::common::Result<QVector<GitCommit>> branchHistory(const QString& directory,
+        const QString& branch, const QString& baseRef, int limit = 100,
+        const tasks::CancellationToken& cancellation = {}) const;
+    [[nodiscard]] shared::common::Result<bool> commitReachableFromAnyRef(const QString& directory,
+        const QString& commitSha, const tasks::CancellationToken& cancellation = {}) const;
     [[nodiscard]] shared::common::Result<GitDiff> diff(const QString& directory, bool staged,
         const QString& commit = {}, const tasks::CancellationToken& cancellation = {}) const;
     [[nodiscard]] shared::common::Result<GitCommandResult> stage(const QString& directory,

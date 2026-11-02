@@ -37,6 +37,8 @@ Rectangle {
     ]
     property var calendarMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
     property var detail: ({})
+    property string activityFilter: "all"
+    property var selectedGitCommitShas: []
     property var noteCandidates: []
     property string editorTaskId: ""
     property string knownWorkspaceId: ""
@@ -372,7 +374,30 @@ Rectangle {
         if (!data || !data.taskId) return
         data.timeEntries = plannerController.timeEntries(taskId)
         data.linkedNotes = plannerController.linkedNotes(taskId)
+        data.activity = plannerController.activityEvents(taskId, activityFilter)
+        data.gitAssociations = plannerController.gitCommitAssociations(taskId)
         detail = data
+    }
+    function refreshActivity() {
+        if (!detail || !detail.taskId) return
+        detail.activity = plannerController.activityEvents(detail.taskId, activityFilter)
+        detail.gitAssociations = plannerController.gitCommitAssociations(detail.taskId)
+    }
+    function toggleGitCommitSelection(sha, selected) {
+        var values = selectedGitCommitShas.slice(0)
+        var index = values.indexOf(sha)
+        if (selected && index < 0) values.push(sha)
+        else if (!selected && index >= 0) values.splice(index, 1)
+        selectedGitCommitShas = values
+    }
+    function linkSelectedGitCommits() {
+        if (!plannerController.linkSuggestedGitCommits(detail.taskId, selectedGitCommitShas)) {
+            detailsMessage.text = plannerController.error || qsTr("The selected commits could not be linked.")
+            return
+        }
+        selectedGitCommitShas = []
+        refreshDetails(detail.taskId)
+        detailsMessage.text = ""
     }
     function refreshNoteCandidates() {
         if (detail && detail.taskId)
@@ -464,6 +489,7 @@ Rectangle {
         else editorMessage.text = plannerController.error || qsTr("Review the task details and try again.")
     }
     function openDetails(taskId) {
+        if (!detail || detail.taskId !== taskId) selectedGitCommitShas = []
         refreshDetails(taskId)
         if (detail && detail.taskId) detailsDialog.open()
     }
@@ -1113,6 +1139,102 @@ Rectangle {
                     Text { font.family: root.fontFamily; text: qsTr("Planning and milestones"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
                     Text { font.family: root.fontFamily; text: qsTr("Estimated %1 min · recorded %2 min · milestone %3").arg(root.detail.estimatedMinutes === undefined || root.detail.estimatedMinutes === null ? qsTr("not set") : root.detail.estimatedMinutes).arg(root.detail.actualTrackedMinutes || 0).arg(root.detail.milestoneId ? root.milestoneTitle(root.detail.milestoneId) : qsTr("none")); color: root.secondary; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text { font.family: root.fontFamily; text: qsTr("Development history"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                        ComboBox {
+                            id: activityFilterBox
+                            model: [
+                                { label: qsTr("All activity"), value: "all" },
+                                { label: qsTr("Git"), value: "git" },
+                                { label: qsTr("Task changes"), value: "task" },
+                                { label: qsTr("Services"), value: "services" },
+                                { label: qsTr("Builds/tests"), value: "builds" }
+                            ]
+                            textRole: "label"; valueRole: "value"
+                            currentIndex: 0
+                            onActivated: { root.activityFilter = currentValue; root.refreshActivity() }
+                            Layout.preferredWidth: 145
+                        }
+                        PlannerButton { text: qsTr("Refresh Git"); enabled: !!plannerController.hasWorkspace; onClicked: { root.selectedGitCommitShas = []; plannerController.refreshGitActivity(root.detail.taskId) } }
+                        PlannerButton { text: qsTr("Browse local commits"); enabled: !!plannerController.hasWorkspace; onClicked: { root.selectedGitCommitShas = []; plannerController.refreshGitActivity(root.detail.taskId, true) } }
+                    }
+                    Text {
+                        font.family: root.fontFamily; Layout.fillWidth: true
+                        text: qsTr("Task reference: %1 · Use this stable ID in commit messages.").arg(typeof plannerController.taskReferenceForTask === "function" ? plannerController.taskReferenceForTask(root.detail.taskId) : "")
+                        color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        font.family: root.fontFamily; Layout.fillWidth: true
+                        visible: typeof plannerController.gitActivityStatus === "string" && plannerController.gitActivityStatus.length > 0
+                        text: typeof plannerController.gitActivityStatus === "string" ? plannerController.gitActivityStatus : ""; color: root.secondary; font.pixelSize: 9; wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        font.family: root.fontFamily; Layout.fillWidth: true
+                        visible: (root.detail.activity || []).length === 0
+                        text: qsTr("No activity in this filter yet. Saved Planner changes appear here; refresh Git to review commit associations.")
+                        color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap
+                    }
+                    Repeater {
+                        model: root.detail.activity || []
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            property bool expanded: false
+                            Layout.fillWidth: true; spacing: 2
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 6
+                                Text { font.family: root.fontFamily; text: modelData.eventType.startsWith("git.") ? "⑂" : modelData.eventType.startsWith("service.") ? "⚙" : modelData.eventType.startsWith("pr.") ? "↗" : "•"; color: root.info; font.pixelSize: 12 }
+                                Text { font.family: root.fontFamily; text: modelData.occurredAt; color: root.muted; font.pixelSize: 9 }
+                                Text { font.family: root.fontFamily; text: modelData.origin; color: root.warning; font.pixelSize: 9 }
+                                Text { font.family: root.fontFamily; text: modelData.description; color: root.text; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                                PlannerButton { visible: modelData.externalRefType === "git-commit" && modelData.eventType === "git.commit"; text: qsTr("Open"); compact: true; onClicked: plannerController.openGitCommit(root.detail.taskId, modelData.externalRefId) }
+                                PlannerButton { visible: modelData.externalRefType === "url" && !!modelData.externalRefId; text: qsTr("Open PR"); compact: true; onClicked: plannerController.openGitHubUrl(modelData.externalRefId) }
+                                PlannerButton { visible: modelData.externalRefType === "note" && modelData.eventType === "note.linked"; text: qsTr("Open note"); compact: true; onClicked: plannerController.openLinkedNote(root.detail.taskId, modelData.externalRefId) }
+                                PlannerButton { visible: modelData.origin === "service" && !!modelData.logReference; text: qsTr("Logs"); compact: true; enabled: !!root.detail.linkedServiceAvailable; onClicked: plannerController.openLinkedServiceLogs(root.detail.taskId) }
+                                PlannerButton { text: expanded ? "⌃" : "⌄"; compact: true; Accessible.name: qsTr("Toggle activity details"); onClicked: expanded = !expanded }
+                            }
+                            Text {
+                                visible: parent.expanded; Layout.fillWidth: true; leftPadding: 18
+                                text: modelData.observedAt ? qsTr("DevHub observed this at %1\n%2").arg(modelData.observedAt).arg(modelData.metadata || "") : (modelData.metadata || "")
+                                color: root.muted; font.family: root.fontFamily; font.pixelSize: 9; wrapMode: Text.Wrap
+                            }
+                        }
+                    }
+                    Text { font.family: root.fontFamily; visible: (root.detail.activity || []).length >= 50; text: qsTr("Showing the latest 50 events."); color: root.muted; font.pixelSize: 9 }
+                    Text { font.family: root.fontFamily; visible: (plannerController.gitCommitSuggestions || []).length > 0; text: qsTr("Suggested commits · review before linking"); color: root.secondary; font.pixelSize: 10; font.weight: Font.DemiBold }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text { font.family: root.fontFamily; text: qsTr("%1 commit(s) selected").arg(root.selectedGitCommitShas.length); color: root.muted; font.pixelSize: 9; Layout.fillWidth: true }
+                        PlannerButton { text: qsTr("Link selected"); enabled: root.selectedGitCommitShas.length > 0; compact: true; onClicked: root.linkSelectedGitCommits() }
+                    }
+                    Repeater {
+                        model: plannerController.gitCommitSuggestions || []
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true; spacing: 5
+                            CheckBox {
+                                checked: root.selectedGitCommitShas.indexOf(modelData.sha) >= 0
+                                onToggled: root.toggleGitCommitSelection(modelData.sha, checked)
+                                Accessible.name: qsTr("Select commit %1").arg(modelData.shortSha)
+                            }
+                            Text { font.family: root.fontFamily; text: modelData.shortSha; color: root.info; font.pixelSize: 9 }
+                            Text { font.family: root.fontFamily; text: modelData.subject; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; Layout.fillWidth: true }
+                            Text { font.family: root.fontFamily; text: modelData.branch || qsTr("local history"); color: root.muted; font.pixelSize: 8; elide: Text.ElideMiddle }
+                            PlannerButton { text: qsTr("Link"); compact: true; onClicked: { if (plannerController.linkSuggestedGitCommit(root.detail.taskId, modelData.sha)) root.refreshDetails(root.detail.taskId); detailsMessage.text = plannerController.error } }
+                        }
+                    }
+                    Repeater {
+                        model: root.detail.gitAssociations || []
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true; spacing: 5
+                            Text { font.family: root.fontFamily; text: qsTr("Linked %1 · %2 · %3 · %4").arg(modelData.shortSha).arg(modelData.subject).arg(modelData.source).arg(modelData.availability === "reachable" ? qsTr("reachable") : qsTr("unavailable")); color: modelData.availability === "reachable" ? root.secondary : root.warning; font.pixelSize: 9; elide: Text.ElideRight; Layout.fillWidth: true }
+                            PlannerButton { text: qsTr("Open"); compact: true; onClicked: plannerController.openGitCommit(root.detail.taskId, modelData.sha) }
+                            PlannerButton { text: qsTr("Unlink"); compact: true; onClicked: { if (plannerController.unlinkGitCommit(root.detail.taskId, modelData.sha)) root.refreshDetails(root.detail.taskId); detailsMessage.text = plannerController.error } }
+                        }
+                    }
+                    Text { font.family: root.fontFamily; visible: (root.detail.gitAssociations || []).length === 0; text: qsTr("No commits are linked yet."); color: root.muted; font.pixelSize: 9 }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
                     Text { font.family: root.fontFamily; text: qsTr("Git and GitHub"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
                     RowLayout {
                         Layout.fillWidth: true
@@ -1255,6 +1377,7 @@ Rectangle {
     }
     Connections {
         target: plannerController
+        ignoreUnknownSignals: true
         function onTaskNoteLinksChanged(workspaceId, taskId, noteId) {
             if (root.detail.taskId === taskId && detailsDialog.visible)
                 root.refreshDetails(taskId)
@@ -1262,6 +1385,9 @@ Rectangle {
         function onWorkspaceNoteMetadataChanged(workspaceId) {
             if (workspaceId === plannerController.workspaceId && root.detail.taskId && detailsDialog.visible)
                 root.refreshDetails(root.detail.taskId)
+        }
+        function onActivityChanged(taskId) {
+            if (root.detail.taskId === taskId && detailsDialog.visible) root.refreshActivity()
         }
     }
     PlannerDialog {

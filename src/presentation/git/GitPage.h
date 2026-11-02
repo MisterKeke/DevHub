@@ -17,6 +17,7 @@ public:
                       application::settings::SettingsService* settings = nullptr);
     void setWorkspacePath(QString path, std::optional<QUuid> workspaceId = std::nullopt);
     void focusBranch(QString branch);
+    void focusCommit(QString commitSha);
     void refreshNow();
 signals:
     void operationFailed(QString title, QString message);
@@ -38,6 +39,7 @@ private:
     application::settings::SettingsService* m_settings = nullptr;
     QString m_path;
     QString m_requestedBranch;
+    QString m_requestedCommit;
     std::optional<QUuid> m_workspaceId;
     quint64 m_statusGeneration = 0;
     quint64 m_diffGeneration = 0;

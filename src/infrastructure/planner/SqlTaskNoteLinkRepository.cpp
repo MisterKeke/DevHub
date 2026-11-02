@@ -1,6 +1,7 @@
 #include "SqlTaskNoteLinkRepository.h"
 
 #include "../database/SqlErrorMapper.h"
+#include "../database/SqlTransactionGuard.h"
 #include "../../domain/errors/AppError.h"
 
 #include <QSqlQuery>
@@ -91,6 +92,20 @@ Result<void> SqlTaskNoteLinkRepository::add(const QString& workspaceId,
 Result<void> SqlTaskNoteLinkRepository::remove(const QString& workspaceId,
     const QString& taskId, const QString& noteId)
 {
+    database::SqlTransactionGuard transaction(m_database.database());
+    if (!transaction.active()) return Result<void>::failure(*transaction.error());
+    QSqlQuery linked(m_database.database());
+    linked.prepare(QStringLiteral("SELECT 1 FROM planner_task_note_links l JOIN workspaces w ON w.id=l.workspace_id "
+        "WHERE l.workspace_id=? AND l.task_id=? AND l.note_id=? AND w.account_id=? AND w.archived_at_utc IS NULL"));
+    linked.addBindValue(workspaceId); linked.addBindValue(taskId); linked.addBindValue(noteId);
+    linked.addBindValue(m_accountId.toString());
+    if (!linked.exec())
+        return Result<void>::failure(database::SqlErrorMapper::fromSqlError(
+            linked.lastError(), QStringLiteral("validate Planner note unlink")));
+    if (!linked.next())
+        return unavailable<void>(QStringLiteral("This task-note link is no longer available."),
+                                 QStringLiteral("unlink note from Planner task"));
+    linked.finish();
     QSqlQuery query(m_database.database());
     query.prepare(QStringLiteral("DELETE FROM planner_task_note_links WHERE workspace_id=? AND task_id=? "
         "AND note_id=? AND workspace_id IN(SELECT id FROM workspaces WHERE account_id=? AND archived_at_utc IS NULL)"));
@@ -99,9 +114,20 @@ Result<void> SqlTaskNoteLinkRepository::remove(const QString& workspaceId,
     if (!query.exec())
         return Result<void>::failure(database::SqlErrorMapper::fromSqlError(
             query.lastError(), QStringLiteral("unlink note from Planner task")));
-    return query.numRowsAffected() == 1 ? Result<void>::success()
-        : unavailable<void>(QStringLiteral("This task-note link is no longer available."),
-                            QStringLiteral("unlink note from Planner task"));
+    if (query.numRowsAffected() != 1)
+        return unavailable<void>(QStringLiteral("This task-note link is no longer available."),
+                                 QStringLiteral("unlink note from Planner task"));
+    QSqlQuery activity(m_database.database());
+    activity.prepare(QStringLiteral("INSERT INTO planner_activity_events(id,workspace_id,task_id,event_type,"
+        "occurred_at_utc,observed_at_utc,origin,description,metadata_json,external_ref_type,external_ref_id) "
+        "VALUES(lower(hex(randomblob(16))),?,?, 'note.unlinked',strftime('%Y-%m-%dT%H:%M:%fZ','now'),"
+        "strftime('%Y-%m-%dT%H:%M:%fZ','now'),'planner','Note unlinked',json_object('noteId',?),'note',?)"));
+    activity.addBindValue(workspaceId); activity.addBindValue(taskId);
+    activity.addBindValue(noteId); activity.addBindValue(noteId);
+    if (!activity.exec())
+        return Result<void>::failure(database::SqlErrorMapper::fromSqlError(
+            activity.lastError(), QStringLiteral("record Planner note unlink")));
+    return transaction.commit();
 }
 
 Result<QVector<TaskNoteLink>> SqlTaskNoteLinkRepository::listForTask(

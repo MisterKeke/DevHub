@@ -83,7 +83,7 @@ rows for a later restore.
 
 ### SQLite and build conventions
 
-The internal database is `LocalAppData/DevHub/data/devhub.db`. The current schema version is 12;
+The internal database is `LocalAppData/DevHub/data/devhub.db`. The current schema version is 14;
 the Planner migration history and current table contract are documented in
 [`workspace-planner-database.md`](workspace-planner-database.md). `InternalDatabaseManager` owns a
 uniquely named Qt SQL `QSQLITE` connection on its QObject thread, enables foreign keys, sets a
@@ -516,7 +516,7 @@ Verified on 2026-10-23:
   Planner construction, and packaged runtime. Inno Setup is not installed, so no installer was
   produced.
 
-The schema remains version 12; Phase 6 adds no migration. No real user database was reset or used
+At the Phase 6 checkpoint, the schema was version 12 and that phase added no migration. No real user database was reset or used
 as a fixture. The MSVC `windows-ci-release` preset could not be verified because this host does not
 have the required Visual Studio 2022 v143 14.44 toolset. The Release build was verified with the
 supported MinGW package preset instead.
@@ -529,3 +529,35 @@ acceptance gates. Consequently the implementation, Debug suite and portable Rele
 verified, but this is not a claim of full production release readiness. Before distribution, run
 that interactive acceptance flow and the clean-machine, install/upgrade/uninstall and Qt license
 review gates in [packaging/README.md](../../packaging/README.md).
+
+## Git activity and Planner history
+
+Migration 0014 adds task-scoped activity events and Git commit associations. SQLite triggers record
+local task creation and persisted title/text, status/completion, priority, due-date, milestone,
+branch, Pull Request reference, and note-link changes in the same write transaction. Task text
+metadata stores only change flags and lengths, never the description or Planner notes. Repository
+transactions record tag, subtask, and dependency changes. Imported SomethingQt task inserts
+intentionally create no DevHub task-created event. Saved-service runs continue to be read from
+`planner_action_runs` and are not copied into the activity table.
+
+The task details dialog has a bounded latest-50 timeline with filters for all activity, Git, task
+changes, services, and builds/tests. Git refresh is explicit and asynchronous. With a configured
+upstream it queries up to 100 commits unique to the linked branch relative to that upstream; without
+one it shows up to 100 recent commits reachable from the linked branch and labels that comparison
+assumption. Unmatched commits are suggestions and require a user link action. Commit messages may
+refer to a task with the exact token `DEVHUB-<32 hexadecimal characters>`, where the hex characters
+are the task's immutable UUID without hyphens. A matching reference is linked on explicit refresh.
+Otherwise users can browse up to 100 recent local commits, select one or more suggestions, and link
+them manually. Refresh checks up to 100 saved commit links against local refs. Missing branches and
+commits no longer reachable from any local or remote-tracking ref keep their saved association and
+are marked unavailable; availability transitions are recorded with an observation timestamp.
+Associations store full SHA, author and committer times, observation time, source, and branch;
+commits are opened in the existing Git history/diff page. The feature does not fetch or mutate Git
+repositories.
+
+Activity rows live for the lifetime of their owning task and cascade on task or workspace deletion.
+The schema stores event metadata and bounded commit details only; it does not copy Git diffs or
+service stdout/stderr. Existing manual time entries remain independent and are never inferred from
+commit spacing. PR URLs are retained as linked references without remote status lookup. Build/test
+results have a filter-ready event type but no producer because this application has no structured
+Build & Test module.

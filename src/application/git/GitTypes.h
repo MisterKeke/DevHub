@@ -78,9 +78,11 @@ struct GitCommit final {
     QString objectId;
     QString abbreviatedObjectId;
     QString subject;
+    QString message;
     QString author;
     QString email;
     QDateTime authoredAt;
+    QDateTime committedAt;
 };
 struct GitRemote final { QString name; QString fetchUrl; QString pushUrl; };
 struct GitDiff final { QByteArray bytes; bool binary = false; bool truncated = false; };

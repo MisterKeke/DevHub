@@ -40,7 +40,7 @@ private slots:
             "'planner_task_note_links')")));
         QVERIFY(query.next());
         QCOMPARE(query.value(0).toInt(), 11);
-        QCOMPARE(manager.currentSchemaVersion(), 13);
+        QCOMPARE(manager.currentSchemaVersion(), 14);
         QVERIFY(query.exec(QStringLiteral("PRAGMA table_info(workspaces)")));
         bool hasArchiveTimestamp = false;
         while (query.next()) {
@@ -242,7 +242,7 @@ private slots:
         InternalDatabaseManager current(databasePath, backupsPath);
         QVERIFY(current.open());
         QVERIFY(current.migrate());
-        QCOMPARE(current.currentSchemaVersion(), 13);
+        QCOMPARE(current.currentSchemaVersion(), 14);
         QSqlQuery verify(current.database());
         QVERIFY(verify.exec(QStringLiteral(
             "SELECT task_id,source_task_id,source_revision,source_created_at,source_updated_at,copy_number "

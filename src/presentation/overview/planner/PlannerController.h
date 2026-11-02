@@ -2,6 +2,7 @@
 
 #include "PlannerTaskModel.h"
 #include "../../../application/planner/PlannerService.h"
+#include "../../../application/planner/PlannerActivityService.h"
 #include "../../../application/planner/TaskNoteLinkService.h"
 #include "../../../application/workspaces/WorkspaceContext.h"
 #include "../../../application/tasks/TaskScheduler.h"
@@ -47,13 +48,16 @@ class PlannerController final : public QObject
     Q_PROPERTY(int blockedFilter READ blockedFilter NOTIFY changed)
     Q_PROPERTY(int overdueFilter READ overdueFilter NOTIFY changed)
     Q_PROPERTY(QString originFilter READ originFilter NOTIFY changed)
+    Q_PROPERTY(QString gitActivityStatus READ gitActivityStatus NOTIFY changed)
+    Q_PROPERTY(QVariantList gitCommitSuggestions READ gitCommitSuggestions NOTIFY changed)
 public:
     PlannerController(application::planner::PlannerService& service,
                        application::settings::SettingsService& settings,
                        application::workspaces::WorkspaceContext& workspaceContext,
                        QObject* parent = nullptr,
                        application::tasks::TaskScheduler* scheduler = nullptr,
-                       application::planner::TaskNoteLinkService* taskNoteLinks = nullptr);
+                       application::planner::TaskNoteLinkService* taskNoteLinks = nullptr,
+                       application::planner::PlannerActivityService* activityService = nullptr);
     PlannerTaskModel* tasks() noexcept { return &m_tasks; }
     QAbstractItemModel* listModel() noexcept { return &m_list; }
     QAbstractItemModel* calendarModel() noexcept { return &m_calendar; }
@@ -87,9 +91,19 @@ public:
     int blockedFilter() const { return m_blockedFilter; }
     int overdueFilter() const { return m_overdueFilter; }
     QString originFilter() const { return m_originFilter; }
+    QString gitActivityStatus() const { return m_gitActivityStatus; }
+    QVariantList gitCommitSuggestions() const { return m_gitCommitSuggestions; }
     Q_INVOKABLE QAbstractItemModel* boardModel(const QString& status) const;
     Q_INVOKABLE int statusCount(const QString& status) const;
     Q_INVOKABLE QVariantMap taskDetails(const QString& taskId) const;
+    Q_INVOKABLE QString taskReferenceForTask(const QString& taskId) const;
+    Q_INVOKABLE QVariantList activityEvents(const QString& taskId, const QString& filter = QStringLiteral("all")) const;
+    Q_INVOKABLE QVariantList gitCommitAssociations(const QString& taskId) const;
+    Q_INVOKABLE void refreshGitActivity(const QString& taskId, bool browseLocalCommits = false);
+    Q_INVOKABLE bool linkSuggestedGitCommit(const QString& taskId, const QString& sha);
+    Q_INVOKABLE bool linkSuggestedGitCommits(const QString& taskId, const QVariantList& shas);
+    Q_INVOKABLE bool unlinkGitCommit(const QString& taskId, const QString& sha);
+    Q_INVOKABLE void openGitCommit(const QString& taskId, const QString& sha);
     Q_INVOKABLE QVariantList linkedNotes(const QString& taskId);
     Q_INVOKABLE QVariantList searchNotesForLink(const QString& taskId, const QString& query);
     Q_INVOKABLE bool linkNoteToTask(const QString& taskId, const QString& noteId);
@@ -155,6 +169,7 @@ signals:
     void openWorkspaceFolderRequested(QString workspaceId);
     void openWorkspaceNotesRequested(QString workspaceId);
     void openGitModuleRequested(QString workspaceId);
+    void openGitCommitRequested(QString commitSha);
     void openLinkedServiceRequested(QString workspaceId, QString serviceId);
     void openLinkedServiceLogsRequested(QString workspaceId, QString serviceId);
     void startLinkedServiceRequested(QString workspaceId, QString taskId, QString serviceId);
@@ -167,6 +182,7 @@ signals:
     void taskNoteLinksChanged(QString workspaceId, QString taskId, QString noteId);
     void workspaceNoteMetadataChanged(QString workspaceId);
     void actionRunsChanged(QString taskId);
+    void activityChanged(QString taskId);
 private slots:
     void workspaceChanged(const QString& workspaceId, const QString& absolutePath);
 private:
@@ -185,6 +201,7 @@ private:
     application::workspaces::WorkspaceContext& m_workspaceContext;
     application::tasks::TaskScheduler* m_scheduler = nullptr;
     application::planner::TaskNoteLinkService* m_taskNoteLinks = nullptr;
+    application::planner::PlannerActivityService* m_activityService = nullptr;
     PlannerTaskModel m_tasks;
     mutable domain::planner::PlannerTask m_taskScratch;
     PlannerTaskFilterModel m_list;
@@ -205,17 +222,22 @@ private:
     QString m_originFilter;
     QString m_workspacePath;
     QString m_branchStatus;
+    QString m_gitActivityStatus;
+    QString m_gitActivityTaskId;
     QStringList m_localBranches;
     QVariantList m_branchOptions;
     QVariantList m_serviceOptions;
     application::tasks::TaskHandle m_branchTask;
+    application::tasks::TaskHandle m_gitActivityTask;
     QTimer m_filterReloadTimer;
     quint64 m_branchGeneration = 0;
+    quint64 m_gitActivityGeneration = 0;
     int m_completionFilter = -1;
     int m_blockedFilter = -1;
     int m_overdueFilter = -1;
     quint64 m_loadGeneration = 0;
     QVariantList m_milestones;
+    QVariantList m_gitCommitSuggestions;
     bool m_collapsed = false;
     bool m_loading = false;
     bool m_sessionAllowed = true;

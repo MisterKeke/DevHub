@@ -5,11 +5,14 @@
 #include "../database/SqlTransactionGuard.h"
 
 #include <QSet>
+#include <QHash>
 #include <QDate>
 #include <QSqlQuery>
 #include <QThread>
 #include <QUuid>
 #include <QVariant>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include <limits>
 
@@ -77,6 +80,25 @@ Result<void> advanceTaskRevision(QSqlDatabase database, const domain::account::A
     if (!query.exec())
         return sqlFailure<void>(query, operation);
     return query.numRowsAffected() == 1 ? Result<void>::success() : conflict<void>(operation);
+}
+
+Result<void> recordTaskActivity(QSqlDatabase database, const QString &workspaceId, const QString &taskId,
+                                const QString &eventType, const QString &description,
+                                const QJsonObject &metadata)
+{
+    QSqlQuery query(database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO planner_activity_events(id,workspace_id,task_id,event_type,occurred_at_utc,observed_at_utc,"
+        "origin,description,metadata_json) VALUES(?,?,?, ?,strftime('%Y-%m-%dT%H:%M:%fZ','now'),"
+        "strftime('%Y-%m-%dT%H:%M:%fZ','now'),'planner',?,?)"));
+    query.addBindValue(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    query.addBindValue(workspaceId);
+    query.addBindValue(taskId);
+    query.addBindValue(eventType);
+    query.addBindValue(description);
+    query.addBindValue(QString::fromUtf8(QJsonDocument(metadata).toJson(QJsonDocument::Compact)));
+    if (!query.exec()) return sqlFailure<void>(query, QStringLiteral("record Planner task activity"));
+    return Result<void>::success();
 }
 
 QVariant dateValue(const QDate &date)
@@ -848,6 +870,16 @@ Result<void> SqlPlannerRepository::setTags(const QString &workspaceId, const QSt
     if (!exists.next())
         return missing<void>(QStringLiteral("set Planner task tags"));
     exists.finish();
+    QHash<QString, QString> previousTags;
+    QSqlQuery readTags(m_database.database());
+    readTags.prepare(QStringLiteral(
+        "SELECT t.name,t.name_normalized FROM planner_task_tags l JOIN planner_tags t "
+        "ON t.workspace_id=l.workspace_id AND t.id=l.tag_id WHERE l.workspace_id=? AND l.task_id=?"));
+    readTags.addBindValue(workspaceId);
+    readTags.addBindValue(taskId);
+    if (!readTags.exec()) return sqlFailure<void>(readTags, QStringLiteral("read Planner task tags"));
+    while (readTags.next()) previousTags.insert(readTags.value(1).toString(), readTags.value(0).toString());
+    readTags.finish();
     auto advanced = advanceTaskRevision(m_database.database(), m_accountId, workspaceId, taskId,
                                         expectedRevision, QStringLiteral("set Planner task tags"));
     if (!advanced)
@@ -860,6 +892,7 @@ Result<void> SqlPlannerRepository::setTags(const QString &workspaceId, const QSt
     if (!clear.exec())
         return sqlFailure<void>(clear, QStringLiteral("clear Planner task tags"));
     QSet<QString> seen;
+    QHash<QString, QString> nextTags;
     for (const QString &original : tags)
     {
         const QString name = original.trimmed();
@@ -867,6 +900,7 @@ Result<void> SqlPlannerRepository::setTags(const QString &workspaceId, const QSt
         if (name.isEmpty() || seen.contains(normalized))
             continue;
         seen.insert(normalized);
+        nextTags.insert(normalized, name);
         QSqlQuery insertTag(m_database.database());
         insertTag.prepare(QStringLiteral(
             "INSERT OR IGNORE INTO planner_tags(id,workspace_id,name,name_normalized) SELECT "
@@ -890,6 +924,24 @@ Result<void> SqlPlannerRepository::setTags(const QString &workspaceId, const QSt
         link.addBindValue(normalized);
         if (!link.exec())
             return sqlFailure<void>(link, QStringLiteral("link Planner tag"));
+    }
+    for (auto it = nextTags.cbegin(); it != nextTags.cend(); ++it)
+    {
+        if (previousTags.contains(it.key())) continue;
+        auto activity = recordTaskActivity(m_database.database(), workspaceId, taskId,
+            QStringLiteral("task.relationship"), QStringLiteral("Tag added"),
+            QJsonObject{{QStringLiteral("relation"), QStringLiteral("tag")},
+                        {QStringLiteral("name"), it.value()}});
+        if (!activity) return activity;
+    }
+    for (auto it = previousTags.cbegin(); it != previousTags.cend(); ++it)
+    {
+        if (nextTags.contains(it.key())) continue;
+        auto activity = recordTaskActivity(m_database.database(), workspaceId, taskId,
+            QStringLiteral("task.relationship"), QStringLiteral("Tag removed"),
+            QJsonObject{{QStringLiteral("relation"), QStringLiteral("tag")},
+                        {QStringLiteral("name"), it.value()}});
+        if (!activity) return activity;
     }
     return transaction.commit();
 }
@@ -931,6 +983,11 @@ Result<PlannerSubtask> SqlPlannerRepository::addSubtask(const QString &workspace
         return sqlFailure<PlannerSubtask>(query, QStringLiteral("add Planner subtask"));
     if (query.numRowsAffected() != 1)
         return missing<PlannerSubtask>(QStringLiteral("add Planner subtask"));
+    auto activity = recordTaskActivity(m_database.database(), workspaceId, taskId,
+        QStringLiteral("task.relationship"), QStringLiteral("Subtask added"),
+        QJsonObject{{QStringLiteral("relation"), QStringLiteral("subtask")},
+                    {QStringLiteral("subtaskId"), subtask.id}, {QStringLiteral("title"), subtask.title}});
+    if (!activity) return Result<PlannerSubtask>::failure(activity.error());
     auto committed = transaction.commit();
     if (!committed)
         return Result<PlannerSubtask>::failure(committed.error());
@@ -953,6 +1010,14 @@ Result<PlannerSubtask> SqlPlannerRepository::updateSubtask(const QString &worksp
                                         expectedRevision, QStringLiteral("update Planner subtask"));
     if (!advanced)
         return Result<PlannerSubtask>::failure(advanced.error());
+    QSqlQuery previous(m_database.database());
+    previous.prepare(QStringLiteral("SELECT title,is_completed FROM planner_subtasks WHERE id=? AND task_id=? AND workspace_id=?"));
+    previous.addBindValue(subtask.id); previous.addBindValue(taskId); previous.addBindValue(workspaceId);
+    if (!previous.exec()) return sqlFailure<PlannerSubtask>(previous, QStringLiteral("read Planner subtask"));
+    if (!previous.next()) return missing<PlannerSubtask>(QStringLiteral("update Planner subtask"));
+    const QString oldTitle = previous.value(0).toString();
+    const bool oldCompleted = previous.value(1).toBool();
+    previous.finish();
     QSqlQuery query(m_database.database());
     query.prepare(
         QStringLiteral("UPDATE planner_subtasks SET "
@@ -970,6 +1035,21 @@ Result<PlannerSubtask> SqlPlannerRepository::updateSubtask(const QString &worksp
         return sqlFailure<PlannerSubtask>(query, QStringLiteral("update Planner subtask"));
     if (query.numRowsAffected() != 1)
         return missing<PlannerSubtask>(QStringLiteral("update Planner subtask"));
+    if (oldTitle != subtask.title) {
+        auto activity = recordTaskActivity(m_database.database(), workspaceId, taskId,
+            QStringLiteral("task.relationship"), QStringLiteral("Subtask changed"),
+            QJsonObject{{QStringLiteral("relation"), QStringLiteral("subtask")},
+                        {QStringLiteral("subtaskId"), subtask.id}, {QStringLiteral("field"), QStringLiteral("title")},
+                        {QStringLiteral("from"), oldTitle}, {QStringLiteral("to"), subtask.title}});
+        if (!activity) return Result<PlannerSubtask>::failure(activity.error());
+    }
+    if (oldCompleted != subtask.completed) {
+        auto activity = recordTaskActivity(m_database.database(), workspaceId, taskId,
+            QStringLiteral("task.relationship"), subtask.completed ? QStringLiteral("Subtask completed") : QStringLiteral("Subtask reopened"),
+            QJsonObject{{QStringLiteral("relation"), QStringLiteral("subtask")},
+                        {QStringLiteral("subtaskId"), subtask.id}, {QStringLiteral("completed"), subtask.completed}});
+        if (!activity) return Result<PlannerSubtask>::failure(activity.error());
+    }
     auto committed = transaction.commit();
     if (!committed)
         return Result<PlannerSubtask>::failure(committed.error());
@@ -988,6 +1068,12 @@ Result<void> SqlPlannerRepository::removeSubtask(const QString &workspaceId, con
                                         expectedRevision, QStringLiteral("delete Planner subtask"));
     if (!advanced)
         return advanced;
+    QSqlQuery previous(m_database.database());
+    previous.prepare(QStringLiteral("SELECT title FROM planner_subtasks WHERE id=? AND task_id=? AND workspace_id=?"));
+    previous.addBindValue(subtaskId); previous.addBindValue(taskId); previous.addBindValue(workspaceId);
+    if (!previous.exec()) return sqlFailure<void>(previous, QStringLiteral("read Planner subtask"));
+    if (!previous.next()) return missing<void>(QStringLiteral("delete Planner subtask"));
+    const QString title = previous.value(0).toString(); previous.finish();
     QSqlQuery query(m_database.database());
     query.prepare(
         QStringLiteral("DELETE FROM planner_subtasks WHERE id=? AND task_id=? AND workspace_id=? "
@@ -1000,6 +1086,11 @@ Result<void> SqlPlannerRepository::removeSubtask(const QString &workspaceId, con
         return sqlFailure<void>(query, QStringLiteral("delete Planner subtask"));
     if (query.numRowsAffected() != 1)
         return missing<void>(QStringLiteral("delete Planner subtask"));
+    auto activity = recordTaskActivity(m_database.database(), workspaceId, taskId,
+        QStringLiteral("task.relationship"), QStringLiteral("Subtask removed"),
+        QJsonObject{{QStringLiteral("relation"), QStringLiteral("subtask")},
+                    {QStringLiteral("subtaskId"), subtaskId}, {QStringLiteral("title"), title}});
+    if (!activity) return activity;
     return transaction.commit();
 }
 
@@ -1446,6 +1537,11 @@ Result<void> SqlPlannerRepository::addDependency(const QString &workspaceId, con
     insert.addBindValue(dependsOnTaskId);
     if (!insert.exec())
         return sqlFailure<void>(insert, QStringLiteral("add Planner dependency"));
+    auto activity = recordTaskActivity(m_database.database(), workspaceId, taskId,
+        QStringLiteral("task.relationship"), QStringLiteral("Dependency added"),
+        QJsonObject{{QStringLiteral("relation"), QStringLiteral("dependency")},
+                    {QStringLiteral("taskId"), dependsOnTaskId}});
+    if (!activity) return activity;
     return transaction.commit();
 }
 
@@ -1474,6 +1570,13 @@ Result<void> SqlPlannerRepository::removeDependency(const QString &workspaceId,
     query.addBindValue(m_accountId.toString());
     if (!query.exec())
         return sqlFailure<void>(query, QStringLiteral("remove Planner dependency"));
+    if (query.numRowsAffected() == 1) {
+        auto activity = recordTaskActivity(m_database.database(), workspaceId, taskId,
+            QStringLiteral("task.relationship"), QStringLiteral("Dependency removed"),
+            QJsonObject{{QStringLiteral("relation"), QStringLiteral("dependency")},
+                        {QStringLiteral("taskId"), dependsOnTaskId}});
+        if (!activity) return activity;
+    }
     return transaction.commit();
 }
 

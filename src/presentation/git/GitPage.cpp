@@ -154,6 +154,22 @@ void GitPage::focusBranch(QString branch) {
     if (m_tabs) m_tabs->setCurrentIndex(2);
     refresh();
 }
+void GitPage::focusCommit(QString commitSha) {
+    if (m_tabs) m_tabs->setCurrentIndex(1);
+    m_requestedCommit = commitSha;
+    for (int row = 0; row < m_history->count(); ++row) {
+        auto* item = m_history->item(row);
+        if (item->data(Qt::UserRole).toString() == commitSha) {
+            m_history->setCurrentItem(item);
+            if (isVisible()) m_requestedCommit.clear();
+            return;
+        }
+    }
+    auto* linked = new QListWidgetItem(tr("Linked commit %1").arg(commitSha.left(12)), m_history);
+    linked->setData(Qt::UserRole, commitSha);
+    m_history->setCurrentItem(linked);
+    if (isVisible()) m_requestedCommit.clear();
+}
 void GitPage::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
     if (!m_path.isEmpty() && m_refresh->isEnabled()) refresh();
@@ -512,7 +528,24 @@ void GitPage::refresh() {
                 changeCount == 0 ? QStringLiteral("success") : QStringLiteral("warning"));
             m_loadMore->setVisible(snapshot.historyError.isEmpty() && snapshot.history.size() == 50);
             m_loadMore->setEnabled(true);
-            if (m_history->count() > 0) showDiff(m_history->item(0)->data(Qt::UserRole).toString());
+            if (!m_requestedCommit.isEmpty()) {
+                QListWidgetItem* requested = nullptr;
+                for (int row = 0; row < m_history->count(); ++row) {
+                    auto* item = m_history->item(row);
+                    if (item->data(Qt::UserRole).toString() == m_requestedCommit) {
+                        requested = item;
+                        break;
+                    }
+                }
+                if (!requested) {
+                    requested = new QListWidgetItem(tr("Linked commit %1").arg(m_requestedCommit.left(12)), m_history);
+                    requested->setData(Qt::UserRole, m_requestedCommit);
+                }
+                m_history->setCurrentItem(requested);
+                m_requestedCommit.clear();
+            } else if (m_history->count() > 0) {
+                showDiff(m_history->item(0)->data(Qt::UserRole).toString());
+            }
         });
 }
 void GitPage::appendCommit(const application::git::GitCommit& commit) {
