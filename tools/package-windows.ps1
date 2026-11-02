@@ -11,7 +11,16 @@ param(
     [ValidateRange(1, 64)]
     [int]$BuildParallelism = 4,
     [switch]$StageOnly,
-    [switch]$PortableOnly
+    [switch]$PortableOnly,
+    [ValidateScript({
+        if ([string]::IsNullOrEmpty($_)) { return $true }
+        if ([IO.Path]::GetFileName($_) -ne $_ -or $_.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
+            $_ -notmatch '\.zip\z' -or $_ -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])\.') {
+            throw 'ZipName must be a plain .zip filename, for example DevHub-Retro.zip (no directory paths).'
+        }
+        return $true
+    })]
+    [string]$ZipName
 )
 
 $ErrorActionPreference = "Stop"
@@ -217,7 +226,10 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Signing the application failed with exit code $LASTEXITCODE." }
     }
 
-    $portableArchive = Join-Path $releaseDirectory "DevHub-Portable-$version-x64.zip"
+    $portableName = if ($ZipName) { $ZipName } else { "DevHub-Portable-$version-x64.zip" }
+    $portableArchive = Join-Path $releaseDirectory $portableName
+    # Windows PowerShell 5.1 does not load ZipFile's framework assembly by default.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
     if (Test-Path -LiteralPath $portableArchive) { Remove-Item -LiteralPath $portableArchive -Force }
     [IO.Compression.ZipFile]::CreateFromDirectory($stageDirectory, $portableArchive,
         [IO.Compression.CompressionLevel]::Optimal, $false)
@@ -233,10 +245,21 @@ try {
     }
 
     $checksumFile = Join-Path $releaseDirectory "SHA256SUMS.txt"
-    Get-ChildItem -LiteralPath $releaseDirectory -File | Where-Object Name -ne "SHA256SUMS.txt" |
-        Get-FileHash -Algorithm SHA256 |
-        ForEach-Object { "{0} *{1}" -f $_.Hash.ToLowerInvariant(), (Split-Path $_.Path -Leaf) } |
-        Set-Content -LiteralPath $checksumFile -Encoding ascii
+    # Use the framework API so Windows PowerShell also works when launched from
+    # a parent process with PowerShell 7 module paths.
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $checksumLines = foreach ($file in Get-ChildItem -LiteralPath $releaseDirectory -File |
+                Where-Object Name -ne "SHA256SUMS.txt") {
+            $stream = [IO.File]::OpenRead($file.FullName)
+            try { $hash = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
+            finally { $stream.Dispose() }
+            "{0} *{1}" -f $hash, $file.Name
+        }
+        $checksumLines | Set-Content -LiteralPath $checksumFile -Encoding ascii
+    } finally {
+        $sha256.Dispose()
+    }
     Write-Host "Portable package ready: $portableArchive"
     if (!$PortableOnly) { Write-Host "Installer ready: $installer" }
 }

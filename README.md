@@ -22,6 +22,18 @@ may change Codex's shared sign-in. See [Assistant setup](docs/architecture/assis
 
 ## Running a portable build
 
+With GNU Make installed (`mingw32-make` on some Windows setups), use:
+
+```powershell
+mingw32-make portable ZIP_NAME=DevHub-Retro.zip
+mingw32-make test
+```
+
+The ZIP is saved in `out/release/`; omit `ZIP_NAME` for the default versioned name.
+Run `mingw32-make help` for toolchain options. The wrapper reuses the existing
+CMake configuration, or accepts `QT_ROOT_DIR` for a fresh checkout. See
+[build shortcuts](docs/building.md#make-shortcuts) for details.
+
 Create a portable ZIP with `tools/package-windows.ps1 -PortableOnly`. Extract the entire ZIP into one folder and run `bin/devhub.exe` from that folder. A desktop shortcut may point to this executable, but moving the executable alone will leave behind the Qt DLLs and plugins it needs. The `out/build/windows-dev/Debug/devhub.exe` file is a development build, not a portable package. See [packaging/README.md](packaging/README.md) for release checks.
 
 ## Viewing Git history

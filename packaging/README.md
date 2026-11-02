@@ -2,6 +2,15 @@
 
 The supported packaging path is Windows x64 with a Release build, the matching Qt kit and MinGW compiler, and vcpkg. Run `tools/package-windows.ps1 -PortableOnly` to create `out/release/DevHub-Portable-<version>-x64.zip` without Inno Setup. Run `tools/package-windows.ps1` with Inno Setup 6 installed to create both the portable ZIP and installer. The script stages Qt, QSQLITE, dependency notices, and SHA-256 checksums.
 
+Choose a filename with `tools/package-windows.ps1 -PortableOnly -ZipName DevHub-Retro.zip`,
+or use `mingw32-make portable ZIP_NAME=DevHub-Retro.zip` (`make` where available).
+Names with spaces are supported; quote the whole Make assignment, for example
+`mingw32-make portable "ZIP_NAME=DevHub Retro.zip"`. The name must be a plain `.zip`
+filename, without directory components. The archive is written to `out/release/`,
+and `SHA256SUMS.txt` records that filename. Without an override, the versioned
+filename remains the default. See [Make shortcuts](../docs/building.md#make-shortcuts)
+for setup and test commands.
+
 Set `QT_ROOT_DIR` to the Qt kit used by the preset, or pass `-QtRoot`. The script selects the only `Tools/mingw*/bin` compiler it finds; when several are installed, pass `-CompilerBin` for the compiler paired with that Qt kit. Set `VCPKG_ROOT` when using a vcpkg checkout other than `.tools/vcpkg`. `-InnoCompiler` can point to `ISCC.exe` when it is not on `PATH`.
 
 Release compilation defaults to four concurrent jobs to bound compiler memory

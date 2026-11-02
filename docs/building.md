@@ -43,6 +43,49 @@ ctest --preset windows-dev-debug
 
 Use the compiler paired with the selected Qt kit. The `windows-dev` preset uses the static-library `x64-mingw-static` vcpkg triplet so libsodium is linked into DevHub. For an MSVC Qt kit, use the `windows-ci` preset and its `x64-windows` triplet instead.
 
+## Make shortcuts
+
+The root `Makefile` wraps the existing Windows CMake presets and packaging script.
+Use GNU Make (`make` or `mingw32-make`), not Visual Studio's NMake. From the repository root:
+
+```powershell
+mingw32-make portable
+mingw32-make portable ZIP_NAME=DevHub-Retro.zip
+mingw32-make portable "ZIP_NAME=DevHub Retro.zip"
+mingw32-make test
+mingw32-make test TEST_FILTER=planner
+mingw32-make help
+```
+
+`portable` builds Release, stages and verifies the runtime, and creates a ZIP in
+`out/release/` with an entry in `SHA256SUMS.txt`. `ZIP_NAME` accepts a plain `.zip`
+filename, including spaces; directory paths and invalid Windows filenames are
+rejected. Omit it to use `DevHub-Portable-<version>-x64.zip`.
+
+`test` configures and builds the Debug application and test executables before
+running CTest. A failed configure, build, runtime check, or test makes the command
+fail. `TEST_FILTER` optionally selects CTest target names with a regular expression.
+Tests retain their existing opt-in native checks; this shortcut does not log in or
+enable inference.
+
+The wrapper reads the Qt kit and compiler from an existing `windows-dev` or
+`windows-package` CMake cache. On a fresh checkout, specify the kit:
+
+```powershell
+mingw32-make portable QT_ROOT_DIR=D:/Qt/6.11.0/mingw_64
+mingw32-make test QT_ROOT_DIR=D:/Qt/6.11.0/mingw_64 JOBS=4
+```
+
+Override `COMPILER_BIN` if multiple MinGW compilers are installed, `CMAKE_PATH`
+to select `cmake.exe`, or `VCPKG_ROOT` / `VCPKG_INSTALLED_DIR` for another vcpkg
+checkout or installed dependency tree. Environment variables work too. `JOBS`
+controls build/test concurrency (default 4, range 1–64). The test environment
+resolves Qt DLLs, QML imports, and plugins from the selected kit.
+
+Dependency installation follows the configured `VCPKG_MANIFEST_INSTALL` policy,
+defaulting to `ON` for a fresh build. Set `INSTALL_DEPS=ON` to install/update
+manifest dependencies, or `INSTALL_DEPS=OFF` to reuse an already installed set.
+
 ## Workspace Planner verification
 
 From a configured preset build, run the complete registered suite with:
