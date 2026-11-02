@@ -253,6 +253,9 @@ add_library(devhub_planner STATIC
     src/domain/planner/PlannerRules.cpp
     src/application/planner/PlannerValidation.cpp
     src/application/planner/PlannerService.cpp
+    src/application/planner/TaskNoteLinkService.cpp
+    src/infrastructure/planner/SqlTaskNoteLinkRepository.h
+    src/infrastructure/planner/SqlTaskNoteLinkRepository.cpp
     src/infrastructure/planner/SomethingQtImportReader.h
     src/infrastructure/planner/SomethingQtImportReader.cpp
     src/infrastructure/planner/SqlPlannerRepository.cpp

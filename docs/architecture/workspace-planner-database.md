@@ -26,6 +26,7 @@ and does not checkpoint or change the source journal mode.
 | `planner_import_records` | Source profile identity, full-width source task/revision text, original timestamps, local import time, and independent copy number. |
 | `planner_time_entries` | Manual work duration history; task tracked time is its aggregate. |
 | `planner_action_runs` | Bounded metadata for an explicitly started saved-service action; it does not duplicate service output. |
+| `planner_task_note_links` | Stable-ID many-to-many links to same-workspace Notes records; a fixed note-kind discriminator lets the composite foreign key reject folders. Titles and Markdown remain owned by Notes. |
 
 Titles, descriptions, notes, tags, and source IDs are stored as text without a character-count
 truncation step. Source task IDs and revisions are read as SQLite integers and converted directly
@@ -42,7 +43,7 @@ are capped at 512 characters and log references identify the existing bounded se
 
 ## Migration history
 
-The current database schema version is **12**. Embedded migration files are immutable once
+The current database schema version is **13**. Embedded migration files are immutable once
 released and are applied transactionally by `InternalDatabaseManager`.
 
 | Version | Migration | Change |
@@ -51,6 +52,7 @@ released and are applied transactionally by `InternalDatabaseManager`.
 | 10 | `0010_planner_import_copies.sql` | Rebuilds the provenance uniqueness key to support separately requested independent copies while preserving existing provenance as copy 1. |
 | 11 | `0011_planner_time_entries_and_indexes.sql` | Adds manual time entries and indexes for branch, origin, milestone, due-date, priority/status, and time-history queries. |
 | 12 | `0012_planner_service_actions.sql` | Adds saved-service association and per-task action-run history. |
+| 13 | `0013_planner_task_note_links.sql` | Adds account/workspace-safe task-to-note links with composite foreign keys and note deletion cascades. |
 
 Fresh-install, existing-installation upgrade, provenance preservation, foreign-key checks,
 transaction rollback, refusal of a newer schema, and corruption handling are covered by

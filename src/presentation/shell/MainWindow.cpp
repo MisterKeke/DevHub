@@ -157,6 +157,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
                        application::files::IExternalEditorLauncher& editorLauncher,
                        application::settings::SettingsService& settingsService,
                        application::planner::PlannerService& plannerService,
+                       application::planner::TaskNoteLinkService& taskNoteLinks,
                        presentation::theme::ThemeManager& themeManager,
                        application::events::ApplicationEventHub& eventHub,
                        application::notifications::INotificationRepository& notificationRepository,
@@ -482,7 +483,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     m_overviewComposer = new application::overview::OverviewStateComposer(this);
     m_overviewPage = new devhub::presentation::overview::OverviewPage(*m_commandRegistry, m_pageHost);
     m_plannerController = new devhub::presentation::overview::planner::PlannerController(
-        plannerService, m_settingsService, m_workspaceContext, this, &m_scheduler);
+        plannerService, m_settingsService, m_workspaceContext, this, &m_scheduler, &taskNoteLinks);
     m_plannerImportController = new devhub::presentation::overview::planner::PlannerImportController(
         plannerService, m_workspaceManager, m_workspaceContext, m_scheduler, m_assistantToolRuntime,
         m_settingsService, m_session, this);
@@ -521,6 +522,32 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::openWorkspaceNotesRequested,
             this, [this](const QString& workspaceId) {
         if (plannerWorkspaceAuthorized(workspaceId)) selectQuickModule(6);
+    });
+    connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::openLinkedNoteRequested,
+            this, [this](const QString& workspaceId, const QString& taskId, const QString& noteId) {
+        if (!plannerWorkspaceAuthorized(workspaceId) || !m_notesPage
+            || m_notesPage->workspaceId() != workspaceId) {
+            statusBar()->showMessage(tr("Sign in and select the linked note's workspace before opening it."), 5000);
+            return;
+        }
+        const auto task = m_plannerController->taskDetails(taskId);
+        if (task.value(QStringLiteral("taskId")).toString() != taskId
+            || !m_notesPage->openNoteById(noteId)) {
+            statusBar()->showMessage(tr("The note could not be opened. Resolve any pending Notes editor change and try again."), 6000);
+            return;
+        }
+        selectQuickModule(6);
+    });
+    connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::createAndLinkNoteRequested,
+            this, [this](const QString& workspaceId, const QString& taskId) {
+        if (!plannerWorkspaceAuthorized(workspaceId) || !m_notesPage
+            || m_notesPage->workspaceId() != workspaceId
+            || m_plannerController->taskDetails(taskId).isEmpty()) {
+            statusBar()->showMessage(tr("Sign in and select the task's workspace before creating a linked note."), 5000);
+            return;
+        }
+        selectQuickModule(6);
+        m_notesPage->createNoteForPlannerTask(workspaceId, taskId);
     });
     connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::openGitModuleRequested,
             this, [this](const QString& workspaceId) {
@@ -616,6 +643,40 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         });
     m_pageHost->addWidget(databasePage);
     m_notesPage = new devhub::presentation::notes::NotesPage(notesRepository, accountId, notesStorageRoot, m_pageHost);
+    m_notesPage->setTaskNoteLinkService(&taskNoteLinks);
+    connect(m_notesPage, &devhub::presentation::notes::NotesPage::noteCreatedForPlannerTask,
+            this, [this](const QString& workspaceId, const QString& taskId, const QString& noteId) {
+        if (!plannerWorkspaceAuthorized(workspaceId)) {
+            statusBar()->showMessage(tr("The note was created, but the task's workspace is no longer available to link it."), 6000);
+            return;
+        }
+        if (!m_plannerController->linkNoteToTask(taskId, noteId))
+            statusBar()->showMessage(m_plannerController->error(), 6000);
+        else
+            statusBar()->showMessage(tr("Note created and linked to the Planner task."), 4000);
+    });
+    connect(m_notesPage, &devhub::presentation::notes::NotesPage::openPlannerTaskRequested,
+            this, [this](const QString& workspaceId, const QString& taskId) {
+        if (!plannerWorkspaceAuthorized(workspaceId)) {
+            statusBar()->showMessage(tr("Sign in and select the task's workspace before opening it."), 5000);
+            return;
+        }
+        selectQuickModule(0);
+        m_plannerController->setCollapsed(false);
+        m_plannerController->requestOpenTask(taskId);
+    });
+    connect(m_notesPage, &devhub::presentation::notes::NotesPage::taskNoteLinkChanged,
+            this, [this](const QString& workspaceId, const QString& taskId, const QString& noteId) {
+        m_plannerController->notifyTaskNoteLinkChanged(workspaceId, taskId, noteId);
+        if (plannerWorkspaceAuthorized(workspaceId)) m_plannerController->refresh();
+    });
+    connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::taskNoteLinksChanged,
+            m_notesPage, [this](const QString& workspaceId, const QString&, const QString& noteId) {
+        if (m_notesPage && workspaceId == m_notesPage->workspaceId())
+            m_notesPage->refreshLinkedTaskLinks(noteId);
+    });
+    connect(m_notesPage, &devhub::presentation::notes::NotesPage::workspaceNotesChanged,
+            m_plannerController, &devhub::presentation::overview::planner::PlannerController::notifyWorkspaceNotesChanged);
     m_pageHost->addWidget(m_notesPage);
     auto* filesPage = new devhub::presentation::files::FileBrowserPage(trashService, editorLauncher, m_pageHost);
     m_pageHost->addWidget(filesPage);
@@ -971,6 +1032,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             [this](application::authentication::SessionState state) {
                 using State = application::authentication::SessionState;
                 m_plannerController->setSessionAllowed(state == State::SignedIn);
+                if (m_notesPage) m_notesPage->setSessionAllowed(state == State::SignedIn);
                 if (state != State::SignedIn) cancelPendingPlannerServiceStarts();
                 application::commands::CommandContext context;
                 const auto active = m_workspaceContext.activeWorkspace();
@@ -1180,6 +1242,8 @@ void MainWindow::selectQuickModule(int index)
         return;
     }
     m_quickModule = index;
+    if (index == 6 && m_notesPage)
+        m_notesPage->refreshLinkedTaskLinks(m_notesPage->currentNoteId());
     emit shellChanged();
     if (index == 0) {
         m_moduleWindow->hide();

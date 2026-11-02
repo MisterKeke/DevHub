@@ -25,6 +25,7 @@ public:
     QString contentPathValue;
     QVector<application::notes::NoteNode> nodes;
     int saves = 0;
+    bool failSaves = false;
     QString savedContent;
     shared::common::Result<QVector<application::notes::NoteNode>> list(const QString&, bool) override { return shared::common::Result<QVector<application::notes::NoteNode>>::success(nodes); }
     shared::common::Result<application::notes::NoteNode> create(const QString&, QString, QString, application::notes::NoteNodeKind) override { return failure<application::notes::NoteNode>(); }
@@ -35,6 +36,7 @@ public:
     shared::common::Result<QString> readContent(const QString&, const QString&) override { return shared::common::Result<QString>::success({}); }
     shared::common::Result<QString> readContentBounded(const QString&, const QString&, qint64) override { return shared::common::Result<QString>::success({}); }
     shared::common::Result<QString> saveContent(const QString&, const QString&, const QString& content, const QString&) override {
+        if (failSaves) return failure<QString>();
         ++saves; savedContent = content;
         return shared::common::Result<QString>::success(QString::fromLatin1(QCryptographicHash::hash(content.toUtf8(), QCryptographicHash::Sha256).toHex()));
     }
@@ -94,6 +96,28 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(item->isHidden(), 3000);
         search->clear();
         QTRY_VERIFY_WITH_TIMEOUT(!item->isHidden(), 3000);
+    }
+
+    void programmaticNavigationUsesStableIdAndPreservesDirtyEditorOnFailure()
+    {
+        QTemporaryDir temp; QVERIFY(temp.isValid());
+        NotesRepositorySpy repository(QDir(temp.path()).filePath(QStringLiteral("note.md")));
+        for (const auto& id : {QStringLiteral("note-one"), QStringLiteral("note-two")}) {
+            application::notes::NoteNode node; node.id = id; node.workspaceId = QStringLiteral("workspace");
+            node.title = id; repository.nodes.append(node);
+        }
+        presentation::notes::NotesPage page(repository, QStringLiteral("account"), temp.path());
+        QVERIFY(page.setWorkspace(QStringLiteral("workspace")));
+        QVERIFY(page.openNoteById(QStringLiteral("note-one")));
+        QCOMPARE(page.currentNoteId(), QStringLiteral("note-one"));
+        auto* editor = page.findChild<QPlainTextEdit*>(QStringLiteral("markdownEditor")); QVERIFY(editor);
+        editor->setPlainText(QStringLiteral("Keep this unsaved text"));
+        repository.failSaves = true;
+        QVERIFY(!page.openNoteById(QStringLiteral("note-two")));
+        QCOMPARE(page.currentNoteId(), QStringLiteral("note-one"));
+        QCOMPARE(editor->toPlainText(), QStringLiteral("Keep this unsaved text"));
+        page.setSessionAllowed(false);
+        QVERIFY(!page.openNoteById(QStringLiteral("note-two")));
     }
 };
 

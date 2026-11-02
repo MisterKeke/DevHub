@@ -37,6 +37,7 @@ Rectangle {
     ]
     property var calendarMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
     property var detail: ({})
+    property var noteCandidates: []
     property string editorTaskId: ""
     property string knownWorkspaceId: ""
     property bool editorDirty: false
@@ -370,7 +371,35 @@ Rectangle {
         var data = plannerController.taskDetails(taskId)
         if (!data || !data.taskId) return
         data.timeEntries = plannerController.timeEntries(taskId)
+        data.linkedNotes = plannerController.linkedNotes(taskId)
         detail = data
+    }
+    function refreshNoteCandidates() {
+        if (detail && detail.taskId)
+            noteCandidates = plannerController.searchNotesForLink(detail.taskId, noteSearchField.text)
+        else noteCandidates = []
+    }
+    function openNotePicker() {
+        noteSearchField.clear()
+        refreshNoteCandidates()
+        notePickerMessage.text = ""
+        notePicker.open()
+        noteSearchField.forceActiveFocus()
+    }
+    function linkPickerNote(noteId) {
+        if (plannerController.linkNoteToTask(detail.taskId, noteId)) {
+            refreshDetails(detail.taskId)
+            refreshNoteCandidates()
+            notePickerMessage.text = qsTr("Note linked to this task.")
+        } else notePickerMessage.text = plannerController.error || qsTr("The note could not be linked.")
+    }
+    function unlinkTaskNote(noteId) {
+        if (plannerController.unlinkNoteFromTask(detail.taskId, noteId)) refreshDetails(detail.taskId)
+        else detailsMessage.text = plannerController.error || qsTr("The note could not be unlinked.")
+    }
+    function openTaskNote(noteId) {
+        if (!plannerController.openLinkedNote(detail.taskId, noteId))
+            detailsMessage.text = plannerController.error || qsTr("The note could not be opened.")
     }
     function openMilestoneEditor(id) {
         selectedMilestoneId = id || ""
@@ -1122,6 +1151,30 @@ Rectangle {
                         }
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text { font.family: root.fontFamily; text: qsTr("Linked Notes (%1)").arg((root.detail.linkedNotes || []).length); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                        PlannerButton { text: qsTr("Link Existing Note"); enabled: !!plannerController.hasWorkspace; onClicked: root.openNotePicker() }
+                        PlannerButton { text: qsTr("Create & Link Note"); enabled: !!plannerController.hasWorkspace; onClicked: { plannerController.requestCreateAndLinkNote(root.detail.taskId); detailsMessage.text = plannerController.error || ""; detailsDialog.close() } }
+                    }
+                    Repeater {
+                        model: (root.detail.linkedNotes || []).slice(0, 8)
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true; spacing: 7
+                            Text { font.family: root.fontFamily; text: "▧"; color: root.info; font.pixelSize: 13 }
+                            ColumnLayout {
+                                Layout.fillWidth: true; spacing: 1
+                                Text { font.family: root.fontFamily; text: modelData.title; color: root.text; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
+                                Text { font.family: root.fontFamily; text: modelData.trashed ? qsTr("Unavailable · in Trash") : (modelData.folderPath || qsTr("Workspace Notes")); color: modelData.trashed ? root.warning : root.muted; font.pixelSize: 9; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                            }
+                            PlannerButton { text: qsTr("Open"); enabled: !!modelData.available; Accessible.name: qsTr("Open linked note %1").arg(modelData.title); onClicked: root.openTaskNote(modelData.noteId) }
+                            PlannerButton { compact: true; text: "×"; Accessible.name: qsTr("Unlink note %1").arg(modelData.title); onClicked: root.unlinkTaskNote(modelData.noteId) }
+                        }
+                    }
+                    Text { font.family: root.fontFamily; visible: (root.detail.linkedNotes || []).length === 0; text: qsTr("No notes are linked to this task."); color: root.muted; font.pixelSize: 9 }
+                    Text { font.family: root.fontFamily; visible: (root.detail.linkedNotes || []).length > 8; text: qsTr("Showing the first 8 of %1 linked notes.").arg((root.detail.linkedNotes || []).length); color: root.muted; font.pixelSize: 9 }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
                     Text { font.family: root.fontFamily; text: qsTr("Dependencies"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
                     Text { font.family: root.fontFamily; visible: !!root.detail.blockedByDependency || !!root.detail.blockedReason; text: root.detail.blockedByDependency ? qsTr("Blocked by incomplete prerequisite: %1").arg((root.detail.incompletePrerequisiteTitles || []).join(", ")) : qsTr("Blocked: %1").arg(root.detail.blockedReason || ""); color: root.warning; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     Text { font.family: root.fontFamily; text: qsTr("Prerequisites: %1").arg((root.detail.prerequisiteTitles || []).join(", ") || qsTr("none")); color: root.secondary; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
@@ -1169,6 +1222,46 @@ Rectangle {
                 PlannerButton { text: qsTr("Delete"); onClicked: root.requestDelete(root.detail.taskId) }
                 PlannerButton { text: qsTr("Edit"); onClicked: root.editFromDetails() }
             }
+        }
+    }
+    PlannerDialog {
+        id: notePicker; modal: true; title: qsTr("Link Existing Note"); standardButtons: Dialog.Close
+        preferredWidth: 560; preferredHeight: 540
+        contentItem: ColumnLayout {
+            spacing: 8
+            PlannerField { id: noteSearchField; Layout.fillWidth: true; placeholderText: qsTr("Search note titles, folders, or tags"); onTextChanged: root.refreshNoteCandidates() }
+            ListView {
+                Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 4
+                model: root.noteCandidates
+                delegate: Rectangle {
+                    required property var modelData
+                    width: ListView.view.width; height: 58; color: root.surface; border.color: root.border
+                    RowLayout {
+                        anchors.fill: parent; anchors.margins: 7; spacing: 8
+                        Text { font.family: root.fontFamily; text: "▧"; color: root.info; font.pixelSize: 14 }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 1
+                            Text { font.family: root.fontFamily; text: modelData.title; color: root.text; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
+                            Text { font.family: root.fontFamily; text: modelData.folderPath || ((modelData.tags || []).length ? (modelData.tags || []).join(", ") : qsTr("Workspace Notes")); color: root.muted; font.pixelSize: 9; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                        }
+                        Text { visible: !!modelData.alreadyLinked; text: qsTr("Already linked"); color: root.muted; font.family: root.fontFamily; font.pixelSize: 9 }
+                        PlannerButton { visible: !modelData.alreadyLinked; enabled: !!plannerController.hasWorkspace; text: qsTr("Link"); Accessible.name: qsTr("Link note %1").arg(modelData.title); onClicked: root.linkPickerNote(modelData.noteId) }
+                    }
+                }
+            }
+            Text { visible: root.noteCandidates.length === 0; text: qsTr("No available notes match this search."); color: root.muted; font.family: root.fontFamily; font.pixelSize: 10 }
+            Text { id: notePickerMessage; visible: text.length > 0; text: ""; color: root.noteCandidates.length > 0 ? root.info : root.error; font.family: root.fontFamily; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+        }
+    }
+    Connections {
+        target: plannerController
+        function onTaskNoteLinksChanged(workspaceId, taskId, noteId) {
+            if (root.detail.taskId === taskId && detailsDialog.visible)
+                root.refreshDetails(taskId)
+        }
+        function onWorkspaceNoteMetadataChanged(workspaceId) {
+            if (workspaceId === plannerController.workspaceId && root.detail.taskId && detailsDialog.visible)
+                root.refreshDetails(root.detail.taskId)
         }
     }
     PlannerDialog {

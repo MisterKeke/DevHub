@@ -2,6 +2,7 @@
 #include "../../application/notes/NoteFolderExporter.h"
 #include "../../application/files/WorkspaceFileService.h"
 #include "../../application/notes/NoteSearchService.h"
+#include "../../application/planner/TaskNoteLinkService.h"
 #include "../widgets/SafeMarkdownBrowser.h"
 
 #include <QCryptographicHash>
@@ -14,6 +15,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFileDialog>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
@@ -97,11 +100,22 @@ NotesPage::NotesPage(INotesRepository& repository, QString accountId, QString re
     auto* editorPane = new QSplitter(Qt::Horizontal, split);
     m_editor = new QPlainTextEdit(editorPane); m_editor->setObjectName(QStringLiteral("markdownEditor"));
     m_editor->setPlaceholderText(tr("Select a note or create one to start writing Markdown."));
-    m_preview = new widgets::SafeMarkdownBrowser(editorPane, widgets::SafeMarkdownBrowser::ResourcePolicy::NotesQrc); m_preview->setObjectName(QStringLiteral("markdownPreview"));
+    auto* previewPane = new QWidget(editorPane);
+    auto* previewLayout = new QVBoxLayout(previewPane); previewLayout->setContentsMargins(0, 0, 0, 0); previewLayout->setSpacing(8);
+    m_preview = new widgets::SafeMarkdownBrowser(previewPane, widgets::SafeMarkdownBrowser::ResourcePolicy::NotesQrc); m_preview->setObjectName(QStringLiteral("markdownPreview"));
     m_preview->setOpenLinks(false); m_preview->setOpenExternalLinks(false);
     new MarkdownHighlighter(m_editor->document());
     m_preview->setPlaceholderText(tr("Markdown preview — remote links are not opened."));
-    editorPane->addWidget(m_editor); editorPane->addWidget(m_preview); editorPane->setStretchFactor(0, 1); editorPane->setStretchFactor(1, 1);
+    m_linkedTasksPanel = new QFrame(previewPane); m_linkedTasksPanel->setObjectName(QStringLiteral("notesLinkedTasks"));
+    m_linkedTasksPanel->setFrameShape(QFrame::StyledPanel);
+    m_linkedTasksLayout = new QVBoxLayout(m_linkedTasksPanel); m_linkedTasksLayout->setContentsMargins(10, 7, 10, 7); m_linkedTasksLayout->setSpacing(4);
+    m_linkedTasksLayout->addWidget(new QLabel(tr("Linked Tasks"), m_linkedTasksPanel));
+    auto* emptyLinkedTasks = new QLabel(tr("No Planner tasks are linked to this note."), m_linkedTasksPanel);
+    emptyLinkedTasks->setObjectName(QStringLiteral("notesLinkedTasksEmpty"));
+    emptyLinkedTasks->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    m_linkedTasksLayout->addWidget(emptyLinkedTasks);
+    previewLayout->addWidget(m_preview, 1); previewLayout->addWidget(m_linkedTasksPanel);
+    editorPane->addWidget(m_editor); editorPane->addWidget(previewPane); editorPane->setStretchFactor(0, 1); editorPane->setStretchFactor(1, 1);
     split->addWidget(m_tree); split->addWidget(editorPane); split->setStretchFactor(1, 1); root->addWidget(split, 1);
     m_status = new QLabel(tr("Choose a workspace to view its notes."), this); root->addWidget(m_status);
     m_saveTimer.setSingleShot(true); m_saveTimer.setInterval(700);
@@ -151,8 +165,63 @@ bool NotesPage::setWorkspace(QString workspaceId)
     m_pendingSearchNeedle.reset();
     m_workspaceId = std::move(workspaceId); m_currentNoteId.clear(); m_currentContentHash.clear();
     m_dirty = false;
-    m_editor->clear(); m_preview->clear(); reloadTree();
+    m_editor->clear(); m_preview->clear(); clearLinkedTasks(); reloadTree();
     return true;
+}
+
+void NotesPage::setTaskNoteLinkService(application::planner::TaskNoteLinkService* service)
+{
+    m_taskNoteLinks = service;
+    refreshLinkedTasks(m_currentNoteId);
+}
+
+void NotesPage::setSessionAllowed(bool allowed)
+{
+    m_sessionAllowed = allowed;
+    m_linkedTasksPanel->setEnabled(allowed);
+    if (allowed) refreshLinkedTasks(m_currentNoteId);
+    else clearLinkedTasks();
+}
+
+bool NotesPage::openNoteById(const QString& noteId)
+{
+    if (!m_sessionAllowed || m_workspaceId.isEmpty() || noteId.isEmpty()) return false;
+    if (!m_nodes.contains(noteId)) reloadTree();
+    if (!m_nodes.contains(noteId) || m_nodes.value(noteId).kind != NoteNodeKind::Note
+        || m_nodes.value(noteId).trashed) {
+        m_status->setText(tr("This note is unavailable or has been moved to trash."));
+        return false;
+    }
+    if (m_currentNoteId == noteId) {
+        selectNodeInTree(noteId);
+        return true;
+    }
+    selectNodeInTree(noteId);
+    return m_currentNoteId == noteId;
+}
+
+void NotesPage::createNoteForPlannerTask(const QString& workspaceId, const QString& taskId)
+{
+    if (!m_sessionAllowed || workspaceId.isEmpty() || taskId.isEmpty() || workspaceId != m_workspaceId) {
+        m_status->setText(tr("Select the task's workspace and sign in before creating a linked note."));
+        return;
+    }
+    if (!flushPendingSave()) return;
+    bool accepted = false;
+    const QString title = QInputDialog::getText(this, tr("Create and Link Note"), tr("Title"),
+        QLineEdit::Normal, tr("Untitled Note"), &accepted);
+    if (!accepted) return;
+    QString parentId;
+    if (const auto selected = selectedNode(); selected && selected->kind == NoteNodeKind::Folder && !selected->trashed)
+        parentId = selected->id;
+    const auto created = m_repository.create(m_workspaceId, parentId, title, NoteNodeKind::Note);
+    if (!created) {
+        QMessageBox::warning(this, tr("Could not create note"), created.error().userMessage);
+        return;
+    }
+    reloadTree();
+    (void)openNoteById(created.value().id);
+    emit noteCreatedForPlannerTask(m_workspaceId, taskId, created.value().id);
 }
 
 void NotesPage::startPendingSearch()
@@ -239,10 +308,10 @@ std::optional<NoteNode> NotesPage::selectedNode() const
 
 void NotesPage::openItem(QTreeWidgetItem* item)
 {
-    if (!item) return;
+    if (!item) { clearLinkedTasks(); return; }
     const QString id = item->data(0, NodeIdRole).toString();
-    if (id.isEmpty() || !m_nodes.contains(id) || m_nodes.value(id).kind == NoteNodeKind::Folder) return;
-    if (id == m_currentNoteId) return;
+    if (id.isEmpty() || !m_nodes.contains(id) || m_nodes.value(id).kind == NoteNodeKind::Folder) { clearLinkedTasks(); return; }
+    if (id == m_currentNoteId) { refreshLinkedTasks(id); return; }
     if (!flushPendingSave()) { selectNodeInTree(m_currentNoteId); return; }
     const NoteNode node = m_nodes.value(id);
     auto contentResult = m_repository.readContent(m_workspaceId, id);
@@ -284,7 +353,75 @@ void NotesPage::openItem(QTreeWidgetItem* item)
         else if (box.clickedButton() == discard) QFile::remove(journal);
         Q_UNUSED(keep);
     }
-    updatePreview(); m_status->setText(tr("Opened %1").arg(node.title));
+    updatePreview(); refreshLinkedTasks(id); m_status->setText(tr("Opened %1").arg(node.title));
+}
+
+void NotesPage::clearLinkedTasks()
+{
+    if (!m_linkedTasksLayout) return;
+    while (m_linkedTasksLayout->count() > 1) {
+        QLayoutItem* item = m_linkedTasksLayout->takeAt(1);
+        if (item->widget()) item->widget()->deleteLater();
+        delete item;
+    }
+    m_linkedTasksPanel->setVisible(false);
+}
+
+void NotesPage::refreshLinkedTasks(const QString& noteId)
+{
+    clearLinkedTasks();
+    if (!m_sessionAllowed || !m_taskNoteLinks || noteId.isEmpty() || m_workspaceId.isEmpty()) return;
+    m_linkedTasksPanel->setVisible(true);
+    const auto tasks = m_taskNoteLinks->linkedTasksForNote(m_workspaceId, noteId);
+    if (!tasks) {
+        auto* error = new QLabel(tasks.error().userMessage, m_linkedTasksPanel);
+        error->setWordWrap(true);
+        m_linkedTasksLayout->addWidget(error);
+        return;
+    }
+    if (tasks.value().isEmpty()) {
+        auto* empty = new QLabel(tr("No Planner tasks are linked to this note."), m_linkedTasksPanel);
+        empty->setObjectName(QStringLiteral("notesLinkedTasksEmpty"));
+        empty->setStyleSheet(QStringLiteral("color: palette(mid);"));
+        m_linkedTasksLayout->addWidget(empty);
+        return;
+    }
+    for (const auto& task : tasks.value()) {
+        auto* row = new QWidget(m_linkedTasksPanel);
+        auto* layout = new QHBoxLayout(row); layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(6);
+        auto* title = new QLabel(QStringLiteral("▧  %1 · %2 · %3 priority").arg(task.title, task.status, task.priority), row);
+        title->setToolTip(task.title);
+        title->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        layout->addWidget(title, 1);
+        auto* open = new QPushButton(tr("Open task"), row); open->setAccessibleName(tr("Open Planner task %1").arg(task.title));
+        connect(open, &QPushButton::clicked, this, [this, workspace = m_workspaceId, taskId = task.taskId] {
+            if (m_sessionAllowed) emit openPlannerTaskRequested(workspace, taskId);
+        });
+        layout->addWidget(open);
+        auto* unlink = new QPushButton(tr("Unlink"), row); unlink->setAccessibleName(tr("Unlink task %1 from this note").arg(task.title));
+        connect(unlink, &QPushButton::clicked, this, [this, noteId, taskId = task.taskId] {
+            if (!m_sessionAllowed || !m_taskNoteLinks) return;
+            const auto result = m_taskNoteLinks->unlink(m_workspaceId, taskId, noteId);
+            if (!result) {
+                QMessageBox::warning(this, tr("Could not unlink task"), result.error().userMessage);
+                return;
+            }
+            refreshLinkedTasks(noteId);
+            emit taskNoteLinkChanged(m_workspaceId, taskId, noteId);
+        });
+        layout->addWidget(unlink);
+        m_linkedTasksLayout->addWidget(row);
+    }
+}
+
+void NotesPage::notifyWorkspaceNotesChanged()
+{
+    if (!m_currentNoteId.isEmpty() && m_nodes.contains(m_currentNoteId)
+        && m_nodes.value(m_currentNoteId).kind == NoteNodeKind::Note)
+        refreshLinkedTasks(m_currentNoteId);
+    else
+        clearLinkedTasks();
+    if (!m_workspaceId.isEmpty()) emit workspaceNotesChanged(m_workspaceId);
 }
 
 void NotesPage::createNote(NoteNodeKind kind)
@@ -312,7 +449,8 @@ void NotesPage::renameSelected()
     bool accepted = false; const QString title = QInputDialog::getText(this, tr("Rename"), tr("Title"), QLineEdit::Normal, node->title, &accepted);
     if (!accepted) return;
     auto result = m_repository.rename(m_workspaceId, node->id, title);
-    if (!result) QMessageBox::warning(this, tr("Rename failed"), result.error().userMessage); else reloadTree();
+    if (!result) QMessageBox::warning(this, tr("Rename failed"), result.error().userMessage);
+    else { reloadTree(); notifyWorkspaceNotesChanged(); }
 }
 
 void NotesPage::moveSelected()
@@ -324,7 +462,8 @@ void NotesPage::moveSelected()
     bool accepted = false; const QString choice = QInputDialog::getItem(this, tr("Move Note Item"), tr("Destination folder"), folderLabels, 0, false, &accepted);
     if (!accepted) return;
     auto result = m_repository.move(m_workspaceId, node->id, folderIds.value(folderLabels.indexOf(choice)));
-    if (!result) QMessageBox::warning(this, tr("Move failed"), result.error().userMessage); else reloadTree();
+    if (!result) QMessageBox::warning(this, tr("Move failed"), result.error().userMessage);
+    else { reloadTree(); notifyWorkspaceNotesChanged(); }
 }
 
 void NotesPage::editTags()
@@ -334,7 +473,8 @@ void NotesPage::editTags()
     bool accepted = false; const QString input = QInputDialog::getText(this, tr("Edit Note Tags"), tr("Comma-separated tags"), QLineEdit::Normal, node->tags.join(QStringLiteral(", ")), &accepted);
     if (!accepted) return;
     auto result = m_repository.setTags(m_workspaceId, node->id, input.split(QLatin1Char(','), Qt::SkipEmptyParts));
-    if (!result) QMessageBox::warning(this, tr("Could not save tags"), result.error().userMessage); else reloadTree();
+    if (!result) QMessageBox::warning(this, tr("Could not save tags"), result.error().userMessage);
+    else { reloadTree(); notifyWorkspaceNotesChanged(); }
 }
 
 void NotesPage::togglePin()
@@ -342,7 +482,8 @@ void NotesPage::togglePin()
     const auto node = selectedNode(); if (!node || node->kind != NoteNodeKind::Note) return;
     if (node->id == m_currentNoteId && !flushPendingSave()) return;
     auto result = m_repository.setPinned(m_workspaceId, node->id, !node->pinned);
-    if (!result) QMessageBox::warning(this, tr("Could not update pin"), result.error().userMessage); else reloadTree();
+    if (!result) QMessageBox::warning(this, tr("Could not update pin"), result.error().userMessage);
+    else { reloadTree(); notifyWorkspaceNotesChanged(); }
 }
 
 void NotesPage::trashOrRestore()
@@ -352,7 +493,8 @@ void NotesPage::trashOrRestore()
     const bool trashed = node->trashed;
     if (!trashed && QMessageBox::question(this, tr("Move to DevHub Trash"), tr("Move “%1” to recoverable trash?").arg(node->title)) != QMessageBox::Yes) return;
     auto result = m_repository.setTrashed(m_workspaceId, node->id, !trashed);
-    if (!result) QMessageBox::warning(this, tr("Could not update trash"), result.error().userMessage); else reloadTree();
+    if (!result) QMessageBox::warning(this, tr("Could not update trash"), result.error().userMessage);
+    else { reloadTree(); notifyWorkspaceNotesChanged(); }
 }
 
 void NotesPage::permanentlyDelete()
@@ -372,7 +514,16 @@ void NotesPage::permanentlyDelete()
     }
     auto result = m_repository.permanentlyRemove(m_workspaceId, node->id);
     if (!result) QMessageBox::warning(this, tr("Delete failed"), result.error().userMessage);
-    else { for (const auto& id : affectedIds) QFile::remove(journalPath(id)); reloadTree(); }
+    else {
+        for (const auto& id : affectedIds) QFile::remove(journalPath(id));
+        if (affectedIds.contains(m_currentNoteId)) {
+            m_saveTimer.stop(); m_journalTimer.stop();
+            m_currentNoteId.clear(); m_lastSelectionId.clear(); m_currentContentHash.clear();
+            m_loading = true; m_editor->clear(); m_preview->clear(); m_loading = false; m_dirty = false;
+        }
+        reloadTree();
+        notifyWorkspaceNotesChanged();
+    }
 }
 
 void NotesPage::reloadExternalCopy()
