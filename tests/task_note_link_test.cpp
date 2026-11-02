@@ -82,7 +82,12 @@ private slots:
         auto noteLinks = m_links->linkedTasksForNote(m_workspaceA, note.id);
         if (!noteLinks) qWarning().noquote() << noteLinks.error().technicalMessage;
         QVERIFY(noteLinks); QCOMPARE(noteLinks.value().size(), 2);
-        QCOMPARE(noteLinks.value().front().title, QStringLiteral("First task"));
+        QStringList linkedTaskTitles;
+        for (const auto& linkedTask : noteLinks.value()) linkedTaskTitles.append(linkedTask.title);
+        linkedTaskTitles.sort();
+        QStringList expectedTaskTitles{QStringLiteral("First task"), QStringLiteral("Second task")};
+        expectedTaskTitles.sort();
+        QCOMPARE(linkedTaskTitles, expectedTaskTitles);
 
         const auto search = m_links->searchNotes(m_workspaceA, firstTask.id, QStringLiteral("architecture"));
         QVERIFY(search); QCOMPARE(search.value().size(), 1);

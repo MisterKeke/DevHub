@@ -195,6 +195,12 @@ public:
     Q_INVOKABLE bool moveTask(const QString&, const QString&) { return false; }
     Q_INVOKABLE bool shiftTaskOrder(const QString&, int) { return false; }
     Q_INVOKABLE QVariantList timeEntries(const QString&) const { return {}; }
+    Q_INVOKABLE QVariantList linkedNotes(const QString&) const { return {}; }
+    Q_INVOKABLE QVariantList searchNotesForLink(const QString&, const QString&) const { return {}; }
+    Q_INVOKABLE bool linkNoteToTask(const QString&, const QString&) { return false; }
+    Q_INVOKABLE bool unlinkNoteFromTask(const QString&, const QString&) { return false; }
+    Q_INVOKABLE bool openLinkedNote(const QString&, const QString&) { return false; }
+    Q_INVOKABLE void requestCreateAndLinkNote(const QString&) {}
     Q_INVOKABLE bool addTimeEntry(const QString&, const QString&, const QString&) { return false; }
     Q_INVOKABLE bool removeTimeEntry(const QString&, const QString&) { return false; }
     Q_INVOKABLE bool removeMilestone(const QString&) { return false; }
@@ -222,6 +228,8 @@ signals:
     void focusSearchRequested();
     void openTaskDetailsRequested(QString taskId);
     void actionRunsChanged(QString taskId);
+    void taskNoteLinksChanged(QString workspaceId, QString taskId, QString noteId);
+    void workspaceNoteMetadataChanged(QString workspaceId);
 };
 
 bool hasObjectName(QQuickItem* item, const QString& objectName)

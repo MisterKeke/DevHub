@@ -65,6 +65,7 @@ Item {
         signal openTaskDetailsRequested(string taskId)
         signal actionRunsChanged(string taskId)
         signal taskNoteLinksChanged(string workspaceId, string taskId, string noteId)
+        signal workspaceNoteMetadataChanged(string workspaceId)
         function clearError() { error = "" }
         function dependencyChoices(taskId) { return [] }
         function countForDate(date) { return 0 }
