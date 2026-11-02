@@ -17,7 +17,9 @@ native process prototype, bounded JSONL transport, lifecycle tests and ownership
 
 See [workspace-planner.md](architecture/workspace-planner.md) for the embedded Overview
 Planner architecture and [workspace-planner-database.md](architecture/workspace-planner-database.md)
-for schema version 12, migrations 0009–0012, import ownership, and scale-profile commands.
+for Planner schema and migration details, import ownership, and scale-profile commands.
+See [planner-notes-linking.md](architecture/planner-notes-linking.md) for the stable-ID
+many-to-many relationship, trash/recovery behavior, and navigation boundaries.
 
 ## Toolchain pins
 

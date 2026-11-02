@@ -56,9 +56,10 @@ QString errorText(const auto& result)
 PlannerController::PlannerController(application::planner::PlannerService& service,
     application::settings::SettingsService& settings,
     application::workspaces::WorkspaceContext& workspaceContext, QObject* parent,
-    application::tasks::TaskScheduler* scheduler)
+    application::tasks::TaskScheduler* scheduler,
+    application::planner::TaskNoteLinkService* taskNoteLinks)
     : QObject(parent), m_service(service), m_settings(settings), m_workspaceContext(workspaceContext),
-      m_scheduler(scheduler), m_tasks(), m_list(), m_calendar(), m_undated()
+      m_scheduler(scheduler), m_taskNoteLinks(taskNoteLinks), m_tasks(), m_list(), m_calendar(), m_undated()
 {
     // These models are value members (or QObject children) owned by this controller.
     // In particular, boardModel() returns a model through an invokable; Qt otherwise
@@ -395,6 +396,97 @@ QVariantMap PlannerController::taskDetails(const QString& id) const
     return values;
 }
 
+QVariantList PlannerController::linkedNotes(const QString& taskId)
+{
+    if (!hasWorkspace() || !m_taskNoteLinks) return {};
+    const auto result = m_taskNoteLinks->linkedNotesForTask(m_workspaceId, taskId);
+    if (!result) { setFailure(errorText(result)); return {}; }
+    QVariantList values;
+    for (const auto& note : result.value()) {
+        values.append(QVariantMap{{QStringLiteral("noteId"), note.noteId},
+            {QStringLiteral("title"), note.title}, {QStringLiteral("folderPath"), note.folderPath},
+            {QStringLiteral("tags"), note.tags}, {QStringLiteral("trashed"), note.trashed},
+            {QStringLiteral("available"), !note.trashed}});
+    }
+    return values;
+}
+
+QVariantList PlannerController::searchNotesForLink(const QString& taskId, const QString& query)
+{
+    if (!hasWorkspace() || !m_taskNoteLinks) return {};
+    const auto result = m_taskNoteLinks->searchNotes(m_workspaceId, taskId, query);
+    if (!result) { setFailure(errorText(result)); return {}; }
+    QVariantList values;
+    for (const auto& note : result.value()) {
+        values.append(QVariantMap{{QStringLiteral("noteId"), note.noteId},
+            {QStringLiteral("title"), note.title}, {QStringLiteral("folderPath"), note.folderPath},
+            {QStringLiteral("tags"), note.tags}, {QStringLiteral("alreadyLinked"), note.alreadyLinked},
+            {QStringLiteral("available"), true}});
+    }
+    return values;
+}
+
+bool PlannerController::linkNoteToTask(const QString& taskId, const QString& noteId)
+{
+    if (!hasWorkspace() || !m_taskNoteLinks || !taskById(taskId)) {
+        setFailure(tr("Sign in and select the task's workspace before linking a note."));
+        return false;
+    }
+    const auto result = m_taskNoteLinks->link(m_workspaceId, taskId, noteId);
+    if (!result) { setFailure(errorText(result)); return false; }
+    clearError();
+    emit taskNoteLinksChanged(m_workspaceId, taskId, noteId);
+    emit changed();
+    return true;
+}
+
+bool PlannerController::unlinkNoteFromTask(const QString& taskId, const QString& noteId)
+{
+    if (!hasWorkspace() || !m_taskNoteLinks || !taskById(taskId)) {
+        setFailure(tr("Sign in and select the task's workspace before unlinking a note."));
+        return false;
+    }
+    const auto result = m_taskNoteLinks->unlink(m_workspaceId, taskId, noteId);
+    if (!result) { setFailure(errorText(result)); return false; }
+    clearError();
+    emit taskNoteLinksChanged(m_workspaceId, taskId, noteId);
+    emit changed();
+    return true;
+}
+
+bool PlannerController::openLinkedNote(const QString& taskId, const QString& noteId)
+{
+    if (!hasWorkspace() || !m_taskNoteLinks || !taskById(taskId)) {
+        setFailure(tr("Sign in and select the task's workspace before opening its note."));
+        return false;
+    }
+    const auto linked = m_taskNoteLinks->linkedNotesForTask(m_workspaceId, taskId);
+    if (!linked) { setFailure(errorText(linked)); return false; }
+    const auto found = std::find_if(linked.value().cbegin(), linked.value().cend(),
+        [&noteId](const application::planner::LinkedNote& note) { return note.noteId == noteId; });
+    if (found == linked.value().cend()) {
+        setFailure(tr("This note is no longer linked to the selected task."));
+        return false;
+    }
+    if (found->trashed) {
+        setFailure(tr("Restore this note from Notes trash before opening it."));
+        return false;
+    }
+    clearError();
+    emit openLinkedNoteRequested(m_workspaceId, taskId, noteId);
+    return true;
+}
+
+void PlannerController::requestCreateAndLinkNote(const QString& taskId)
+{
+    if (!hasWorkspace() || !taskById(taskId)) {
+        setFailure(tr("Sign in and select the task's workspace before creating a linked note."));
+        return;
+    }
+    clearError();
+    emit createAndLinkNoteRequested(m_workspaceId, taskId);
+}
+
 void PlannerController::setServiceOptions(QVariantList options)
 {
     QVariantList safe;
@@ -410,6 +502,19 @@ void PlannerController::setServiceOptions(QVariantList options)
     }
     m_serviceOptions = std::move(safe);
     emit changed();
+}
+
+void PlannerController::notifyTaskNoteLinkChanged(const QString& workspaceId,
+    const QString& taskId, const QString& noteId)
+{
+    if (hasWorkspace() && workspaceId == m_workspaceId)
+        emit taskNoteLinksChanged(workspaceId, taskId, noteId);
+}
+
+void PlannerController::notifyWorkspaceNotesChanged(const QString& workspaceId)
+{
+    if (hasWorkspace() && workspaceId == m_workspaceId)
+        emit workspaceNoteMetadataChanged(workspaceId);
 }
 
 QVariantList PlannerController::actionRuns(const QString& taskId) const

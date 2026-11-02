@@ -2,6 +2,8 @@
 
 #include "PlannerTaskModel.h"
 #include "../../../application/planner/PlannerService.h"
+#include "../../../application/planner/TaskNoteLinkService.h"
+#include "../../../application/workspaces/WorkspaceContext.h"
 #include "../../../application/tasks/TaskScheduler.h"
 
 #include <QObject>
@@ -11,7 +13,6 @@
 #include <optional>
 
 namespace devhub::application::settings { class SettingsService; }
-namespace devhub::application::workspaces { class WorkspaceContext; }
 
 namespace devhub::presentation::overview::planner {
 
@@ -51,14 +52,20 @@ public:
                        application::settings::SettingsService& settings,
                        application::workspaces::WorkspaceContext& workspaceContext,
                        QObject* parent = nullptr,
-                       application::tasks::TaskScheduler* scheduler = nullptr);
+                       application::tasks::TaskScheduler* scheduler = nullptr,
+                       application::planner::TaskNoteLinkService* taskNoteLinks = nullptr);
     PlannerTaskModel* tasks() noexcept { return &m_tasks; }
     QAbstractItemModel* listModel() noexcept { return &m_list; }
     QAbstractItemModel* calendarModel() noexcept { return &m_calendar; }
     QAbstractItemModel* undatedModel() noexcept { return &m_undated; }
     QString workspaceId() const { return m_workspaceId; }
     QString workspaceName() const { return m_workspaceName; }
-    bool hasWorkspace() const { return !m_workspaceId.isEmpty() && m_sessionAllowed; }
+    bool hasWorkspace() const
+    {
+        const auto& active = m_workspaceContext.activeWorkspace();
+        return !m_workspaceId.isEmpty() && m_sessionAllowed && active && !active->isArchived()
+            && active->id().toString() == m_workspaceId;
+    }
     bool loading() const { return m_loading; }
     QString error() const { return m_error; }
     QString view() const { return m_view; }
@@ -83,6 +90,12 @@ public:
     Q_INVOKABLE QAbstractItemModel* boardModel(const QString& status) const;
     Q_INVOKABLE int statusCount(const QString& status) const;
     Q_INVOKABLE QVariantMap taskDetails(const QString& taskId) const;
+    Q_INVOKABLE QVariantList linkedNotes(const QString& taskId);
+    Q_INVOKABLE QVariantList searchNotesForLink(const QString& taskId, const QString& query);
+    Q_INVOKABLE bool linkNoteToTask(const QString& taskId, const QString& noteId);
+    Q_INVOKABLE bool unlinkNoteFromTask(const QString& taskId, const QString& noteId);
+    Q_INVOKABLE bool openLinkedNote(const QString& taskId, const QString& noteId);
+    Q_INVOKABLE void requestCreateAndLinkNote(const QString& taskId);
     Q_INVOKABLE QVariantList dependencyChoices(const QString& excludeTaskId) const;
     Q_INVOKABLE int countForDate(const QString& isoDate) const;
     Q_INVOKABLE void setView(const QString& value);
@@ -126,6 +139,7 @@ public:
     Q_INVOKABLE void requestFocusSearch();
     Q_INVOKABLE void requestOpenTask(const QString& taskId);
     void setServiceOptions(QVariantList options);
+    void notifyTaskNoteLinkChanged(const QString& workspaceId, const QString& taskId, const QString& noteId);
     [[nodiscard]] std::optional<domain::planner::PlannerActionRun>
     beginLinkedServiceAction(const QString& taskId, const QString& serviceId,
                              const QString& logReference);
@@ -134,6 +148,7 @@ public:
     Q_INVOKABLE void clearError();
     Q_INVOKABLE void refresh();
     void setSessionAllowed(bool allowed);
+    void notifyWorkspaceNotesChanged(const QString& workspaceId);
 signals:
     void changed();
     void openGitBranchRequested(QString branch);
@@ -147,6 +162,10 @@ signals:
     void createTaskRequested();
     void focusSearchRequested();
     void openTaskDetailsRequested(QString taskId);
+    void openLinkedNoteRequested(QString workspaceId, QString taskId, QString noteId);
+    void createAndLinkNoteRequested(QString workspaceId, QString taskId);
+    void taskNoteLinksChanged(QString workspaceId, QString taskId, QString noteId);
+    void workspaceNoteMetadataChanged(QString workspaceId);
     void actionRunsChanged(QString taskId);
 private slots:
     void workspaceChanged(const QString& workspaceId, const QString& absolutePath);
@@ -165,6 +184,7 @@ private:
     application::settings::SettingsService& m_settings;
     application::workspaces::WorkspaceContext& m_workspaceContext;
     application::tasks::TaskScheduler* m_scheduler = nullptr;
+    application::planner::TaskNoteLinkService* m_taskNoteLinks = nullptr;
     PlannerTaskModel m_tasks;
     mutable domain::planner::PlannerTask m_taskScratch;
     PlannerTaskFilterModel m_list;

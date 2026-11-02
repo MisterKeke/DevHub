@@ -64,9 +64,17 @@ Item {
         signal focusSearchRequested()
         signal openTaskDetailsRequested(string taskId)
         signal actionRunsChanged(string taskId)
+        signal taskNoteLinksChanged(string workspaceId, string taskId, string noteId)
+        signal workspaceNoteMetadataChanged(string workspaceId)
         function clearError() { error = "" }
         function dependencyChoices(taskId) { return [] }
         function countForDate(date) { return 0 }
+        function linkedNotes(taskId) { return [] }
+        function searchNotesForLink(taskId, query) { return [] }
+        function linkNoteToTask(taskId, noteId) { return false }
+        function unlinkNoteFromTask(taskId, noteId) { return false }
+        function openLinkedNote(taskId, noteId) { return false }
+        function requestCreateAndLinkNote(taskId) {}
         function boardModel(status) { return emptyTasks }
         function statusCount(status) { return 0 }
         function saveTask(values) { savedTask = values; return true }

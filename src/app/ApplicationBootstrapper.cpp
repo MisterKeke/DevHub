@@ -48,9 +48,11 @@
 #include "../application/support/SupportBundleBuilder.h"
 #include "../application/settings/SettingsService.h"
 #include "../application/planner/PlannerService.h"
+#include "../application/planner/TaskNoteLinkService.h"
 #include "../application/planner/PlannerValidation.h"
 #include "../infrastructure/detection/SqlDetectionResultRepository.h"
 #include "../infrastructure/planner/SqlPlannerRepository.h"
+#include "../infrastructure/planner/SqlTaskNoteLinkRepository.h"
 #include "../presentation/authentication/AuthenticationWindow.h"
 #include "../presentation/shell/MainWindow.h"
 #include "../presentation/assistant/AssistantPage.h"
@@ -425,12 +427,14 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
     infrastructure::planner::SqlPlannerRepository plannerRepository(database, session.account()->id());
     application::planner::PlannerValidation plannerValidation;
     application::planner::PlannerService plannerService(plannerRepository, plannerValidation, m_idGenerator, m_clock);
+    infrastructure::planner::SqlTaskNoteLinkRepository taskNoteLinkRepository(database, session.account()->id());
+    application::planner::TaskNoteLinkService taskNoteLinks(taskNoteLinkRepository, plannerService, notesRepository);
     presentation::shell::MainWindow mainWindow(session, authentication, workspaceManager, workspaceContext,
                                                 workspaceState, relocation, terminalLauncher, scheduler,
                                                 serviceRepository, serviceCoordinator, portMonitor, logSourceRepository,
                                                 databaseReferenceRepository, databaseConnectionFactory, notesRepository,
                                                 notesStorageRoot, session.account()->id().toString(), trashService, editorLauncher,
-                                                settingsService, plannerService, *themeManager, eventHub, notificationRepository,
+                                                settingsService, plannerService, taskNoteLinks, *themeManager, eventHub, notificationRepository,
                                                 notifications, supportBundleBuilder, redactor, assistantController,
                                                 assistantToolRuntime, assistantSetupLocator, shutdown);
     auto* noteEditorOwner = mainWindow.findChild<presentation::notes::NotesPage*>();

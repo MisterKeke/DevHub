@@ -36,10 +36,11 @@ private slots:
         QVERIFY(query.exec(QStringLiteral(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN "
             "('accounts', 'workspaces', 'service_definitions', 'log_sources', 'database_references', "
-            "'note_nodes', 'note_tags', 'notifications', 'ui_state', 'assistant_conversations')")));
+            "'note_nodes', 'note_tags', 'notifications', 'ui_state', 'assistant_conversations', "
+            "'planner_task_note_links')")));
         QVERIFY(query.next());
-        QCOMPARE(query.value(0).toInt(), 10);
-        QCOMPARE(manager.currentSchemaVersion(), 12);
+        QCOMPARE(query.value(0).toInt(), 11);
+        QCOMPARE(manager.currentSchemaVersion(), 13);
         QVERIFY(query.exec(QStringLiteral("PRAGMA table_info(workspaces)")));
         bool hasArchiveTimestamp = false;
         while (query.next()) {
@@ -241,7 +242,7 @@ private slots:
         InternalDatabaseManager current(databasePath, backupsPath);
         QVERIFY(current.open());
         QVERIFY(current.migrate());
-        QCOMPARE(current.currentSchemaVersion(), 12);
+        QCOMPARE(current.currentSchemaVersion(), 13);
         QSqlQuery verify(current.database());
         QVERIFY(verify.exec(QStringLiteral(
             "SELECT task_id,source_task_id,source_revision,source_created_at,source_updated_at,copy_number "

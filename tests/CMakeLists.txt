@@ -170,12 +170,12 @@ add_library(devhub_notes_ui_test_support OBJECT
     ../src/presentation/notes/NotesPage.cpp
     ../src/presentation/widgets/SafeMarkdownBrowser.cpp
     ../src/application/notes/NoteFolderExporter.cpp)
-target_link_libraries(devhub_notes_ui_test_support PUBLIC devhub_file_services Qt6::Widgets Qt6::Concurrent)
+target_link_libraries(devhub_notes_ui_test_support PUBLIC devhub_file_services devhub_planner Qt6::Widgets Qt6::Concurrent)
 
 qt_add_executable(devhub_notes_search_ui_tests
     notes_search_ui_test.cpp
     $<TARGET_OBJECTS:devhub_notes_ui_test_support>)
-target_link_libraries(devhub_notes_search_ui_tests PRIVATE devhub_file_services Qt6::Widgets Qt6::Concurrent Qt6::Test project_warnings)
+target_link_libraries(devhub_notes_search_ui_tests PRIVATE devhub_file_services devhub_planner Qt6::Widgets Qt6::Concurrent Qt6::Test project_warnings)
 add_test(NAME devhub.notes-search-ui COMMAND devhub_notes_search_ui_tests)
 set_tests_properties(devhub.notes-search-ui PROPERTIES TIMEOUT 30
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
@@ -223,6 +223,21 @@ set_tests_properties(devhub.planner PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}")
 
+qt_add_executable(devhub_task_note_link_tests
+    task_note_link_test.cpp
+    ../src/presentation/notes/NotesPage.cpp
+    ../src/presentation/widgets/SafeMarkdownBrowser.cpp
+    ../src/application/notes/NoteFolderExporter.cpp
+    ../src/infrastructure/notes/NotesRepository.cpp
+    ../resources/database_migrations.qrc)
+target_link_libraries(devhub_task_note_link_tests PRIVATE
+    devhub_planner devhub_file_services Qt6::Widgets Qt6::Concurrent Qt6::Sql Qt6::Test project_options project_warnings)
+add_test(NAME devhub.task-note-links COMMAND devhub_task_note_link_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/task-note-link-tests.txt,txt")
+set_tests_properties(devhub.task-note-links PROPERTIES TIMEOUT 60
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}")
+
 qt_add_executable(devhub_planner_ui_tests
     planner_ui_test.cpp
     ../src/presentation/overview/planner/PlannerController.cpp
@@ -248,10 +263,11 @@ qt_add_executable(devhub_planner_layout_tests planner_layout_test.cpp)
 target_link_libraries(devhub_planner_layout_tests PRIVATE Qt6::QuickTest project_options project_warnings)
 target_compile_definitions(devhub_planner_layout_tests PRIVATE
     QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
-add_test(NAME devhub.planner-layout COMMAND devhub_planner_layout_tests)
+add_test(NAME devhub.planner-layout COMMAND devhub_planner_layout_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/planner-layout-tests.txt,txt")
 set_tests_properties(devhub.planner-layout PROPERTIES
     TIMEOUT 30
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins;QML_IMPORT_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../qml"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(devhub_somethingqt_import_tests somethingqt_import_test.cpp)
@@ -331,10 +347,9 @@ set_tests_properties(devhub.feature-regressions PROPERTIES
 
 qt_add_executable(devhub_reliability_tests
     reliability_test.cpp
-    $<TARGET_OBJECTS:devhub_notes_ui_test_support>
     ../resources/database_migrations.qrc
 )
-target_link_libraries(devhub_reliability_tests PRIVATE devhub_accounts devhub_ports devhub_file_services
+target_link_libraries(devhub_reliability_tests PRIVATE devhub_notes_ui_test_support devhub_accounts devhub_ports
     Qt6::Widgets Qt6::Test project_options project_warnings)
 add_test(NAME devhub.reliability COMMAND devhub_reliability_tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/reliability-tests.txt,txt")

@@ -37,7 +37,7 @@ class PlannerTest final : public QObject
         QVERIFY2(opened, opened ? "" : qPrintable(opened.error().technicalMessage));
         const auto migrated = m_database->migrate();
         QVERIFY2(migrated, migrated ? "" : qPrintable(migrated.error().technicalMessage));
-        QCOMPARE(m_database->currentSchemaVersion(), 12);
+        QCOMPARE(m_database->currentSchemaVersion(), 13);
         QSqlQuery query(m_database->database());
         QVERIFY(query.exec(
             QStringLiteral(
@@ -608,7 +608,7 @@ class PlannerTest final : public QObject
         archive.addBindValue(m_workspaceA);
         archive.addBindValue(m_accountId);
         QVERIFY(archive.exec());
-        QCOMPARE(m_database->currentSchemaVersion(), 12);
+        QCOMPARE(m_database->currentSchemaVersion(), 13);
     }
 
     void importedTaskFailureRollsBackTaskTagsSubtasksAndProvenance()
