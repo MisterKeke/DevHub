@@ -21,7 +21,8 @@ public:
         TagsRole, SubtasksRole, DependencyIdsRole, OverdueRole, SubtaskCountRole,
         CompletedSubtaskCountRole, CreatedAtRole, UpdatedAtRole, BlockedByDependencyRole,
         IncompletePrerequisiteTitlesRole, DependentTaskIdsRole, PrerequisiteTitlesRole,
-        DependentTaskTitlesRole, BlockedRole, LinkedServiceIdRole
+        DependentTaskTitlesRole, BlockedRole, LinkedServiceIdRole, LinkedBuildProfileIdRole,
+        LinkedTestProfileIdRole
     };
     explicit PlannerTaskModel(QObject* parent = nullptr);
     int rowCount(const QModelIndex& parent = {}) const override;

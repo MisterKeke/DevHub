@@ -263,6 +263,13 @@ int countAssistantNavigation(QQuickItem* item)
     for (auto* child : item->childItems()) count += countAssistantNavigation(child);
     return count;
 }
+int countBuildTestNavigation(QQuickItem* item)
+{
+    int count = item->property("moduleIndex").isValid() && item->property("moduleIndex").toInt() == 10
+        && item->property("modelData").toString() == QStringLiteral("Build & Test") ? 1 : 0;
+    for (auto* child : item->childItems()) count += countBuildTestNavigation(child);
+    return count;
+}
 } // namespace
 
 int checkRuntime(QApplication &application, const QString &reportPath, const QString &qmlRoot)
@@ -382,6 +389,10 @@ int checkRuntime(QApplication &application, const QString &reportPath, const QSt
                 diagnostics.append(QStringLiteral("FAIL: Assistant navigation must occupy module index 9 exactly once"));
                 qmlFailed = true;
             } else diagnostics.append(QStringLiteral("PASS: Assistant navigation at module index 9"));
+            if (countBuildTestNavigation(item) != 1) {
+                diagnostics.append(QStringLiteral("FAIL: Build & Test navigation must occupy module index 10 exactly once"));
+                qmlFailed = true;
+            } else diagnostics.append(QStringLiteral("PASS: Build & Test navigation at module index 10"));
         }
     }
     success = success && !qmlFailed;

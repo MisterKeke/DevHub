@@ -29,6 +29,7 @@
 #include "../infrastructure/filesystem/LocalProfileResetter.h"
 #include "../infrastructure/workspace/SqlWorkspaceRepository.h"
 #include "../infrastructure/services/SqlServiceDefinitionRepository.h"
+#include "../infrastructure/buildtest/SqlBuildHistoryRepository.h"
 #include "../infrastructure/ports/WindowsPortProvider.h"
 #include "../infrastructure/ports/WindowsProcessInspector.h"
 #include "../infrastructure/logs/SqlLogSourceRepository.h"
@@ -40,6 +41,7 @@
 #include "../infrastructure/files/QProcessExternalEditorLauncher.h"
 #include "../application/services/ManagedProcess.h"
 #include "../application/services/ServiceCoordinator.h"
+#include "../application/buildtest/BuildExecutionCoordinator.h"
 #include "../application/ports/PortMonitorService.h"
 #include "../infrastructure/workspace/WindowsTerminalLauncher.h"
 #include "../infrastructure/settings/SqlSettingsRepository.h"
@@ -323,6 +325,17 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
     infrastructure::services::SqlServiceDefinitionRepository serviceRepository(database, session.account()->id());
     application::services::QProcessLauncher processLauncher;
     application::services::ServiceCoordinator serviceCoordinator(serviceRepository, processLauncher);
+    infrastructure::buildtest::SqlBuildHistoryRepository buildHistoryRepository(database, session.account()->id());
+    application::buildtest::BuildExecutionCoordinator buildExecution(
+        buildHistoryRepository, processLauncher, workspaceContext, paths.logDirectory, redactor);
+    shutdown.addPreQuitParticipant(&buildExecution,
+        [&buildExecution](application::lifecycle::ShutdownCoordinator::Completion done) {
+            buildExecution.beginShutdown(std::move(done));
+        });
+    QObject::connect(&session, &application::authentication::SessionController::stateChanged, &buildExecution,
+        [&buildExecution](application::authentication::SessionState state) {
+            if (state != application::authentication::SessionState::SignedIn) buildExecution.cancel();
+        });
     QObject::connect(&serviceCoordinator, &application::services::ServiceCoordinator::stateChanged,
         &notifications, [&notifications](const QString& id, const application::services::ServiceRuntimeState& state) {
             if (state.lifecycle == application::services::ServiceLifecycleState::Failed) {
@@ -435,7 +448,8 @@ int ApplicationBootstrapper::runApplication(const infrastructure::filesystem::Ap
     application::planner::TaskNoteLinkService taskNoteLinks(taskNoteLinkRepository, plannerService, notesRepository);
     presentation::shell::MainWindow mainWindow(session, authentication, workspaceManager, workspaceContext,
                                                 workspaceState, relocation, terminalLauncher, scheduler,
-                                                serviceRepository, serviceCoordinator, portMonitor, logSourceRepository,
+                                                serviceRepository, serviceCoordinator, buildHistoryRepository, buildExecution,
+                                                portMonitor, logSourceRepository,
                                                 databaseReferenceRepository, databaseConnectionFactory, notesRepository,
                                                 notesStorageRoot, session.account()->id().toString(), trashService, editorLauncher,
                                                 settingsService, plannerService, plannerActivityService, taskNoteLinks, *themeManager, eventHub, notificationRepository,

@@ -24,7 +24,8 @@ enum class NotificationCategory
     Port,
     Git,
     Database,
-    Security
+    Security,
+    BuildTest
 };
 
 struct Notification final

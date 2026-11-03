@@ -41,6 +41,7 @@ class PlannerController final : public QObject
     Q_PROPERTY(QVariantList milestones READ milestones NOTIFY changed)
     Q_PROPERTY(QVariantList branchOptions READ branchOptions NOTIFY changed)
     Q_PROPERTY(QVariantList serviceOptions READ serviceOptions NOTIFY changed)
+    Q_PROPERTY(QVariantList buildProfileOptions READ buildProfileOptions NOTIFY changed)
     Q_PROPERTY(bool branchLoading READ branchLoading NOTIFY changed)
     Q_PROPERTY(QString branchStatus READ branchStatus NOTIFY changed)
     Q_PROPERTY(QString milestoneFilter READ milestoneFilter NOTIFY changed)
@@ -84,6 +85,7 @@ public:
     QVariantList milestones() const { return m_milestones; }
     QVariantList branchOptions() const { return m_branchOptions; }
     QVariantList serviceOptions() const { return m_serviceOptions; }
+    QVariantList buildProfileOptions() const { return m_buildProfileOptions; }
     bool branchLoading() const { return m_branchLoading; }
     QString branchStatus() const { return m_branchStatus; }
     QString milestoneFilter() const { return m_milestoneFilter; }
@@ -148,11 +150,17 @@ public:
     Q_INVOKABLE void openLinkedServiceLogs(const QString& taskId);
     Q_INVOKABLE void startLinkedService(const QString& taskId);
     Q_INVOKABLE void cancelLinkedServiceStart(const QString& taskId);
+    Q_INVOKABLE void runLinkedBuildProfile(const QString& taskId);
+    Q_INVOKABLE void runLinkedTestProfile(const QString& taskId);
+    Q_INVOKABLE void viewLastBuildTestResult(const QString& taskId);
     Q_INVOKABLE QVariantList actionRuns(const QString& taskId) const;
     Q_INVOKABLE void requestCreateTask();
     Q_INVOKABLE void requestFocusSearch();
     Q_INVOKABLE void requestOpenTask(const QString& taskId);
     void setServiceOptions(QVariantList options);
+    void setBuildProfileOptions(QVariantList options);
+    void recordBuildTestActivity(const QString& workspaceId, const QString& taskId,
+                                 const QString& runId, const QVariantMap& runMetadata);
     void notifyTaskNoteLinkChanged(const QString& workspaceId, const QString& taskId, const QString& noteId);
     [[nodiscard]] std::optional<domain::planner::PlannerActionRun>
     beginLinkedServiceAction(const QString& taskId, const QString& serviceId,
@@ -174,6 +182,8 @@ signals:
     void openLinkedServiceLogsRequested(QString workspaceId, QString serviceId);
     void startLinkedServiceRequested(QString workspaceId, QString taskId, QString serviceId);
     void cancelLinkedServiceStartRequested(QString workspaceId, QString taskId, QString serviceId);
+    void runLinkedBuildProfileRequested(QString workspaceId, QString taskId, QString profileId, bool testAction);
+    void viewLastBuildTestResultRequested(QString workspaceId, QString taskId);
     void createTaskRequested();
     void focusSearchRequested();
     void openTaskDetailsRequested(QString taskId);
@@ -227,6 +237,7 @@ private:
     QStringList m_localBranches;
     QVariantList m_branchOptions;
     QVariantList m_serviceOptions;
+    QVariantList m_buildProfileOptions;
     application::tasks::TaskHandle m_branchTask;
     application::tasks::TaskHandle m_gitActivityTask;
     QTimer m_filterReloadTimer;

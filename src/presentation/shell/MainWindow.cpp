@@ -14,6 +14,7 @@
 #include "../services/ServicePage.h"
 #include "../ports/PortPage.h"
 #include "../logs/LogsPage.h"
+#include "../buildtest/BuildTestPage.h"
 #include "../databases/DatabasePage.h"
 #include "../notes/NotesPage.h"
 #include "../assistant/AssistantPage.h"
@@ -146,6 +147,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
                        application::tasks::TaskScheduler& scheduler,
                        application::services::IServiceDefinitionRepository& serviceRepository,
                        application::services::ServiceCoordinator& serviceCoordinator,
+                       application::buildtest::IBuildHistoryRepository& buildHistory,
+                       application::buildtest::BuildExecutionCoordinator& buildExecution,
                        application::ports::PortMonitorService& portMonitor,
                        application::logs::ILogSourceRepository& logSourceRepository,
                        application::databases::IDatabaseReferenceRepository& databaseReferences,
@@ -181,6 +184,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
       m_scheduler(scheduler),
       m_serviceRepository(serviceRepository),
       m_serviceCoordinator(serviceCoordinator),
+      m_buildHistory(buildHistory),
+      m_buildExecution(buildExecution),
       m_settingsService(settingsService),
       m_assistantController(assistantController), m_assistantToolRuntime(assistantToolRuntime),
       m_assistantSetupProbe(assistantSetupProbe),
@@ -301,6 +306,9 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::Assistant,
                                                               ThemePalette::color(ColorToken::TextSecondary),
                                                               18), tr("Assistant")));
+    moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::Project,
+                                                              ThemePalette::color(ColorToken::TextSecondary),
+                                                              18), tr("Build & Test")));
     moduleList->setItemDelegate(new ModuleNavigationDelegate(moduleList));
     moduleList->item(9)->setSizeHint(QSize(120, 46));
     moduleList->setCurrentRow(0);
@@ -310,9 +318,9 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     const QStringList navigationIds{QStringLiteral("nav.overview"), QStringLiteral("nav.git"),
         QStringLiteral("nav.services"), QStringLiteral("nav.ports"), QStringLiteral("nav.logs"),
         QStringLiteral("nav.database"), QStringLiteral("nav.notes"), QStringLiteral("nav.files"),
-        QStringLiteral("nav.settings"), QStringLiteral("nav.assistant")};
+        QStringLiteral("nav.settings"), QStringLiteral("nav.assistant"), QStringLiteral("nav.build-test")};
     const QStringList navigationTitles{tr("Overview"), tr("Git"), tr("Services"), tr("Ports"),
-        tr("Logs"), tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant")};
+        tr("Logs"), tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant"), tr("Build & Test")};
     for (int row = 0; row < navigationIds.size(); ++row) {
         if (row == presentation::assistant::AssistantNavigation::Index) {
             presentation::assistant::AssistantNavigation::registerCommand(*m_commandRegistry,
@@ -323,7 +331,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         const auto category = row == 1 ? Category::Git : row == 2 ? Category::Services
             : row == 3 ? Category::Ports : row == 4 ? Category::Logs
             : row == 5 ? Category::Database : row == 6 ? Category::Notes
-            : row == 7 ? Category::Files : row == 8 ? Category::Settings : Category::Navigation;
+            : row == 7 ? Category::Files : row == 8 ? Category::Settings : row == 10 ? Category::BuildTest : Category::Navigation;
         m_commandRegistry->addCommand(navigationIds[row], navigationTitles[row], category,
             [this, row] {
                 if (row == 8) openQuickSettings();
@@ -358,6 +366,22 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             else m_plannerController->requestOpenTask(payload.toString());
         }, plannerAvailability, tr("Open task details from Planner search"),
         {QStringLiteral("task"), QStringLiteral("details"), QStringLiteral("planner")});
+    const auto buildAvailability = [](const application::commands::CommandContext& context) {
+        return application::commands::CommandAvailability{context.hasWorkspace,
+            context.hasWorkspace ? QString{} : QObject::tr("Select a workspace first.")};
+    };
+    m_commandRegistry->addCommand(QStringLiteral("buildtest.run-build"), tr("Build current workspace"),
+        CommandCategory::BuildTest, [this] { runQuickBuild(); }, buildAvailability,
+        tr("Run the selected build profile for the active workspace"), {tr("compile"), tr("cmake"), tr("go")});
+    m_commandRegistry->addCommand(QStringLiteral("buildtest.run-tests"), tr("Run workspace tests"),
+        CommandCategory::BuildTest, [this] { runQuickTests(); }, buildAvailability,
+        tr("Run a saved test profile for the active workspace"), {tr("test"), tr("pytest"), tr("ctest")});
+    m_commandRegistry->addCommand(QStringLiteral("buildtest.cancel"), tr("Cancel current build or test"),
+        CommandCategory::BuildTest, [this] { cancelQuickBuild(); }, buildAvailability,
+        tr("Cancel the active build or test process tree"), {tr("stop"), tr("cancel")});
+    m_commandRegistry->addCommand(QStringLiteral("buildtest.failed-tests"), tr("View failed tests"),
+        CommandCategory::BuildTest, [this] { showFailedTests(); }, buildAvailability,
+        tr("Open the latest failed test results"), {tr("failure"), tr("results")});
 
     auto* content = new QWidget(root);
     content->setObjectName(QStringLiteral("contentRegion"));
@@ -581,6 +605,24 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         if (!configured) { statusBar()->showMessage(tr("The linked service is no longer configured."), 5000); return; }
         selectQuickModule(4); logsPage->focusService(serviceId);
     });
+    connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::runLinkedBuildProfileRequested,
+            this, [this](const QString& workspaceId, const QString& taskId, const QString& profileId, bool testAction) {
+        if (!plannerWorkspaceAuthorized(workspaceId) || !m_buildTestPage) return;
+        const auto profiles = m_buildHistory.profiles(workspaceId);
+        if (!profiles) { statusBar()->showMessage(profiles.error().userMessage, 5000); return; }
+        const auto availableProfiles = profiles.value();
+        const auto it = std::find_if(availableProfiles.cbegin(), availableProfiles.cend(),
+            [&profileId, testAction](const auto& profile) { return profile.id == profileId && profile.testAction == testAction; });
+        if (it == availableProfiles.cend()) { statusBar()->showMessage(tr("The linked profile is unavailable in the active workspace."), 5000); return; }
+        selectQuickModule(10);
+        m_buildTestPage->runAssociatedProfile(profileId, taskId, testAction);
+    });
+    connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::viewLastBuildTestResultRequested,
+            this, [this](const QString& workspaceId, const QString& taskId) {
+        if (!plannerWorkspaceAuthorized(workspaceId) || !m_buildTestPage) return;
+        selectQuickModule(10);
+        m_buildTestPage->viewLastTaskResult(taskId);
+    });
     connect(m_plannerController, &devhub::presentation::overview::planner::PlannerController::startLinkedServiceRequested,
             this, [this](const QString& workspaceId, const QString& taskId, const QString& serviceId) {
         if (!plannerWorkspaceAuthorized(workspaceId)) {
@@ -718,6 +760,50 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     m_assistantPage = new devhub::presentation::assistant::AssistantPage(
         assistantController, assistantToolRuntime, settingsService, m_pageHost);
     m_pageHost->addWidget(m_assistantPage);
+    m_buildTestPage = new devhub::presentation::buildtest::BuildTestPage(
+        m_buildHistory, m_buildExecution, m_workspaceContext, editorLauncher, m_pageHost);
+    connect(m_buildTestPage, &devhub::presentation::buildtest::BuildTestPage::profilesChanged,
+            this, [this] { refreshPlannerBuildOptions(m_workspaceContext.activeWorkspace()
+                ? m_workspaceContext.activeWorkspace()->id().toString() : QString{}); });
+    m_pageHost->addWidget(m_buildTestPage);
+    connect(&m_buildExecution, &application::buildtest::BuildExecutionCoordinator::runFinished,
+            this, [this](const application::buildtest::BuildRun& run) {
+        if (!run.taskId.isEmpty() && m_plannerController) {
+            m_plannerController->recordBuildTestActivity(run.workspaceId, run.taskId, run.id,
+                {{QStringLiteral("profileName"), run.profileName},
+                 {QStringLiteral("runner"), application::buildtest::runnerName(run.runner)},
+                 {QStringLiteral("status"), application::buildtest::runStatusName(run.status)},
+                 {QStringLiteral("exitCode"), run.exitCode},
+                 {QStringLiteral("durationMilliseconds"), run.durationMilliseconds},
+                 {QStringLiteral("totalTests"), run.totalTests}, {QStringLiteral("passedTests"), run.passedTests},
+                 {QStringLiteral("failedTests"), run.failedTests}, {QStringLiteral("skippedTests"), run.skippedTests},
+                 {QStringLiteral("summary"), run.summary}});
+        }
+        if (run.status == application::buildtest::RunStatus::Cancelled) return;
+        application::notifications::NotificationDraft draft;
+        const bool succeeded = run.status == application::buildtest::RunStatus::Succeeded;
+        draft.severity = succeeded ? application::notifications::NotificationSeverity::Success
+                                   : application::notifications::NotificationSeverity::Error;
+        draft.category = application::notifications::NotificationCategory::BuildTest;
+        draft.title = run.testAction
+            ? (succeeded ? tr("Test run completed") : tr("Test run failed"))
+            : (succeeded ? tr("Build completed") : tr("Build failed"));
+        draft.message = run.summary;
+        draft.deduplicationKey = QStringLiteral("buildtest-run:%1").arg(run.id);
+        draft.workspaceId = QUuid::fromString(run.workspaceId);
+        (void)m_notificationService.post(std::move(draft));
+        if (m_workspaceContext.activeWorkspace()
+            && m_workspaceContext.activeWorkspace()->id().toString() == run.workspaceId) {
+            application::overview::OverviewSection section;
+            section.id = QStringLiteral("build-test"); section.title = tr("Build & Test");
+            section.summary = run.summary;
+            section.details = {run.profileName, run.startedAtUtc.toLocalTime().toString(QStringLiteral("HH:mm:ss"))};
+            section.statusLabel = application::buildtest::runStatusName(run.status);
+            section.statusTone = succeeded ? QStringLiteral("success") : QStringLiteral("error");
+            section.actions = {QStringLiteral("nav.build-test"), QStringLiteral("buildtest.failed-tests")};
+            m_overviewComposer->updateSection(std::move(section));
+        }
+    });
     m_commandPalette = new devhub::presentation::commands::CommandPaletteDialog(*m_commandRegistry, this);
     m_workspaceSearchProvider = new application::commands::WorkspaceSearchProvider();
     m_plannerSearchProvider = new PlannerTaskSearchProvider();
@@ -819,6 +905,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             this, [this, gitPage, servicePage, logsPage, databasePage, filesPage, &portMonitor](const QString& workspaceId, const QString& path) {
         cancelPendingPlannerServiceStarts();
         refreshPlannerServiceOptions(workspaceId);
+        refreshPlannerBuildOptions(workspaceId);
         const auto& active = m_workspaceContext.activeWorkspace();
         m_restartButton->setEnabled(active.has_value());
         m_observedLogBytes = 0;
@@ -898,6 +985,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         gitPage->setWorkspacePath(path, active ? std::optional<QUuid>{QUuid::fromString(active->id().toString())} : std::nullopt);
         servicePage->setWorkspace(workspaceId, path);
         logsPage->setWorkspace(workspaceId, path);
+        if (m_buildTestPage) m_buildTestPage->setWorkspace(workspaceId, path);
         databasePage->setWorkspace(workspaceId, path);
         m_notesPage->setWorkspace(workspaceId);
         if (active) {
@@ -1041,7 +1129,14 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
                 using State = application::authentication::SessionState;
                 m_plannerController->setSessionAllowed(state == State::SignedIn);
                 if (m_notesPage) m_notesPage->setSessionAllowed(state == State::SignedIn);
-                if (state != State::SignedIn) cancelPendingPlannerServiceStarts();
+                if (state != State::SignedIn) {
+                    cancelPendingPlannerServiceStarts();
+                    if (m_buildTestPage) m_buildTestPage->setWorkspace({}, {});
+                } else if (m_buildTestPage && m_workspaceContext.activeWorkspace()) {
+                    const auto activeWorkspace = m_workspaceContext.activeWorkspace();
+                    m_buildTestPage->setWorkspace(activeWorkspace->id().toString(), activeWorkspace->path().canonicalPath());
+                    refreshPlannerBuildOptions(activeWorkspace->id().toString());
+                }
                 application::commands::CommandContext context;
                 const auto active = m_workspaceContext.activeWorkspace();
                 context.hasWorkspace = active.has_value() && state == State::SignedIn;
@@ -1142,7 +1237,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         emit shellChanged();
     });
     m_modulePages = {m_overviewPage, gitPage, servicePage, portPage, logsPage,
-                     databasePage, m_notesPage, filesPage, settingsPage, m_assistantPage};
+                     databasePage, m_notesPage, filesPage, settingsPage, m_assistantPage, m_buildTestPage};
 
     auto* quickView = new QQuickView;
     quickView->setResizeMode(QQuickView::SizeRootObjectToView);
@@ -1169,7 +1264,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     reloadWorkspaces();
     const int restoredPage = m_settingsService.value(QStringLiteral("general/restoreLastPage")).toBool()
         ? QSettings().value(QStringLiteral("window/lastPage"), 0).toInt() : 0;
-    if ((restoredPage > 0 && restoredPage < 8) || restoredPage == 9) selectQuickModule(restoredPage);
+    if ((restoredPage > 0 && restoredPage < 8) || restoredPage == 9 || restoredPage == 10) selectQuickModule(restoredPage);
 }
 
 void MainWindow::restoreWorkspaceSelection()
@@ -1200,13 +1295,14 @@ QVariantList MainWindow::overviewSections() const
     const auto snapshot = m_overviewComposer->snapshot();
     const bool hasWorkspace = !snapshot.workspaceId.isEmpty();
     const QStringList order{QStringLiteral("git"), QStringLiteral("services"), QStringLiteral("ports"),
-                            QStringLiteral("logs"), QStringLiteral("database"), QStringLiteral("notes")};
+                            QStringLiteral("logs"), QStringLiteral("database"), QStringLiteral("notes"), QStringLiteral("build-test")};
     const QStringList icons{QStringLiteral("⑂"), QStringLiteral("▷"), QStringLiteral("◉"),
-                            QStringLiteral("≡"), QStringLiteral("▤"), QStringLiteral("▧")};
+                            QStringLiteral("≡"), QStringLiteral("▤"), QStringLiteral("▧"), QStringLiteral("⚒")};
     const QStringList labels{tr("Git Status"), tr("Services / Run"), tr("Open Ports"),
-                             tr("Recent Logs"), tr("Database (SQLite)"), tr("Notes")};
+                             tr("Recent Logs"), tr("Database (SQLite)"), tr("Notes"), tr("Build & Test")};
     const QStringList actions{tr("Open Git"), tr("Manage Services"), tr("View Ports"),
-                              tr("Open Logs"), tr("Browse Database"), tr("Open Notes")};
+                              tr("Open Logs"), tr("Browse Database"), tr("Open Notes"), tr("Open Build & Test")};
+    const QList<int> modules{1, 2, 3, 4, 5, 6, 10};
     QVariantList result;
     for (qsizetype i = 0; i < order.size(); ++i) {
         QVariantMap item;
@@ -1235,7 +1331,7 @@ QVariantList MainWindow::overviewSections() const
         item.insert(QStringLiteral("title"), labels.at(i));
         item.insert(QStringLiteral("icon"), icons.at(i));
         item.insert(QStringLiteral("action"), hasWorkspace ? actions.at(i) : QString{});
-        item.insert(QStringLiteral("module"), static_cast<int>(i + 1));
+        item.insert(QStringLiteral("module"), modules.at(i));
         result.append(item);
     }
     return result;
@@ -1261,7 +1357,7 @@ void MainWindow::selectQuickModule(int index)
     if (index == 9) m_assistantPage->activate();
     m_moduleWindow->setWindowTitle(tr("DevHub — %1").arg(QStringList{
         tr("Overview"), tr("Git"), tr("Services"), tr("Ports"), tr("Logs"),
-        tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant")}.at(index)));
+        tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant"), tr("Build & Test")}.at(index)));
     m_moduleWindow->show();
     // Clamp the complete decorated window to the current monitor's work area.
     if (auto* targetScreen = screen()) {
@@ -1315,6 +1411,34 @@ void MainWindow::restartQuickServices()
     }
     statusBar()->showMessage(restarted == 0 ? tr("No running services to restart.")
         : tr("Restarting %1 service(s)…").arg(restarted), 4000);
+}
+
+void MainWindow::runQuickBuild()
+{
+    selectQuickModule(10);
+    if (m_buildTestPage) m_buildTestPage->runCurrentBuild();
+}
+
+void MainWindow::runQuickTests()
+{
+    selectQuickModule(10);
+    if (m_buildTestPage) m_buildTestPage->runCurrentTests();
+}
+
+void MainWindow::cancelQuickBuild()
+{
+    const auto active = m_workspaceContext.activeWorkspace();
+    if (!active || m_buildExecution.activeWorkspaceId() != active->id().toString()) {
+        statusBar()->showMessage(tr("There is no build or test operation for the active workspace."), 3500);
+        return;
+    }
+    m_buildExecution.cancel();
+}
+
+void MainWindow::showFailedTests()
+{
+    selectQuickModule(10);
+    if (m_buildTestPage) m_buildTestPage->openFailedTests();
 }
 
 void MainWindow::openQuickFolder()
@@ -1843,6 +1967,25 @@ void MainWindow::refreshPlannerServiceOptions(const QString& workspaceId)
         }
     }
     if (m_plannerController) m_plannerController->setServiceOptions(std::move(options));
+}
+
+void MainWindow::refreshPlannerBuildOptions(const QString& workspaceId)
+{
+    QVariantList options;
+    const auto active = m_workspaceContext.activeWorkspace();
+    if (!workspaceId.isEmpty() && active && active->id().toString() == workspaceId
+        && m_session.state() == application::authentication::SessionState::SignedIn) {
+        const auto profiles = m_buildHistory.profiles(workspaceId);
+        if (profiles) {
+            for (const auto& profile : profiles.value())
+                if (profile.workspaceId == workspaceId)
+                    options.append(QVariantMap{{QStringLiteral("id"), profile.id},
+                        {QStringLiteral("name"), profile.name},
+                        {QStringLiteral("testAction"), profile.testAction},
+                        {QStringLiteral("runner"), static_cast<int>(profile.runner)}});
+        }
+    }
+    if (m_plannerController) m_plannerController->setBuildProfileOptions(std::move(options));
 }
 
 void MainWindow::cancelPendingPlannerServiceStarts(const QString& workspaceId)

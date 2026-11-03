@@ -32,7 +32,7 @@ private slots:
         QVERIFY(m_database->open());
         const auto migrated = m_database->migrate();
         QVERIFY2(migrated, qPrintable(migrated.error().technicalMessage));
-        QCOMPARE(m_database->currentSchemaVersion(), 14);
+        QCOMPARE(m_database->currentSchemaVersion(), 16);
         QSqlQuery query(m_database->database());
         QVERIFY(query.exec(QStringLiteral("INSERT INTO accounts(id,username_normalized,display_username,password_hash) "
             "VALUES('%1','link-user','Link User','hash')").arg(m_accountId)));

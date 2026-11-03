@@ -213,6 +213,17 @@ set_tests_properties(devhub.database-migrations PROPERTIES
     ENVIRONMENT "QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}")
 
+qt_add_executable(devhub_buildtest_tests
+    buildtest_test.cpp
+    ../resources/database_migrations.qrc)
+target_link_libraries(devhub_buildtest_tests PRIVATE
+    devhub_buildtest devhub_accounts Qt6::Core Qt6::Widgets Qt6::Sql Qt6::Test project_options project_warnings)
+add_test(NAME devhub.build-test-center COMMAND devhub_buildtest_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/build-test-center-tests.txt,txt")
+set_tests_properties(devhub.build-test-center PROPERTIES TIMEOUT 45
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}")
+
 qt_add_executable(devhub_planner_tests
     planner_test.cpp
     ../src/presentation/overview/planner/PlannerTaskModel.cpp

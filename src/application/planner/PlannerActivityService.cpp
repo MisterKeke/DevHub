@@ -1,6 +1,7 @@
 #include "PlannerActivityService.h"
 
 #include "../../domain/errors/AppError.h"
+#include <QUuid>
 #include <QRegularExpression>
 
 namespace devhub::application::planner
@@ -45,6 +46,27 @@ Result<void> PlannerActivityService::linkGitCommit(
     association.committedAtUtc = commit.committedAt.toUTC();
     association.observedAtUtc = m_clock.utcNow().toUTC();
     return m_repository.linkGitCommit(std::move(association));
+}
+
+Result<void> PlannerActivityService::recordEvent(PlannerActivityEvent event)
+{
+    if (event.workspaceId.trimmed().isEmpty() || event.taskId.trimmed().isEmpty()
+        || event.eventType.trimmed().isEmpty() || event.origin.trimmed().isEmpty()
+        || event.description.trimmed().isEmpty() || event.metadataJson.toUtf8().size() > 16384
+        || event.externalRefType.size() > 64 || event.externalRefId.size() > 128) {
+        return Result<void>::failure(domain::errors::AppError::failure(
+            domain::errors::ErrorCode::InvalidArgument, domain::errors::ErrorCategory::Workspace,
+            QStringLiteral("The Planner activity event is invalid."), {},
+            QStringLiteral("record Planner activity event")));
+    }
+    if (event.id.isEmpty()) event.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QDateTime now = m_clock.utcNow().toUTC();
+    if (!event.occurredAtUtc.isValid()) event.occurredAtUtc = now;
+    event.observedAtUtc = now;
+    event.eventType = event.eventType.left(100);
+    event.origin = event.origin.left(64);
+    event.description = event.description.left(512);
+    return m_repository.recordEvent(std::move(event));
 }
 
 Result<void> PlannerActivityService::unlinkGitCommit(

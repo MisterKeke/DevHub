@@ -8,7 +8,7 @@
 
 namespace devhub::application::commands {
 
-enum class CommandCategory { Navigation, Account, Workspace, Git, Services, Ports, Logs, Database, Notes, Files, Settings };
+enum class CommandCategory { Navigation, Account, Workspace, Git, Services, Ports, Logs, Database, Notes, Files, Settings, BuildTest };
 
 struct CommandContext final {
     bool hasWorkspace = false;
