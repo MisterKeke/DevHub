@@ -1,13 +1,14 @@
 #pragma once
 #include "../../application/tasks/TaskScheduler.h"
 #include "../../application/git/GitTypes.h"
+#include "../../application/github/GitHubTypes.h"
 #include <QWidget>
 #include <QUuid>
 #include <optional>
 #include <QVector>
 
 class QLabel; class QListWidget; class QPushButton; class QPlainTextEdit; class QStackedWidget; class QTabWidget;
-class QShowEvent;
+class QShowEvent; class QSplitter;
 namespace devhub::application::settings { class SettingsService; }
 namespace devhub::presentation::git {
 class GitPage final : public QWidget {
@@ -22,6 +23,8 @@ public:
 signals:
     void operationFailed(QString title, QString message);
     void overviewUpdated(QString summary, QStringList details, QString statusLabel, QString statusTone);
+    void githubRepositoriesChanged(QVector<application::github::GitHubRepository> repositories,
+                                  QString error, QString localBranch);
 protected:
     void showEvent(QShowEvent* event) override;
 private:

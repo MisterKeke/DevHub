@@ -112,11 +112,13 @@ set_tests_properties(devhub.assistant-conversation-repository PROPERTIES
 qt_add_executable(devhub_assistant_settings_tests assistant_settings_test.cpp
     ../src/presentation/settings/SettingsWindow.cpp
     ../src/presentation/settings/AssistantSettingsPanel.cpp
+    ../src/presentation/settings/GitHubSettingsPanel.cpp
+    ../src/presentation/settings/GitHubDeviceFlowDialog.cpp
     ../src/presentation/theme/ThemeTokens.cpp
     ../src/presentation/theme/ThemeManager.cpp
     ../src/presentation/theme/ThemePalette.cpp
     ../src/presentation/theme/ThemeProxyStyle.cpp)
-target_link_libraries(devhub_assistant_settings_tests PRIVATE devhub_assistant Qt6::Widgets Qt6::Test project_warnings)
+target_link_libraries(devhub_assistant_settings_tests PRIVATE devhub_assistant devhub_github Qt6::Widgets Qt6::Network Qt6::Test project_warnings)
 add_test(NAME devhub.assistant-settings COMMAND devhub_assistant_settings_tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/assistant-settings-tests.txt,txt")
 set_tests_properties(devhub.assistant-settings PROPERTIES TIMEOUT 45
@@ -360,6 +362,15 @@ set_tests_properties(devhub.feature-regressions PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;PATH=path_list_prepend:$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin,${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}"
 )
+
+qt_add_executable(devhub_github_tests github_test.cpp)
+target_link_libraries(devhub_github_tests PRIVATE devhub_github Qt6::Test project_options project_warnings)
+add_test(NAME devhub.github COMMAND devhub_github_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/github-tests.txt,txt"
+    -o "-,txt")
+set_tests_properties(devhub.github PROPERTIES TIMEOUT 35
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;TEMP=set:${CMAKE_CURRENT_BINARY_DIR};TMP=set:${CMAKE_CURRENT_BINARY_DIR}")
 
 qt_add_executable(devhub_reliability_tests
     reliability_test.cpp

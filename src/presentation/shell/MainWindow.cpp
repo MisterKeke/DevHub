@@ -11,6 +11,7 @@
 #include "../workspaces/WorkspaceListModel.h"
 #include "../workspaces/WorkspaceListView.h"
 #include "../git/GitPage.h"
+#include "../git/GitHubPullRequestsPanel.h"
 #include "../services/ServicePage.h"
 #include "../ports/PortPage.h"
 #include "../logs/LogsPage.h"
@@ -33,6 +34,9 @@
 #include "../../application/support/SupportBundleBuilder.h"
 #include "../theme/ThemeManager.h"
 #include "../../application/settings/SettingsService.h"
+#include "../../application/github/GitHubService.h"
+#include "../../application/github/GitHubMonitorService.h"
+#include "../../infrastructure/github/WindowsCredentialStore.h"
 #include "../../application/overview/OverviewStateComposer.h"
 #include "../../application/commands/CommandRegistry.h"
 #include "../../application/commands/ICommandSearchProvider.h"
@@ -70,6 +74,8 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <memory>
 #include <QQuickView>
 #include <QSignalBlocker>
 #include <QCursor>
@@ -203,6 +209,17 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
                    ThemeTokens::size(SizeToken::MinimumWindowHeight));
     resize(1500, 900);
 
+    m_githubService = new application::github::GitHubService(
+        m_settingsService.value(QStringLiteral("github/clientId")).toString(), accountId,
+        std::make_unique<infrastructure::github::WindowsCredentialStore>(), this);
+    m_githubMonitor = new application::github::GitHubMonitorService(
+        *m_githubService, m_settingsService, m_notificationService, this);
+    m_githubService->recheckConnection();
+    connect(&m_session, &application::authentication::SessionController::stateChanged, this,
+        [this](application::authentication::SessionState state) {
+            m_githubService->setSessionActive(state == application::authentication::SessionState::SignedIn);
+        });
+
     m_rootPages = new QStackedWidget(this);
     m_rootPages->setObjectName(QStringLiteral("sessionPageHost"));
     setCentralWidget(m_rootPages);
@@ -309,6 +326,9 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::Project,
                                                               ThemePalette::color(ColorToken::TextSecondary),
                                                               18), tr("Build & Test")));
+    moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::PullRequest,
+                                                              ThemePalette::color(ColorToken::TextSecondary),
+                                                              18), tr("GitHub")));
     moduleList->setItemDelegate(new ModuleNavigationDelegate(moduleList));
     moduleList->item(9)->setSizeHint(QSize(120, 46));
     moduleList->setCurrentRow(0);
@@ -318,9 +338,11 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     const QStringList navigationIds{QStringLiteral("nav.overview"), QStringLiteral("nav.git"),
         QStringLiteral("nav.services"), QStringLiteral("nav.ports"), QStringLiteral("nav.logs"),
         QStringLiteral("nav.database"), QStringLiteral("nav.notes"), QStringLiteral("nav.files"),
-        QStringLiteral("nav.settings"), QStringLiteral("nav.assistant"), QStringLiteral("nav.build-test")};
+        QStringLiteral("nav.settings"), QStringLiteral("nav.assistant"), QStringLiteral("nav.build-test"),
+        QStringLiteral("nav.github")};
     const QStringList navigationTitles{tr("Overview"), tr("Git"), tr("Services"), tr("Ports"),
-        tr("Logs"), tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant"), tr("Build & Test")};
+        tr("Logs"), tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant"),
+        tr("Build & Test"), tr("GitHub")};
     for (int row = 0; row < navigationIds.size(); ++row) {
         if (row == presentation::assistant::AssistantNavigation::Index) {
             presentation::assistant::AssistantNavigation::registerCommand(*m_commandRegistry,
@@ -517,6 +539,24 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         m_plannerController, &devhub::presentation::overview::planner::PlannerController::refresh);
     m_pageHost->addWidget(m_overviewPage);
     auto* gitPage = new devhub::presentation::git::GitPage(m_scheduler, m_pageHost, &m_settingsService);
+    auto* githubPage = new devhub::presentation::git::GitHubPullRequestsPanel(
+        *m_githubService, &m_settingsService, &plannerService, m_pageHost);
+    connect(gitPage, &devhub::presentation::git::GitPage::githubRepositoriesChanged, githubPage,
+        [githubPage](QVector<application::github::GitHubRepository> repositories,
+                     const QString& error, const QString& localBranch) {
+            githubPage->setRepositories(std::move(repositories));
+            githubPage->setRepositoryError(error);
+            githubPage->setLocalBranch(localBranch);
+        });
+    connect(githubPage, &devhub::presentation::git::GitHubPullRequestsPanel::githubMonitorTargetChanged, this,
+        [this](const QString& workspaceId, const QString& remoteName, const QString& owner, const QString& name) {
+            if (workspaceId.isEmpty() || owner.isEmpty() || name.isEmpty()) {
+                m_githubMonitor->clearTarget();
+                return;
+            }
+            m_githubMonitor->setTarget(workspaceId,
+                application::github::GitHubRepository{remoteName, owner, name});
+        });
     connect(m_plannerController,
         &devhub::presentation::overview::planner::PlannerController::openGitCommitRequested,
         this, [this, gitPage](const QString& sha) {
@@ -529,7 +569,19 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             gitPage->focusBranch(branch);
             selectQuickModule(1);
         });
+    connect(githubPage, &devhub::presentation::git::GitHubPullRequestsPanel::openPlannerTaskRequested, this,
+        [this](const QString& taskId) {
+            if (!m_workspaceContext.activeWorkspace()) return;
+            const QString workspaceId = m_workspaceContext.activeWorkspace()->id().toString();
+            if (!plannerWorkspaceAuthorized(workspaceId)) return;
+            selectQuickModule(0);
+            m_plannerController->setCollapsed(false);
+            m_plannerController->requestOpenTask(taskId);
+        });
+    connect(githubPage, &devhub::presentation::git::GitHubPullRequestsPanel::plannerTaskLinked,
+            m_plannerController, &devhub::presentation::overview::planner::PlannerController::refresh);
     m_pageHost->addWidget(gitPage);
+    m_pageHost->addWidget(githubPage);
     auto* servicePage = new devhub::presentation::services::ServicePage(serviceRepository, serviceCoordinator, m_pageHost);
     m_servicePage = servicePage;
     m_pageHost->addWidget(servicePage);
@@ -902,7 +954,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     connect(portPage, &devhub::presentation::ports::PortPage::openWorkspaceRequested,
             this, [this](const QString& workspaceId) { activateWorkspace(workspaceId); });
     connect(&m_workspaceContext, &application::workspaces::WorkspaceContext::workspaceChanged,
-            this, [this, gitPage, servicePage, logsPage, databasePage, filesPage, &portMonitor](const QString& workspaceId, const QString& path) {
+            this, [this, gitPage, githubPage, servicePage, logsPage, databasePage, filesPage, &portMonitor](const QString& workspaceId, const QString& path) {
         cancelPendingPlannerServiceStarts();
         refreshPlannerServiceOptions(workspaceId);
         refreshPlannerBuildOptions(workspaceId);
@@ -983,6 +1035,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
                 m_overviewComposer->removeSection(id);
         }
         gitPage->setWorkspacePath(path, active ? std::optional<QUuid>{QUuid::fromString(active->id().toString())} : std::nullopt);
+        githubPage->setWorkspace(active ? std::optional<QUuid>{QUuid::fromString(active->id().toString())} : std::nullopt);
         servicePage->setWorkspace(workspaceId, path);
         logsPage->setWorkspace(workspaceId, path);
         if (m_buildTestPage) m_buildTestPage->setWorkspace(workspaceId, path);
@@ -1189,8 +1242,11 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     connect(openSettingsButton, &QPushButton::clicked, this, [this, databasePage] {
         const QString workspaceId = m_workspaceContext.activeWorkspace()
             ? m_workspaceContext.activeWorkspace()->id().toString() : QString{};
-        devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this, &m_assistantController, &m_assistantSetupProbe);
+        devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this,
+                                                               &m_assistantController, &m_assistantSetupProbe, m_githubService);
         connect(&dialog, &devhub::presentation::settings::SettingsWindow::settingsApplied, &m_assistantController, [this] {
+            m_githubService->setClientId(m_settingsService.value(QStringLiteral("github/clientId")).toString());
+            m_githubMonitor->configurationChanged();
             m_assistantController.applyConfiguration({m_settingsService.value(QStringLiteral("assistant/executable")).toString(), m_settingsService.value(QStringLiteral("assistant/model")).toString()});
             m_assistantToolRuntime.reloadSomethingTasksSettings();
             if (m_session.account()) m_assistantController.setPersistenceContext(m_session.account()->id().toString(),
@@ -1237,7 +1293,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         emit shellChanged();
     });
     m_modulePages = {m_overviewPage, gitPage, servicePage, portPage, logsPage,
-                     databasePage, m_notesPage, filesPage, settingsPage, m_assistantPage, m_buildTestPage};
+                     databasePage, m_notesPage, filesPage, settingsPage, m_assistantPage, m_buildTestPage, githubPage};
 
     auto* quickView = new QQuickView;
     quickView->setResizeMode(QQuickView::SizeRootObjectToView);
@@ -1264,7 +1320,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     reloadWorkspaces();
     const int restoredPage = m_settingsService.value(QStringLiteral("general/restoreLastPage")).toBool()
         ? QSettings().value(QStringLiteral("window/lastPage"), 0).toInt() : 0;
-    if ((restoredPage > 0 && restoredPage < 8) || restoredPage == 9 || restoredPage == 10) selectQuickModule(restoredPage);
+    if ((restoredPage > 0 && restoredPage < 8) || restoredPage == 9 || restoredPage == 10 || restoredPage == 11)
+        selectQuickModule(restoredPage);
 }
 
 void MainWindow::restoreWorkspaceSelection()
@@ -1357,7 +1414,8 @@ void MainWindow::selectQuickModule(int index)
     if (index == 9) m_assistantPage->activate();
     m_moduleWindow->setWindowTitle(tr("DevHub — %1").arg(QStringList{
         tr("Overview"), tr("Git"), tr("Services"), tr("Ports"), tr("Logs"),
-        tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant"), tr("Build & Test")}.at(index)));
+        tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant"), tr("Build & Test"),
+        tr("GitHub")}.at(index)));
     m_moduleWindow->show();
     // Clamp the complete decorated window to the current monitor's work area.
     if (auto* targetScreen = screen()) {
@@ -1461,8 +1519,11 @@ void MainWindow::openQuickSettings()
 {
     const QString workspaceId = m_workspaceContext.activeWorkspace()
         ? m_workspaceContext.activeWorkspace()->id().toString() : QString{};
-    devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this, &m_assistantController, &m_assistantSetupProbe);
+    devhub::presentation::settings::SettingsWindow dialog(m_settingsService, m_themeManager, workspaceId, this,
+                                                           &m_assistantController, &m_assistantSetupProbe, m_githubService);
     connect(&dialog, &devhub::presentation::settings::SettingsWindow::settingsApplied, &m_assistantController, [this] {
+        m_githubService->setClientId(m_settingsService.value(QStringLiteral("github/clientId")).toString());
+        m_githubMonitor->configurationChanged();
         m_assistantController.applyConfiguration({m_settingsService.value(QStringLiteral("assistant/executable")).toString(), m_settingsService.value(QStringLiteral("assistant/model")).toString()});
         m_assistantToolRuntime.reloadSomethingTasksSettings();
         if (m_session.account()) m_assistantController.setPersistenceContext(m_session.account()->id().toString(),

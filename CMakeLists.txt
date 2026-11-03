@@ -166,6 +166,19 @@ add_library(devhub_settings STATIC
 target_include_directories(devhub_settings PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(devhub_settings PUBLIC project_options devhub_core Qt6::Core PRIVATE project_warnings)
 
+add_library(devhub_github STATIC
+    src/application/github/GitHubTypes.cpp
+    src/application/github/GitHubRepositoryResolver.cpp
+    src/application/github/GitHubService.cpp
+    src/application/github/GitHubMonitorService.cpp
+    src/infrastructure/github/WindowsCredentialStore.cpp
+    src/infrastructure/github/WindowsCredentialStore.h)
+target_include_directories(devhub_github PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(devhub_github PUBLIC project_options devhub_core devhub_settings Qt6::Core Qt6::Network PRIVATE project_warnings)
+if(WIN32)
+    target_link_libraries(devhub_github PRIVATE advapi32)
+endif()
+
 function(configure_devhub_assistant target)
     target_include_directories(${target} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(${target} PUBLIC project_options devhub_core devhub_settings devhub_file_services devhub_services devhub_workspaces Qt6::Core
@@ -350,12 +363,18 @@ add_executable(devhub WIN32
     src/presentation/overview/planner/PlannerImportController.cpp
     src/presentation/commands/CommandPaletteDialog.cpp
     src/presentation/settings/SettingsWindow.cpp
+    src/presentation/settings/GitHubSettingsPanel.cpp
+    src/presentation/settings/GitHubSettingsPanel.h
+    src/presentation/settings/GitHubDeviceFlowDialog.cpp
+    src/presentation/settings/GitHubDeviceFlowDialog.h
     src/presentation/settings/AssistantSettingsPanel.cpp
     src/presentation/settings/SupportBundleDialog.cpp
     src/presentation/notifications/NotificationListModel.cpp
     src/presentation/notifications/NotificationCenterDialog.cpp
     src/presentation/notifications/ToastManager.cpp
     src/presentation/git/GitPage.cpp
+    src/presentation/git/GitHubPullRequestsPanel.cpp
+    src/presentation/git/GitHubPullRequestsPanel.h
     src/presentation/services/ServicePage.cpp
     src/presentation/ports/PortPage.cpp
     src/presentation/ports/PortTableModel.cpp
@@ -403,6 +422,7 @@ target_link_libraries(devhub PRIVATE
     devhub_ports
     devhub_logs
     devhub_buildtest
+    devhub_github
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets

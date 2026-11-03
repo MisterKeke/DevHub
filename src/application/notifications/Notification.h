@@ -25,7 +25,8 @@ enum class NotificationCategory
     Git,
     Database,
     Security,
-    BuildTest
+    BuildTest,
+    GitHub
 };
 
 struct Notification final

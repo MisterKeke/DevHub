@@ -3,6 +3,7 @@
 #include "../../application/git/GitExecutableLocator.h"
 #include "../../application/git/GitService.h"
 #include "../../application/settings/SettingsService.h"
+#include "../../application/github/GitHubRepositoryResolver.h"
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
@@ -26,6 +27,8 @@ struct GitPageSnapshot final {
     QVector<application::git::GitCommit> history;
     QVector<application::git::GitBranchState> branches;
     QVector<application::git::GitBranchState> remoteBranches;
+    QVector<application::git::GitRemote> remotes;
+    QString remotesError;
     QString historyError;
     QString branchesError;
     QString remoteBranchesError;
@@ -408,6 +411,7 @@ void GitPage::refresh() {
     application::git::GitExecutableLocator locator; const auto executable = locator.locate();
     if (!executable) {
         m_state->setText(executable.error().userMessage);
+        emit githubRepositoriesChanged({}, executable.error().userMessage, {});
         emit overviewUpdated(executable.error().userMessage, {}, tr("Git unavailable"), QStringLiteral("error"));
         return;
     }
@@ -442,6 +446,9 @@ void GitPage::refresh() {
                 auto remotes = service.branches(path, true, context.cancellationToken);
                 if (remotes) snapshot.remoteBranches = std::move(remotes).value();
                 else snapshot.remoteBranchesError = remotes.error().userMessage;
+                auto remoteUrls = service.remotes(path, context.cancellationToken);
+                if (remoteUrls) snapshot.remotes = std::move(remoteUrls).value();
+                else snapshot.remotesError = remoteUrls.error().userMessage;
             }
             return shared::common::Result<GitPageSnapshot>::success(std::move(snapshot));
         }, [this, generation](shared::common::TaskOutcome<GitPageSnapshot> outcome) {
@@ -452,6 +459,7 @@ void GitPage::refresh() {
             }
             auto result = std::get<shared::common::Result<GitPageSnapshot>>(std::move(outcome));
             if (!result) {
+                emit githubRepositoriesChanged({}, result.error().userMessage, {});
                 m_state->setText(result.error().userMessage);
                 if (!m_operationFeedback.isEmpty()) { m_partialErrors->setText(m_operationFeedback); m_partialErrors->show(); }
                 return;
@@ -460,6 +468,7 @@ void GitPage::refresh() {
             m_status->clear(); m_history->clear(); m_branches->clear(); m_diff->clear();
             m_partialErrors->clear(); m_partialErrors->hide();
             if (!snapshot.status.isRepository) {
+                emit githubRepositoriesChanged({}, snapshot.remotesError, {});
                 m_state->setText(m_requestedBranch.isEmpty()
                     ? tr("This workspace is not a Git repository.")
                     : tr("Associated branch ‘%1’ is unavailable. No checkout was performed.").arg(m_requestedBranch));
@@ -468,6 +477,8 @@ void GitPage::refresh() {
                 emit overviewUpdated(tr("This folder is not a Git repository."), {}, tr("Not a repo"), QStringLiteral("warning"));
                 return;
             }
+            emit githubRepositoriesChanged(application::github::GitHubRepositoryResolver::fromRemotes(snapshot.remotes),
+                                           snapshot.remotesError, snapshot.status.branch);
             const auto& state = snapshot.status;
             const QString branchName = state.branch.isEmpty() ? tr("detached HEAD") : state.branch;
             QStringList details{tr("Branch  %1").arg(branchName)};

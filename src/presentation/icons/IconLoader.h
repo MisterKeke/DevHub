@@ -7,7 +7,7 @@
 namespace devhub::presentation::icons {
 
 enum class IconName { Terminal, Folder, Settings, More, Workspace, Dashboard, Project, Ports, Logs, Logo, Lock,
-                      Git, Services, Database, Notes, Assistant };
+                      Git, PullRequest, Services, Database, Notes, Assistant };
 
 class IconLoader final
 {
