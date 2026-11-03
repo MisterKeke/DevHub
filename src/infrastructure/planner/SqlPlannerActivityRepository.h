@@ -19,6 +19,7 @@ class SqlPlannerActivityRepository final : public application::planner::IPlanner
     listGitCommits(const QString& workspaceId, const QString& taskId) override;
     shared::common::Result<void>
     linkGitCommit(domain::planner::PlannerGitCommitAssociation association) override;
+    shared::common::Result<void> recordEvent(domain::planner::PlannerActivityEvent event) override;
     shared::common::Result<void>
     unlinkGitCommit(const QString& workspaceId, const QString& taskId, const QString& sha) override;
     shared::common::Result<void>

@@ -286,7 +286,7 @@ Rectangle {
             taskId: "", title: "", description: "", status: "todo", completed: false,
             priority: "medium", difficulty: "", dueDate: "", startDate: "", estimatedMinutes: null,
             actualTrackedMinutes: 0, milestoneId: "", gitBranch: "", githubIssueUrl: "",
-            githubPullRequestUrl: "", linkedServiceId: "", notes: "", blockedReason: "", tags: [], subtasks: [], dependencyIds: []
+            githubPullRequestUrl: "", linkedServiceId: "", linkedBuildProfileId: "", linkedTestProfileId: "", notes: "", blockedReason: "", tags: [], subtasks: [], dependencyIds: []
         }
         if (!data || Object.keys(data).length === 0) return
         detail = data
@@ -303,6 +303,8 @@ Rectangle {
         milestoneBox.currentIndex = milestoneIndex(data.milestoneId || "")
         branchBox.currentIndex = branchOptionIndex(editorTaskId, data.gitBranch || "")
         serviceBox.currentIndex = serviceOptionIndex(editorTaskId, data.linkedServiceId || "")
+        buildProfileBox.currentIndex = buildProfileOptionIndex(editorTaskId, data.linkedBuildProfileId || "")
+        testProfileBox.currentIndex = testProfileOptionIndex(editorTaskId, data.linkedTestProfileId || "")
         issueField.text = data.githubIssueUrl || ""
         pullRequestField.text = data.githubPullRequestUrl || ""
         notesField.text = data.notes || ""
@@ -364,6 +366,26 @@ Rectangle {
         for (var i = 0; i < options.length; ++i) if (options[i].id === serviceId) return i
         return 0
     }
+    function editorBuildProfileOptions(taskId, testProfile) {
+        var options = [{ id: "", name: testProfile ? qsTr("No linked test profile") : qsTr("No linked build profile"), testAction: testProfile }]
+        var configured = plannerController.buildProfileOptions || []
+        var present = false
+        for (var i = 0; i < configured.length; ++i) {
+            if (!!configured[i].testAction !== testProfile) continue
+            options.push(configured[i])
+            if (configured[i].id === (testProfile ? detail.linkedTestProfileId : detail.linkedBuildProfileId)) present = true
+        }
+        var selectedId = testProfile ? detail.linkedTestProfileId : detail.linkedBuildProfileId
+        if (taskId && selectedId && !present)
+            options.push({ id: selectedId, name: qsTr("Unavailable profile · %1").arg(selectedId), testAction: testProfile })
+        return options
+    }
+    function buildProfileOptionIndex(taskId, profileId, testProfile) {
+        var options = editorBuildProfileOptions(taskId, testProfile)
+        for (var i = 0; i < options.length; ++i) if (options[i].id === profileId) return i
+        return 0
+    }
+    function testProfileOptionIndex(taskId, profileId) { return buildProfileOptionIndex(taskId, profileId, true) }
     function actionIsStarting() {
         var runs = detail.actionRuns || []
         for (var i = 0; i < runs.length; ++i) if (!runs[i].finished) return true
@@ -481,7 +503,8 @@ Rectangle {
             estimatedMinutes: estimateField.text.trim(),
             milestoneId: milestoneBox.currentValue || "",
             gitBranch: branchBox.currentValue || "", githubIssueUrl: issueField.text.trim(),
-            githubPullRequestUrl: pullRequestField.text.trim(), linkedServiceId: serviceBox.currentValue || "", notes: notesField.text,
+            githubPullRequestUrl: pullRequestField.text.trim(), linkedServiceId: serviceBox.currentValue || "",
+            linkedBuildProfileId: buildProfileBox.currentValue || "", linkedTestProfileId: testProfileBox.currentValue || "", notes: notesField.text,
             blockedReason: blockedField.text, tags: tagsField.text, subtasks: subtasks,
             dependencyIds: selectedDependencyIds
         }
@@ -1074,6 +1097,18 @@ Rectangle {
                         textRole: "name"; valueRole: "id"
                         onActivated: root.editorDirty = true
                     }
+                    PlannerComboBox {
+                        id: buildProfileBox; Layout.fillWidth: true
+                        model: root.editorBuildProfileOptions(editorTaskId, false)
+                        textRole: "name"; valueRole: "id"
+                        onActivated: root.editorDirty = true
+                    }
+                    PlannerComboBox {
+                        id: testProfileBox; Layout.fillWidth: true
+                        model: root.editorBuildProfileOptions(editorTaskId, true)
+                        textRole: "name"; valueRole: "id"
+                        onActivated: root.editorDirty = true
+                    }
                     Text { font.family: root.fontFamily; text: qsTr("Starting a linked service requires an explicit click. Task text is never used as a command."); color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     Text { font.family: root.fontFamily; visible: plannerController.branchLoading; text: qsTr("Loading local branches…"); color: root.muted; font.pixelSize: 9 }
                     PlannerField { id: issueField; Layout.fillWidth: true; placeholderText: qsTr("GitHub Issue URL"); color: root.text; onTextChanged: root.editorDirty = true }
@@ -1249,6 +1284,8 @@ Rectangle {
                     Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
                     Text { font.family: root.fontFamily; text: qsTr("Development actions"); color: root.accent; font.pixelSize: 12; font.weight: Font.DemiBold }
                     Text { font.family: root.fontFamily; text: root.detail.linkedServiceId ? (root.detail.linkedServiceAvailable ? qsTr("Linked service · %1").arg(root.detail.serviceName) : qsTr("Linked service is unavailable in the active workspace.")) : qsTr("No configured service is linked to this task."); color: root.detail.linkedServiceAvailable ? root.secondary : root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Text { font.family: root.fontFamily; text: root.detail.linkedBuildProfileId ? (root.detail.linkedBuildProfileAvailable ? qsTr("Build profile · %1").arg(root.detail.buildProfileName) : qsTr("Linked build profile is unavailable in the active workspace.")) : qsTr("No build profile is linked to this task."); color: root.detail.linkedBuildProfileAvailable ? root.secondary : root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Text { font.family: root.fontFamily; text: root.detail.linkedTestProfileId ? (root.detail.linkedTestProfileAvailable ? qsTr("Test profile · %1").arg(root.detail.testProfileName) : qsTr("Linked test profile is unavailable in the active workspace.")) : qsTr("No test profile is linked to this task."); color: root.detail.linkedTestProfileAvailable ? root.secondary : root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     Flow {
                         Layout.fillWidth: true; spacing: 6
                         PlannerButton { text: qsTr("Open Git"); enabled: !!plannerController.hasWorkspace; onClicked: plannerController.openGitModule() }
@@ -1256,6 +1293,9 @@ Rectangle {
                         PlannerButton { text: qsTr("Workspace notes"); enabled: !!plannerController.hasWorkspace; onClicked: plannerController.openWorkspaceNotes() }
                         PlannerButton { text: qsTr("View service"); enabled: !!root.detail.linkedServiceAvailable; onClicked: plannerController.openLinkedService(root.detail.taskId) }
                         PlannerButton { text: qsTr("Related logs"); enabled: !!root.detail.linkedServiceAvailable; onClicked: plannerController.openLinkedServiceLogs(root.detail.taskId) }
+                        PlannerButton { visible: !!root.detail.linkedBuildProfileAvailable; text: qsTr("Build project"); onClicked: { plannerController.runLinkedBuildProfile(root.detail.taskId); detailsMessage.text = plannerController.error || "" } }
+                        PlannerButton { visible: !!root.detail.linkedTestProfileAvailable; text: qsTr("Run associated tests"); onClicked: { plannerController.runLinkedTestProfile(root.detail.taskId); detailsMessage.text = plannerController.error || "" } }
+                        PlannerButton { visible: !!root.detail.linkedTestProfileId; text: qsTr("View last test result"); onClicked: plannerController.viewLastBuildTestResult(root.detail.taskId) }
                     }
                     RowLayout {
                         Layout.fillWidth: true

@@ -21,6 +21,9 @@ for Planner schema and migration details, import ownership, and scale-profile co
 See [planner-notes-linking.md](architecture/planner-notes-linking.md) for the stable-ID
 many-to-many relationship, trash/recovery behavior, and navigation boundaries.
 
+See [build-test-center.md](architecture/build-test-center.md) for Build & Test runner support,
+workspace-scoped execution safety, Planner integration and verification limits.
+
 ## Toolchain pins
 
 - Qt 6.11 API baseline, with a local minimum of Qt 6.11.0 and CI pinned to Qt 6.11.2. The 6.11 line is outside the affected range for the Qt Markdown importer issue CVE-2025-3512; keep CI aligned with reviewed Qt advisories.

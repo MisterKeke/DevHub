@@ -53,6 +53,8 @@ namespace devhub::application::assistant { class AssistantController; class Assi
 namespace devhub::presentation::databases { class DatabasePage; }
 namespace devhub::presentation::services { class ServicePage; }
 namespace devhub::presentation::logs { class LogsPage; }
+namespace devhub::presentation::buildtest { class BuildTestPage; }
+namespace devhub::application::buildtest { class IBuildHistoryRepository; class BuildExecutionCoordinator; }
 namespace devhub::application::overview { class OverviewStateComposer; }
 namespace devhub::application::commands { class CommandRegistry; }
 namespace devhub::application::commands { class CachedSearchProvider; }
@@ -92,6 +94,8 @@ public:
                application::tasks::TaskScheduler& scheduler,
                application::services::IServiceDefinitionRepository& serviceRepository,
                application::services::ServiceCoordinator& serviceCoordinator,
+               application::buildtest::IBuildHistoryRepository& buildHistory,
+               application::buildtest::BuildExecutionCoordinator& buildExecution,
                application::ports::PortMonitorService& portMonitor,
                application::logs::ILogSourceRepository& logSourceRepository,
                application::databases::IDatabaseReferenceRepository& databaseReferences,
@@ -139,6 +143,10 @@ public slots:
     void lockQuickSession();
     void openQuickTerminal();
     void restartQuickServices();
+    void runQuickBuild();
+    void runQuickTests();
+    void cancelQuickBuild();
+    void showFailedTests();
     void openQuickFolder();
     void openQuickSettings();
     void showQuickWorkspaceMenu(const QString& id);
@@ -171,6 +179,7 @@ private:
     void finishWorkspaceArchive(const QString& id, const QString& name, bool serviceStopTimedOut = false);
     void restoreWorkspaceAfterArchiveFailure(const QString& id);
     void refreshPlannerServiceOptions(const QString& workspaceId);
+    void refreshPlannerBuildOptions(const QString& workspaceId);
     [[nodiscard]] bool plannerWorkspaceAuthorized(const QString& workspaceId) const;
     void cancelPendingPlannerServiceStarts(const QString& workspaceId = {});
     void handlePlannerServiceState(const QString& serviceId,
@@ -196,6 +205,8 @@ private:
     application::tasks::TaskScheduler& m_scheduler;
     application::services::IServiceDefinitionRepository& m_serviceRepository;
     application::services::ServiceCoordinator& m_serviceCoordinator;
+    application::buildtest::IBuildHistoryRepository& m_buildHistory;
+    application::buildtest::BuildExecutionCoordinator& m_buildExecution;
     application::settings::SettingsService& m_settingsService;
     application::assistant::AssistantController& m_assistantController;
     application::assistant::AssistantToolRuntime& m_assistantToolRuntime;
@@ -223,6 +234,7 @@ private:
     devhub::presentation::databases::DatabasePage* m_databasePage = nullptr;
     devhub::presentation::services::ServicePage* m_servicePage = nullptr;
     devhub::presentation::logs::LogsPage* m_logsPage = nullptr;
+    devhub::presentation::buildtest::BuildTestPage* m_buildTestPage = nullptr;
     application::overview::OverviewStateComposer* m_overviewComposer = nullptr;
     application::commands::CommandRegistry* m_commandRegistry = nullptr;
     devhub::presentation::overview::OverviewPage* m_overviewPage = nullptr;

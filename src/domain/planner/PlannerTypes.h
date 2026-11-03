@@ -65,6 +65,8 @@ struct PlannerTask final
     QString notes;
     QString blockedReason;
     QString linkedServiceId;
+    QString linkedBuildProfileId;
+    QString linkedTestProfileId;
     QString sourceType = QStringLiteral("local");
     QString sourceProfileIdentity;
     QString sourceTaskId;

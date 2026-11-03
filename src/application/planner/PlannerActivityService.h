@@ -21,6 +21,8 @@ class PlannerActivityService final
     linkGitCommit(const QString& workspaceId, const QString& taskId, const application::git::GitCommit& commit,
                   const QString& source, const QString& branchName = {});
     [[nodiscard]] shared::common::Result<void>
+    recordEvent(domain::planner::PlannerActivityEvent event);
+    [[nodiscard]] shared::common::Result<void>
     unlinkGitCommit(const QString& workspaceId, const QString& taskId, const QString& sha);
     [[nodiscard]] shared::common::Result<void>
     setGitCommitAvailability(const QString& workspaceId, const QString& taskId, const QString& sha,

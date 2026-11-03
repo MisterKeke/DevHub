@@ -46,6 +46,7 @@ Item {
             completed: false, progress: 0, completedTaskCount: 0, taskCount: 0 }]
         property var branchOptions: []
         property var serviceOptions: []
+        property var buildProfileOptions: []
         property bool branchLoading: false
         property string milestoneFilter: ""
         property string gitBranchFilter: ""

@@ -14,5 +14,7 @@
         <file alias="0012_planner_service_actions.sql">database/migrations/0012_planner_service_actions.sql</file>
         <file alias="0013_planner_task_note_links.sql">database/migrations/0013_planner_task_note_links.sql</file>
         <file alias="0014_planner_activity_history.sql">database/migrations/0014_planner_activity_history.sql</file>
+        <file alias="0015_build_test_center.sql">database/migrations/0015_build_test_center.sql</file>
+        <file alias="0016_planner_build_profiles.sql">database/migrations/0016_planner_build_profiles.sql</file>
     </qresource>
 </RCC>

@@ -210,9 +210,11 @@ Result<PlannerTask> SqlPlannerRepository::createTaskImpl(PlannerTask task, bool 
         "created_at_utc,updated_at_utc,"
         "due_date,start_date,priority,difficulty,revision,estimated_minutes,actual_tracked_minutes,"
         "milestone_id,git_branch,"
-        "github_issue_url,github_pull_request_url,planner_notes,blocked_reason,source_type,linked_service_id) "
-        "SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS("
-        "SELECT 1 FROM workspaces WHERE id=? AND account_id=? AND archived_at_utc IS NULL)"));
+        "github_issue_url,github_pull_request_url,planner_notes,blocked_reason,source_type,linked_service_id,"
+        "linked_build_profile_id,linked_test_profile_id) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULLIF(?,''),NULLIF(?,'' ) "
+        "WHERE EXISTS(SELECT 1 FROM workspaces WHERE id=? AND account_id=? AND archived_at_utc IS NULL) "
+        "AND (?='' OR EXISTS(SELECT 1 FROM build_profiles bp WHERE bp.id=? AND bp.workspace_id=? AND bp.account_id=?)) "
+        "AND (?='' OR EXISTS(SELECT 1 FROM build_profiles bp WHERE bp.id=? AND bp.workspace_id=? AND bp.account_id=?))"));
     query.addBindValue(task.id);
     query.addBindValue(task.workspaceId);
     query.addBindValue(task.title);
@@ -237,6 +239,16 @@ Result<PlannerTask> SqlPlannerRepository::createTaskImpl(PlannerTask task, bool 
     query.addBindValue(textValue(task.blockedReason));
     query.addBindValue(textValue(task.sourceType));
     query.addBindValue(textValue(task.linkedServiceId));
+    query.addBindValue(textValue(task.linkedBuildProfileId));
+    query.addBindValue(textValue(task.linkedTestProfileId));
+    query.addBindValue(task.workspaceId);
+    query.addBindValue(m_accountId.toString());
+    query.addBindValue(textValue(task.linkedBuildProfileId));
+    query.addBindValue(textValue(task.linkedBuildProfileId));
+    query.addBindValue(task.workspaceId);
+    query.addBindValue(m_accountId.toString());
+    query.addBindValue(textValue(task.linkedTestProfileId));
+    query.addBindValue(textValue(task.linkedTestProfileId));
     query.addBindValue(task.workspaceId);
     query.addBindValue(m_accountId.toString());
     if (!query.exec())
@@ -362,7 +374,7 @@ Result<PlannerTask> SqlPlannerRepository::getTask(const QString &workspaceId, co
         "t.planner_notes,t.blocked_reason,t.source_type,COALESCE(i.source_profile_identity,''),"
         "COALESCE(i.source_task_id,''),"
         "COALESCE(i.source_revision,''),i.source_created_at,i.source_updated_at,i.imported_at_utc,"
-        "COALESCE(t.linked_service_id,'') "
+        "COALESCE(t.linked_service_id,''),COALESCE(t.linked_build_profile_id,''),COALESCE(t.linked_test_profile_id,'') "
         "FROM planner_tasks t JOIN workspaces w ON w.id=t.workspace_id LEFT JOIN "
         "planner_import_records i ON i.task_id=t.id "
         "WHERE t.workspace_id=? AND t.id=? AND w.account_id=?"));
@@ -407,6 +419,8 @@ Result<PlannerTask> SqlPlannerRepository::getTask(const QString &workspaceId, co
     if (!query.value(28).isNull())
         task.importedAtUtc = readTimestamp(query.value(28));
     task.linkedServiceId = query.value(29).toString();
+    task.linkedBuildProfileId = query.value(30).toString();
+    task.linkedTestProfileId = query.value(31).toString();
     query.finish();
 
     QSqlQuery details(m_database.database());
@@ -615,7 +629,7 @@ Result<QVector<PlannerTask>> SqlPlannerRepository::listTasks(const QString &work
             "COALESCE(t.github_pull_request_url,''),t.planner_notes,t.blocked_reason,t.source_type,"
             "COALESCE(i.source_profile_identity,''),COALESCE(i.source_task_id,''),"
             "COALESCE(i.source_revision,''),i.source_created_at,i.source_updated_at,i.imported_at_utc,"
-            "COALESCE(t.linked_service_id,'') FROM planner_tasks t JOIN workspaces w ON w.id=t.workspace_id "
+            "COALESCE(t.linked_service_id,''),COALESCE(t.linked_build_profile_id,''),COALESCE(t.linked_test_profile_id,'') FROM planner_tasks t JOIN workspaces w ON w.id=t.workspace_id "
             "LEFT JOIN planner_import_records i ON i.task_id=t.id WHERE t.workspace_id=? AND t.id IN (%1) "
             "AND w.account_id=?").arg(inClause));
         rows.addBindValue(workspaceId);
@@ -660,6 +674,8 @@ Result<QVector<PlannerTask>> SqlPlannerRepository::listTasks(const QString &work
             if (!rows.value(28).isNull())
                 task.importedAtUtc = readTimestamp(rows.value(28));
             task.linkedServiceId = rows.value(29).toString();
+            task.linkedBuildProfileId = rows.value(30).toString();
+            task.linkedTestProfileId = rows.value(31).toString();
             tasksById.insert(task.id, std::move(task));
         }
         rows.finish();
@@ -752,8 +768,10 @@ Result<PlannerTask> SqlPlannerRepository::updateTask(PlannerTask task, qint64 ex
                        "priority=?,difficulty=?,revision=revision+1,estimated_minutes=?,actual_"
                        "tracked_minutes=?,milestone_id=?,git_branch=?,"
                        "github_issue_url=?,github_pull_request_url=?,planner_notes=?,blocked_"
-                       "reason=?,linked_service_id=? WHERE id=? AND workspace_id=? AND revision=? "
-                       "AND workspace_id IN(SELECT id FROM workspaces WHERE account_id=?)"));
+                       "reason=?,linked_service_id=?,linked_build_profile_id=?,linked_test_profile_id=? WHERE id=? AND workspace_id=? AND revision=? "
+                       "AND workspace_id IN(SELECT id FROM workspaces WHERE account_id=?) "
+                       "AND (?='' OR EXISTS(SELECT 1 FROM build_profiles bp WHERE bp.id=? AND bp.workspace_id=? AND bp.account_id=?)) "
+                       "AND (?='' OR EXISTS(SELECT 1 FROM build_profiles bp WHERE bp.id=? AND bp.workspace_id=? AND bp.account_id=?))"));
     query.addBindValue(task.title);
     query.addBindValue(textValue(task.description));
     query.addBindValue(task.completed ? 1 : 0);
@@ -773,9 +791,19 @@ Result<PlannerTask> SqlPlannerRepository::updateTask(PlannerTask task, qint64 ex
     query.addBindValue(textValue(task.notes));
     query.addBindValue(textValue(task.blockedReason));
     query.addBindValue(textValue(task.linkedServiceId));
+    query.addBindValue(textValue(task.linkedBuildProfileId));
+    query.addBindValue(textValue(task.linkedTestProfileId));
     query.addBindValue(task.id);
     query.addBindValue(task.workspaceId);
     query.addBindValue(expectedRevision);
+    query.addBindValue(m_accountId.toString());
+    query.addBindValue(textValue(task.linkedBuildProfileId));
+    query.addBindValue(textValue(task.linkedBuildProfileId));
+    query.addBindValue(task.workspaceId);
+    query.addBindValue(m_accountId.toString());
+    query.addBindValue(textValue(task.linkedTestProfileId));
+    query.addBindValue(textValue(task.linkedTestProfileId));
+    query.addBindValue(task.workspaceId);
     query.addBindValue(m_accountId.toString());
     if (!query.exec())
         return sqlFailure<PlannerTask>(query, QStringLiteral("update Planner task"));

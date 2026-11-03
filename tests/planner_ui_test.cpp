@@ -475,6 +475,70 @@ private slots:
         QCOMPARE(startSpy.size(), 1);
     }
 
+    void plannerTaskCanLinkAndExplicitlyRunWorkspaceBuildTestProfile()
+    {
+        const QString buildProfileId = QStringLiteral("33333333-3333-4333-8333-333333333333");
+        const QString profileId = QStringLiteral("22222222-2222-4222-8222-222222222222");
+        QSqlQuery insert(m_database->database());
+        insert.prepare(QStringLiteral(
+            "INSERT INTO build_profiles(id,workspace_id,account_id,name,runner,trusted,settings_json,created_at_utc,updated_at_utc) "
+            "VALUES(?,?,?,'Go tests',4,1,'{}','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')"));
+        insert.addBindValue(profileId); insert.addBindValue(m_workspaceA); insert.addBindValue(m_accountId);
+        QVERIFY(insert.exec());
+        QSqlQuery insertBuild(m_database->database());
+        insertBuild.prepare(QStringLiteral(
+            "INSERT INTO build_profiles(id,workspace_id,account_id,name,runner,trusted,settings_json,created_at_utc,updated_at_utc) "
+            "VALUES(?,?,?,'Go build',3,1,'{}','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')"));
+        insertBuild.addBindValue(buildProfileId); insertBuild.addBindValue(m_workspaceA); insertBuild.addBindValue(m_accountId);
+        QVERIFY(insertBuild.exec());
+        m_controller->setBuildProfileOptions({QVariantMap{{QStringLiteral("id"), buildProfileId},
+            {QStringLiteral("name"), QStringLiteral("Go build")}, {QStringLiteral("testAction"), false},
+            {QStringLiteral("runner"), 3}}, QVariantMap{{QStringLiteral("id"), profileId},
+            {QStringLiteral("name"), QStringLiteral("Go tests")}, {QStringLiteral("testAction"), true},
+            {QStringLiteral("runner"), 4}}});
+        QVERIFY2(m_controller->saveTask({{QStringLiteral("title"), QStringLiteral("Test task")},
+            {QStringLiteral("linkedBuildProfileId"), buildProfileId},
+            {QStringLiteral("linkedTestProfileId"), profileId}}), qPrintable(m_controller->error()));
+        const QString taskId = m_controller->tasks()->index(0, 0)
+            .data(presentation::overview::planner::PlannerTaskModel::IdRole).toString();
+        const auto detail = m_controller->taskDetails(taskId);
+        QCOMPARE(detail.value(QStringLiteral("linkedBuildProfileId")).toString(), buildProfileId);
+        QCOMPARE(detail.value(QStringLiteral("buildProfileName")).toString(), QStringLiteral("Go build"));
+        QVERIFY(detail.value(QStringLiteral("linkedBuildProfileAvailable")).toBool());
+        QCOMPARE(detail.value(QStringLiteral("linkedTestProfileId")).toString(), profileId);
+        QCOMPARE(detail.value(QStringLiteral("testProfileName")).toString(), QStringLiteral("Go tests"));
+        QVERIFY(detail.value(QStringLiteral("linkedTestProfileAvailable")).toBool());
+
+        QSignalSpy actionSpy(m_controller.get(),
+            &presentation::overview::planner::PlannerController::runLinkedBuildProfileRequested);
+        m_controller->runLinkedBuildProfile(taskId);
+        QCOMPARE(actionSpy.size(), 1);
+        QCOMPARE(actionSpy.first().at(2).toString(), buildProfileId);
+        QVERIFY(!actionSpy.first().at(3).toBool());
+        m_controller->runLinkedTestProfile(taskId);
+        QCOMPARE(actionSpy.size(), 2);
+        QCOMPARE(actionSpy.first().at(0).toString(), m_workspaceA);
+        QCOMPARE(actionSpy.first().at(1).toString(), taskId);
+        QCOMPARE(actionSpy.last().at(2).toString(), profileId);
+        QVERIFY(actionSpy.last().at(3).toBool());
+
+        m_controller->recordBuildTestActivity(m_workspaceA, taskId, QStringLiteral("run-one"),
+            {{QStringLiteral("profileName"), QStringLiteral("Go tests")},
+             {QStringLiteral("runner"), QStringLiteral("Go test")},
+             {QStringLiteral("status"), QStringLiteral("Failed")},
+             {QStringLiteral("exitCode"), 1}, {QStringLiteral("failedTests"), 1}});
+        const auto buildEvents = m_controller->activityEvents(taskId, QStringLiteral("builds"));
+        QVERIFY(std::any_of(buildEvents.cbegin(), buildEvents.cend(), [](const QVariant& value) {
+            return value.toMap().value(QStringLiteral("eventType")).toString() == QStringLiteral("buildtest.completed")
+                && value.toMap().value(QStringLiteral("externalRefId")).toString() == QStringLiteral("run-one");
+        }));
+
+        m_controller->setBuildProfileOptions({});
+        QVERIFY(!m_controller->taskDetails(taskId).value(QStringLiteral("linkedBuildProfileAvailable")).toBool());
+        m_controller->runLinkedTestProfile(taskId);
+        QCOMPARE(actionSpy.size(), 2);
+    }
+
     void taskAndPlannerPresentationSettingsPersistAfterReopen()
     {
         QVariantMap draft{{QStringLiteral("title"), QStringLiteral("Survives restart")},

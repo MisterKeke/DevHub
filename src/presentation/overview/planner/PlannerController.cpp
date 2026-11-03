@@ -411,6 +411,30 @@ QVariantMap PlannerController::taskDetails(const QString& id) const
             break;
         }
     }
+    values.insert(QStringLiteral("buildProfileName"), QString{});
+    values.insert(QStringLiteral("linkedBuildProfileAvailable"), false);
+    for (const QVariant& option : m_buildProfileOptions) {
+        const QVariantMap profile = option.toMap();
+        if (profile.value(QStringLiteral("id")).toString() == task->linkedBuildProfileId
+            && !profile.value(QStringLiteral("testAction")).toBool()) {
+            values.insert(QStringLiteral("buildProfileName"), profile.value(QStringLiteral("name")).toString());
+            values.insert(QStringLiteral("linkedBuildProfileAvailable"), hasWorkspace()
+                && task->workspaceId == m_workspaceId);
+            break;
+        }
+    }
+    values.insert(QStringLiteral("testProfileName"), QString{});
+    values.insert(QStringLiteral("linkedTestProfileAvailable"), false);
+    for (const QVariant& option : m_buildProfileOptions) {
+        const QVariantMap profile = option.toMap();
+        if (profile.value(QStringLiteral("id")).toString() == task->linkedTestProfileId
+            && profile.value(QStringLiteral("testAction")).toBool()) {
+            values.insert(QStringLiteral("testProfileName"), profile.value(QStringLiteral("name")).toString());
+            values.insert(QStringLiteral("linkedTestProfileAvailable"), hasWorkspace()
+                && task->workspaceId == m_workspaceId);
+            break;
+        }
+    }
     values.insert(QStringLiteral("actionRuns"), actionRuns(id));
     return values;
 }
@@ -434,7 +458,8 @@ QVariantList PlannerController::activityEvents(const QString& taskId, const QStr
         if (filter == QStringLiteral("git")) return type.startsWith(QStringLiteral("git.")) || type.startsWith(QStringLiteral("pr."));
         if (filter == QStringLiteral("task")) return type.startsWith(QStringLiteral("task.")) || type.startsWith(QStringLiteral("note."));
         if (filter == QStringLiteral("services")) return origin == QStringLiteral("service");
-        if (filter == QStringLiteral("builds")) return type.startsWith(QStringLiteral("build.")) || type.startsWith(QStringLiteral("test."));
+        if (filter == QStringLiteral("builds")) return type.startsWith(QStringLiteral("build."))
+            || type.startsWith(QStringLiteral("test.")) || type.startsWith(QStringLiteral("buildtest."));
         return true;
     };
     for (const auto& event : events.value()) {
@@ -764,6 +789,56 @@ void PlannerController::setServiceOptions(QVariantList options)
     emit changed();
 }
 
+void PlannerController::setBuildProfileOptions(QVariantList options)
+{
+    QVariantList safe;
+    QSet<QString> ids;
+    for (const QVariant& value : options) {
+        const QVariantMap row = value.toMap();
+        const QString id = row.value(QStringLiteral("id")).toString().trimmed();
+        const QString name = row.value(QStringLiteral("name")).toString().trimmed();
+        if (id.isEmpty() || QUuid::fromString(id).isNull() || name.isEmpty() || ids.contains(id)) continue;
+        ids.insert(id);
+        safe.append(QVariantMap{{QStringLiteral("id"), id}, {QStringLiteral("name"), name},
+            {QStringLiteral("testAction"), row.value(QStringLiteral("testAction")).toBool()},
+            {QStringLiteral("runner"), row.value(QStringLiteral("runner")).toInt()}});
+        if (safe.size() >= 100) break;
+    }
+    m_buildProfileOptions = std::move(safe);
+    emit changed();
+}
+
+void PlannerController::recordBuildTestActivity(const QString& workspaceId, const QString& taskId,
+                                                const QString& runId, const QVariantMap& runMetadata)
+{
+    if (!m_activityService || workspaceId.isEmpty() || taskId.isEmpty() || runId.isEmpty()) return;
+    const QString status = runMetadata.value(QStringLiteral("status")).toString();
+    const QString profile = runMetadata.value(QStringLiteral("profileName")).toString();
+    const QString summary = runMetadata.value(QStringLiteral("summary")).toString().left(1000);
+    domain::planner::PlannerActivityEvent event;
+    event.workspaceId = workspaceId;
+    event.taskId = taskId;
+    event.eventType = QStringLiteral("buildtest.completed");
+    event.origin = QStringLiteral("buildtest");
+    event.description = tr("%1 · %2").arg(profile, status).left(512);
+    event.metadataJson = QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap({
+        {QStringLiteral("profileName"), profile},
+        {QStringLiteral("runner"), runMetadata.value(QStringLiteral("runner"))},
+        {QStringLiteral("status"), status},
+        {QStringLiteral("exitCode"), runMetadata.value(QStringLiteral("exitCode"))},
+        {QStringLiteral("durationMilliseconds"), runMetadata.value(QStringLiteral("durationMilliseconds"))},
+        {QStringLiteral("totalTests"), runMetadata.value(QStringLiteral("totalTests"))},
+        {QStringLiteral("passedTests"), runMetadata.value(QStringLiteral("passedTests"))},
+        {QStringLiteral("failedTests"), runMetadata.value(QStringLiteral("failedTests"))},
+        {QStringLiteral("skippedTests"), runMetadata.value(QStringLiteral("skippedTests"))},
+        {QStringLiteral("summary"), summary}})).toJson(QJsonDocument::Compact));
+    event.externalRefType = QStringLiteral("buildtest-run");
+    event.externalRefId = runId;
+    const auto recorded = m_activityService->recordEvent(std::move(event));
+    if (recorded && workspaceId == m_workspaceId)
+        emit activityChanged(taskId);
+}
+
 void PlannerController::notifyTaskNoteLinkChanged(const QString& workspaceId,
     const QString& taskId, const QString& noteId)
 {
@@ -846,6 +921,52 @@ void PlannerController::cancelLinkedServiceStart(const QString& taskId)
     const auto* task = hasWorkspace() ? taskById(taskId) : nullptr;
     if (task && task->workspaceId == m_workspaceId && !task->linkedServiceId.isEmpty())
         emit cancelLinkedServiceStartRequested(m_workspaceId, taskId, task->linkedServiceId);
+}
+
+void PlannerController::runLinkedBuildProfile(const QString& taskId)
+{
+    const auto* task = hasWorkspace() ? taskById(taskId) : nullptr;
+    if (!task || task->workspaceId != m_workspaceId || task->linkedBuildProfileId.isEmpty()) {
+        setFailure(tr("This task has no linked build profile.")); return;
+    }
+    for (const QVariant& value : m_buildProfileOptions) {
+        const QVariantMap profile = value.toMap();
+        if (profile.value(QStringLiteral("id")).toString() != task->linkedBuildProfileId) continue;
+        if (profile.value(QStringLiteral("testAction")).toBool()) {
+            setFailure(tr("The linked profile is a test profile. Use Run Associated Tests.")); return;
+        }
+        emit runLinkedBuildProfileRequested(m_workspaceId, taskId, task->linkedBuildProfileId, false);
+        return;
+    }
+    setFailure(tr("The linked build profile is unavailable in the active workspace."));
+}
+
+void PlannerController::runLinkedTestProfile(const QString& taskId)
+{
+    const auto* task = hasWorkspace() ? taskById(taskId) : nullptr;
+    if (!task || task->workspaceId != m_workspaceId || task->linkedTestProfileId.isEmpty()) {
+        setFailure(tr("This task has no linked test profile.")); return;
+    }
+    for (const QVariant& value : m_buildProfileOptions) {
+        const QVariantMap profile = value.toMap();
+        if (profile.value(QStringLiteral("id")).toString() != task->linkedTestProfileId) continue;
+        if (!profile.value(QStringLiteral("testAction")).toBool()) {
+            setFailure(tr("The linked profile is a build profile. Choose a test profile in the task editor.")); return;
+        }
+        emit runLinkedBuildProfileRequested(m_workspaceId, taskId, task->linkedTestProfileId, true);
+        return;
+    }
+    setFailure(tr("The linked test profile is unavailable in the active workspace."));
+}
+
+void PlannerController::viewLastBuildTestResult(const QString& taskId)
+{
+    const auto* task = hasWorkspace() ? taskById(taskId) : nullptr;
+    if (!task || task->workspaceId != m_workspaceId
+        || (task->linkedBuildProfileId.isEmpty() && task->linkedTestProfileId.isEmpty())) {
+        setFailure(tr("This task has no linked build or test profile.")); return;
+    }
+    emit viewLastBuildTestResultRequested(m_workspaceId, taskId);
 }
 
 std::optional<domain::planner::PlannerActionRun> PlannerController::beginLinkedServiceAction(
@@ -1018,6 +1139,33 @@ bool PlannerController::saveTask(const QVariantMap& values)
         setFailure(tr("Choose a service configured in the active workspace.")); return false;
     }
     draft.linkedServiceId = linkedServiceId;
+    const QString linkedBuildProfileId = values.contains(QStringLiteral("linkedBuildProfileId"))
+        ? values.value(QStringLiteral("linkedBuildProfileId")).toString().trimmed()
+        : existing ? existing->linkedBuildProfileId : QString{};
+    const bool profileConfigured = std::any_of(m_buildProfileOptions.cbegin(), m_buildProfileOptions.cend(), [&linkedBuildProfileId](const QVariant& value) {
+        return value.toMap().value(QStringLiteral("id")).toString() == linkedBuildProfileId;
+    });
+    const bool buildProfileType = std::any_of(m_buildProfileOptions.cbegin(), m_buildProfileOptions.cend(), [&linkedBuildProfileId](const QVariant& value) {
+        const auto row = value.toMap(); return row.value(QStringLiteral("id")).toString() == linkedBuildProfileId
+            && !row.value(QStringLiteral("testAction")).toBool();
+    });
+    if (!linkedBuildProfileId.isEmpty() && (!profileConfigured || !buildProfileType)
+        && (!existing || existing->linkedBuildProfileId != linkedBuildProfileId)) {
+        setFailure(tr("Choose a build profile configured in the active workspace.")); return false;
+    }
+    draft.linkedBuildProfileId = linkedBuildProfileId;
+    const QString linkedTestProfileId = values.contains(QStringLiteral("linkedTestProfileId"))
+        ? values.value(QStringLiteral("linkedTestProfileId")).toString().trimmed()
+        : existing ? existing->linkedTestProfileId : QString{};
+    const bool testProfileConfigured = std::any_of(m_buildProfileOptions.cbegin(), m_buildProfileOptions.cend(), [&linkedTestProfileId](const QVariant& value) {
+        const auto row = value.toMap(); return row.value(QStringLiteral("id")).toString() == linkedTestProfileId
+            && row.value(QStringLiteral("testAction")).toBool();
+    });
+    if (!linkedTestProfileId.isEmpty() && !testProfileConfigured
+        && (!existing || existing->linkedTestProfileId != linkedTestProfileId)) {
+        setFailure(tr("Choose a test profile configured in the active workspace.")); return false;
+    }
+    draft.linkedTestProfileId = linkedTestProfileId;
     const QString requestedBranch = values.value(QStringLiteral("gitBranch")).toString().trimmed();
     if (!requestedBranch.isEmpty() && requestedBranch != draft.gitBranch && !branchExists(requestedBranch)) {
         setFailure(tr("Choose an existing local branch in this workspace."));

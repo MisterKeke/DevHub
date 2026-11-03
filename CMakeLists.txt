@@ -311,6 +311,18 @@ target_include_directories(devhub_logs PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(devhub_logs PUBLIC project_options devhub_database Qt6::Core Qt6::Sql
     PRIVATE project_warnings)
 
+add_library(devhub_buildtest STATIC
+    src/application/buildtest/BuildTypes.cpp
+    src/application/buildtest/BuildSystemDetector.cpp
+    src/application/buildtest/BuildResultParser.cpp
+    src/application/buildtest/BuildExecutionCoordinator.cpp
+    src/infrastructure/buildtest/SqlBuildHistoryRepository.cpp
+    src/presentation/buildtest/BuildTestPage.cpp
+)
+target_include_directories(devhub_buildtest PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(devhub_buildtest PUBLIC project_options devhub_core devhub_database devhub_workspaces devhub_services Qt6::Core Qt6::Sql Qt6::Widgets
+    PRIVATE project_warnings)
+
 add_executable(devhub WIN32
     src/application/logging/ApplicationLogCategories.cpp
     src/application/support/SupportBundleBuilder.cpp
@@ -390,6 +402,7 @@ target_link_libraries(devhub PRIVATE
     devhub_services
     devhub_ports
     devhub_logs
+    devhub_buildtest
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets

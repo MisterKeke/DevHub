@@ -139,6 +139,34 @@ Result<void> SqlPlannerActivityRepository::linkGitCommit(PlannerGitCommitAssocia
     return transaction.commit();
 }
 
+Result<void> SqlPlannerActivityRepository::recordEvent(PlannerActivityEvent event)
+{
+    if (!onOwnerThread()) return unavailable<void>(QStringLiteral("record Planner activity event"));
+    QSqlQuery query(m_database.database());
+    query.prepare(QStringLiteral(
+        "INSERT INTO planner_activity_events(id,workspace_id,task_id,event_type,occurred_at_utc,observed_at_utc,"
+        "origin,description,metadata_json,external_ref_type,external_ref_id) "
+        "SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM planner_tasks t JOIN workspaces w "
+        "ON w.id=t.workspace_id WHERE t.id=? AND t.workspace_id=? AND w.account_id=? AND w.archived_at_utc IS NULL)"));
+    query.addBindValue(event.id);
+    query.addBindValue(event.workspaceId);
+    query.addBindValue(event.taskId);
+    query.addBindValue(event.eventType);
+    query.addBindValue(event.occurredAtUtc.toUTC().toString(Qt::ISODateWithMs));
+    query.addBindValue(event.observedAtUtc.toUTC().toString(Qt::ISODateWithMs));
+    query.addBindValue(event.origin);
+    query.addBindValue(event.description);
+    query.addBindValue(event.metadataJson);
+    query.addBindValue(event.externalRefType);
+    query.addBindValue(event.externalRefId);
+    query.addBindValue(event.taskId);
+    query.addBindValue(event.workspaceId);
+    query.addBindValue(m_accountId.toString());
+    if (!query.exec()) return sqlError<void>(query, QStringLiteral("record Planner activity event"));
+    if (query.numRowsAffected() != 1) return unavailable<void>(QStringLiteral("record Planner activity event"));
+    return Result<void>::success();
+}
+
 Result<void> SqlPlannerActivityRepository::unlinkGitCommit(
     const QString& workspaceId, const QString& taskId, const QString& sha)
 {

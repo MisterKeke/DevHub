@@ -40,7 +40,7 @@ class PlannerTest final : public QObject
         QVERIFY2(opened, opened ? "" : qPrintable(opened.error().technicalMessage));
         const auto migrated = m_database->migrate();
         QVERIFY2(migrated, migrated ? "" : qPrintable(migrated.error().technicalMessage));
-        QCOMPARE(m_database->currentSchemaVersion(), 14);
+        QCOMPARE(m_database->currentSchemaVersion(), 16);
         QSqlQuery query(m_database->database());
         QVERIFY(query.exec(
             QStringLiteral(
@@ -218,8 +218,10 @@ class PlannerTest final : public QObject
         activity = m_activityService->listEvents(m_workspaceA, task.value().id);
         QVERIFY(activity);
         QCOMPARE(activity.value().size(), 2);
-        QCOMPARE(activity.value().first().eventType, QStringLiteral("task.status"));
-        QVERIFY(activity.value().first().metadataJson.contains(QStringLiteral("in_progress")));
+        const auto statusEvent = std::find_if(activity.value().cbegin(), activity.value().cend(),
+            [](const auto& event) { return event.eventType == QStringLiteral("task.status"); });
+        QVERIFY(statusEvent != activity.value().cend());
+        QVERIFY(statusEvent->metadataJson.contains(QStringLiteral("in_progress")));
 
         QSqlQuery failEvent(m_database->database());
         QVERIFY(failEvent.exec(QStringLiteral(
@@ -749,7 +751,7 @@ class PlannerTest final : public QObject
         archive.addBindValue(m_workspaceA);
         archive.addBindValue(m_accountId);
         QVERIFY(archive.exec());
-        QCOMPARE(m_database->currentSchemaVersion(), 14);
+        QCOMPARE(m_database->currentSchemaVersion(), 16);
     }
 
     void importedTaskFailureRollsBackTaskTagsSubtasksAndProvenance()
