@@ -998,10 +998,10 @@ void GitHubPullRequestsPanel::linkToPlannerTask()
 
 std::optional<application::github::GitHubRepository> GitHubPullRequestsPanel::selectedRepository() const
 {
-    const QVariantMap data = m_repository->currentData().toMap();
-    if (data.isEmpty()) return std::nullopt;
-    return application::github::GitHubRepository{data.value(QStringLiteral("remote")).toString(),
-        data.value(QStringLiteral("owner")).toString(), data.value(QStringLiteral("name")).toString()};
+    const QVariantMap repositoryData = m_repository->currentData().toMap();
+    if (repositoryData.isEmpty()) return std::nullopt;
+    return application::github::GitHubRepository{repositoryData.value(QStringLiteral("remote")).toString(),
+        repositoryData.value(QStringLiteral("owner")).toString(), repositoryData.value(QStringLiteral("name")).toString()};
 }
 
 QString GitHubPullRequestsPanel::workspaceKey() const
