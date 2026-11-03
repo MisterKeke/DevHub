@@ -59,6 +59,7 @@ namespace devhub::application::overview { class OverviewStateComposer; }
 namespace devhub::application::commands { class CommandRegistry; }
 namespace devhub::application::commands { class CachedSearchProvider; }
 namespace devhub::application::settings { class SettingsService; }
+namespace devhub::application::github { class GitHubMonitorService; class GitHubService; }
 namespace devhub::application::planner { class PlannerService; class PlannerActivityService; class TaskNoteLinkService; }
 namespace devhub::application::lifecycle { class ShutdownCoordinator; }
 namespace devhub::application::support { class SupportBundleBuilder; }
@@ -208,6 +209,8 @@ private:
     application::buildtest::IBuildHistoryRepository& m_buildHistory;
     application::buildtest::BuildExecutionCoordinator& m_buildExecution;
     application::settings::SettingsService& m_settingsService;
+    application::github::GitHubService* m_githubService = nullptr;
+    application::github::GitHubMonitorService* m_githubMonitor = nullptr;
     application::assistant::AssistantController& m_assistantController;
     application::assistant::AssistantToolRuntime& m_assistantToolRuntime;
     application::assistant::ICodexExecutableProbe& m_assistantSetupProbe;

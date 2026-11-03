@@ -25,7 +25,8 @@ NotificationCenterDialog::NotificationCenterDialog(application::notifications::I
     m_severity->addItem(tr("Information"), 0); m_severity->addItem(tr("Success"), 1);
     m_severity->addItem(tr("Warning"), 2); m_severity->addItem(tr("Error"), 3);
     m_category = new QComboBox(this); m_category->addItem(tr("All categories"), -1);
-    const QStringList categories{tr("General"), tr("Workspace"), tr("Service"), tr("Port"), tr("Git"), tr("Database"), tr("Security")};
+    const QStringList categories{tr("General"), tr("Workspace"), tr("Service"), tr("Port"), tr("Git"),
+        tr("Database"), tr("Security"), tr("Build and Test"), tr("GitHub")};
     for (int i = 0; i < categories.size(); ++i) m_category->addItem(categories[i], i);
     m_unreadOnly = new QCheckBox(tr("Unread only"), this);
     filters->addWidget(m_currentWorkspace); filters->addWidget(m_severity); filters->addWidget(m_category); filters->addWidget(m_unreadOnly);

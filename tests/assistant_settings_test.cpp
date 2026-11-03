@@ -2,9 +2,12 @@
 #include "application/settings/SettingsService.h"
 #include "application/assistant/CodexLoginPolicy.h"
 #include "presentation/settings/AssistantSettingsPanel.h"
+#include "presentation/settings/GitHubSettingsPanel.h"
 #include "presentation/settings/SettingsWindow.h"
 #include "presentation/theme/ThemeManager.h"
+#include "application/github/GitHubService.h"
 #include <QApplication>
+#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFontDatabase>
@@ -17,7 +20,10 @@
 #include <QSignalSpy>
 #include <QListWidget>
 #include <QStackedWidget>
+#include <QSpinBox>
 #include <QTest>
+
+#include <algorithm>
 using namespace devhub;
 using namespace application::assistant;
 using namespace application::settings;
@@ -25,6 +31,13 @@ using namespace tests::assistant;
 using namespace tests::codex;
 using presentation::settings::AssistantSettingsPanel;
 using presentation::settings::SettingsWindow;
+
+class EmptyGitHubCredentialStore final : public application::github::IGitHubCredentialStore {
+public:
+    bool load(const QString&, application::github::GitHubCredentials&, QString&) override { return true; }
+    bool save(const QString&, const application::github::GitHubCredentials&, QString&) override { return true; }
+    bool remove(const QString&, QString&) override { return true; }
+};
 class SettingsRepository final : public ISettingsRepository {
 public:
     SettingValues values; SettingUpdates lastUpdates; bool failSave = false; int failBatchAfterWrites = -1; int lastBatchWrites = 0;
@@ -87,6 +100,39 @@ private slots:
         for (const auto& path : {"relative.exe", "C:/codex.cmd", "C:/codex.bat", "C:/codex.ps1", "\"C:/codex.exe\"", "C:/codex\n.exe"}) QVERIFY(!settings.setValue("assistant/executable", QString::fromLatin1(path)));
         QVERIFY(!settings.setValue("assistant/model", QString(513, QChar('x')))); QVERIFY(!settings.setValue("assistant/model", "bad\nmodel"));
         QVERIFY(!settings.setValue("assistant/executable", 123));
+    }
+    void githubSettingsExposeSetupAndWorkspaceMonitoring() {
+        SettingsRepository repository;
+        SettingsService settings(repository);
+        const QString workspace = QStringLiteral("12345678-1234-1234-1234-123456789abc");
+        application::github::GitHubService github({}, workspace,
+            std::make_unique<EmptyGitHubCredentialStore>());
+        SettingsWindow dialog(settings, *m_theme, workspace, nullptr, nullptr, nullptr, &github);
+        auto* navigation = dialog.findChild<QListWidget*>("settingsNavigation"); QVERIFY(navigation);
+        int integrations = -1;
+        for (int i = 0; i < navigation->count(); ++i)
+            if (navigation->item(i)->text() == QStringLiteral("Integrations")) integrations = i;
+        QVERIFY(integrations >= 0);
+        navigation->setCurrentRow(integrations);
+        auto* panel = dialog.findChild<presentation::settings::GitHubSettingsPanel*>(); QVERIFY(panel);
+        QVERIFY(panel->findChild<QLabel*>("githubAppConfigurationStatus")->text().contains(QStringLiteral("Client ID required")));
+        QVERIFY(!panel->findChild<QPushButton*>("connectGitHubButton")->isEnabled());
+        auto* clientId = dialog.findChild<QLineEdit*>("github/clientId"); QVERIFY(clientId);
+        const auto clientIdSetting = settings.descriptor(QStringLiteral("github/clientId"));
+        QVERIFY(clientIdSetting.validate(QStringLiteral("Iv1.legacyExample123")));
+        QVERIFY(clientIdSetting.validate(QStringLiteral("Iv23liCurrentExample123")));
+        QVERIFY(!clientIdSetting.validate(QStringLiteral("12345678")));
+        auto* monitor = dialog.findChild<QCheckBox*>("github/monitoringEnabled"); QVERIFY(monitor);
+        auto* interval = dialog.findChild<QSpinBox*>("github/refreshIntervalSeconds"); QVERIFY(interval);
+        QCOMPARE(settings.descriptor(QStringLiteral("github/monitoringEnabled")).scope, SettingScope::Workspace);
+        QCOMPARE(settings.descriptor(QStringLiteral("github/refreshIntervalSeconds")).scope, SettingScope::Workspace);
+        monitor->setChecked(true);
+        interval->setValue(600);
+        dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save)->click();
+        QVERIFY(std::any_of(repository.lastUpdates.cbegin(), repository.lastUpdates.cend(), [](const auto& update) {
+            return update.id == QStringLiteral("github/monitoringEnabled") && update.scope == SettingScope::Workspace
+                && update.workspaceId == QStringLiteral("12345678-1234-1234-1234-123456789abc");
+        }));
     }
     void descriptorDefaultsAreValid() {
         SettingsRepository repository; SettingsService settings(repository);

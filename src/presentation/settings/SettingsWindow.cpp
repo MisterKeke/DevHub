@@ -1,7 +1,9 @@
 #include "SettingsWindow.h"
 #include "AssistantSettingsPanel.h"
+#include "GitHubSettingsPanel.h"
 #include "../../application/settings/SettingsService.h"
 #include "../../application/settings/SettingTypes.h"
+#include "../../application/github/GitHubService.h"
 #include "../theme/ThemeManager.h"
 #include "../theme/ThemePalette.h"
 
@@ -34,6 +36,10 @@ QString descriptionFor(const QString& id)
     if (id == QStringLiteral("appearance/theme")) return QObject::tr("Choose the dark accent color used throughout DevHub.");
     if (id == QStringLiteral("appearance/reducedMotion")) return QObject::tr("Reduce animated transitions and visual movement.");
     if (id == QStringLiteral("git/executable")) return QObject::tr("Leave blank to use the Git executable available on PATH.");
+    if (id == QStringLiteral("github/clientId")) return QObject::tr("Use the OAuth Client ID from your GitHub App settings. The GitHub App ID is a separate value; DevHub never uses a client secret.");
+    if (id == QStringLiteral("github/remote")) return QObject::tr("Selected GitHub remote for this workspace. DevHub updates this association when the remote configuration changes.");
+    if (id == QStringLiteral("github/monitoringEnabled")) return QObject::tr("Opt in to bounded background checks for updates to this workspace's Pull Requests and CI runs.");
+    if (id == QStringLiteral("github/refreshIntervalSeconds")) return QObject::tr("Minimum delay between background GitHub refreshes when monitoring is enabled.");
     if (id == QStringLiteral("assistant/executable")) return QObject::tr("Set a specific Codex executable, or leave blank to use the detected default.");
     if (id == QStringLiteral("assistant/model")) return QObject::tr("Choose a preferred text model for new Assistant turns.");
     if (id == QStringLiteral("assistant/restoreConversation")) return QObject::tr("Reopen your last DevHub conversation when you return to Assistant.");
@@ -62,6 +68,7 @@ QString groupFor(const QString& id)
     if (id.startsWith(QStringLiteral("appearance/"))) return QObject::tr("Accessibility");
     if (id.startsWith(QStringLiteral("assistant/")) && id == QStringLiteral("assistant/restoreConversation")) return QObject::tr("Conversation");
     if (id.startsWith(QStringLiteral("assistant/"))) return QObject::tr("Codex connection");
+    if (id.startsWith(QStringLiteral("github/"))) return QObject::tr("GitHub integration");
     if (id.startsWith(QStringLiteral("workspaces/"))) return QObject::tr("Workspace scanning");
     if (id.startsWith(QStringLiteral("ports/"))) return QObject::tr("Port monitoring");
     if (id.startsWith(QStringLiteral("logs/"))) return QObject::tr("Log storage");
@@ -79,6 +86,7 @@ QString sectionDescription(const QString& section)
     if (section == QObject::tr("Appearance")) return QObject::tr("Tune DevHub's colors and motion.");
     if (section == QObject::tr("Account and Security")) return QObject::tr("Manage your local session and account security.");
     if (section == QObject::tr("Git")) return QObject::tr("Configure the Git executable used by workspace tools.");
+    if (section == QObject::tr("Integrations")) return QObject::tr("Connect GitHub and configure its read-only Pull Request and CI dashboard.");
     if (section == QObject::tr("Terminal")) return QObject::tr("Choose how workspace terminals are opened.");
     if (section == QObject::tr("Workspaces")) return QObject::tr("Set limits for workspace discovery.");
     if (section == QObject::tr("Services")) return QObject::tr("Configure background service and port monitoring.");
@@ -115,8 +123,10 @@ QFrame* makePanel(const QString& title, QWidget* parent, QVBoxLayout** contentLa
 SettingsWindow::SettingsWindow(application::settings::SettingsService& settings,
                                presentation::theme::ThemeManager& theme, QString workspaceId, QWidget* parent,
                                application::assistant::AssistantController* assistant,
-                               application::assistant::ICodexExecutableProbe* probe)
-    : QDialog(parent), m_settings(settings), m_theme(theme), m_workspaceId(std::move(workspaceId))
+                               application::assistant::ICodexExecutableProbe* probe,
+                               application::github::GitHubService* github)
+    : QDialog(parent), m_settings(settings), m_theme(theme), m_githubService(github),
+      m_workspaceId(std::move(workspaceId))
 {
     setWindowTitle(tr("DevHub Settings"));
     setMinimumSize(780, 560);
@@ -131,7 +141,7 @@ SettingsWindow::SettingsWindow(application::settings::SettingsService& settings,
     bodyLayout->setSpacing(0);
 
     const auto values = m_settings.effectiveValues(m_workspaceId);
-    const QStringList sections{tr("General"), tr("Appearance"), tr("Account and Security"), tr("Git"),
+    const QStringList sections{tr("General"), tr("Appearance"), tr("Account and Security"), tr("Git"), tr("Integrations"),
         tr("Terminal"), tr("Workspaces"), tr("Services"), tr("Logs"), tr("Database"),
         tr("Notifications"), tr("Assistant"), tr("Advanced"), tr("About")};
 
@@ -218,6 +228,9 @@ SettingsWindow::SettingsWindow(application::settings::SettingsService& settings,
             m_controls.insert(QStringLiteral("assistant/executable"), setup->executableControl());
             m_controls.insert(QStringLiteral("assistant/model"), setup->modelControl());
         }
+        if (section == tr("Integrations") && github) {
+            panelFor(tr("GitHub"))->addWidget(new GitHubSettingsPanel(*github, page));
+        }
         if (section == tr("Account and Security")) {
             auto* panelLayout = panelFor(tr("Password and session"));
             auto* password = new QPushButton(tr("Change Password…"), page);
@@ -239,6 +252,9 @@ SettingsWindow::SettingsWindow(application::settings::SettingsService& settings,
 
         for (const auto& descriptor : descriptors) {
             if (descriptor.section != section || m_controls.contains(descriptor.id)) continue;
+            if (descriptor.id == QStringLiteral("github/remote")
+                || descriptor.id == QStringLiteral("github/monitorSnapshot")) continue;
+            if (descriptor.scope == application::settings::SettingScope::Workspace && m_workspaceId.isEmpty()) continue;
             QWidget* control = nullptr;
             const QVariant value = values.value(descriptor.id, descriptor.defaultValue);
             if (descriptor.id == QStringLiteral("appearance/theme")) {
@@ -423,6 +439,7 @@ void SettingsWindow::saveSettings()
         return;
     }
     const QString theme = m_settings.value(QStringLiteral("appearance/theme")).toString();
+    if (m_githubService) m_githubService->setClientId(m_settings.value(QStringLiteral("github/clientId")).toString());
     m_theme.setVariant(theme == QStringLiteral("dark-blue")
         ? presentation::theme::ThemeVariant::DarkBlue
         : presentation::theme::ThemeVariant::DarkRose);

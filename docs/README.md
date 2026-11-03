@@ -24,6 +24,9 @@ many-to-many relationship, trash/recovery behavior, and navigation boundaries.
 See [build-test-center.md](architecture/build-test-center.md) for Build & Test runner support,
 workspace-scoped execution safety, Planner integration and verification limits.
 
+See [github-integration.md](architecture/github-integration.md) for GitHub App Device Flow,
+secure credential storage, Pull Request and Actions views, workspace monitoring, and setup.
+
 ## Toolchain pins
 
 - Qt 6.11 API baseline, with a local minimum of Qt 6.11.0 and CI pinned to Qt 6.11.2. The 6.11 line is outside the affected range for the Qt Markdown importer issue CVE-2025-3512; keep CI aligned with reviewed Qt advisories.

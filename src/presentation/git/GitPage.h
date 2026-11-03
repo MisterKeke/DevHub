@@ -1,20 +1,26 @@
 #pragma once
 #include "../../application/tasks/TaskScheduler.h"
 #include "../../application/git/GitTypes.h"
+#include "../../application/github/GitHubTypes.h"
 #include <QWidget>
 #include <QUuid>
 #include <optional>
 #include <QVector>
 
 class QLabel; class QListWidget; class QPushButton; class QPlainTextEdit; class QStackedWidget; class QTabWidget;
-class QShowEvent;
+class QShowEvent; class QSplitter;
 namespace devhub::application::settings { class SettingsService; }
+namespace devhub::application::github { class GitHubService; }
+namespace devhub::application::planner { class PlannerService; }
 namespace devhub::presentation::git {
+class GitHubPullRequestsPanel;
 class GitPage final : public QWidget {
     Q_OBJECT
 public:
     explicit GitPage(application::tasks::TaskScheduler& scheduler, QWidget* parent = nullptr,
-                      application::settings::SettingsService* settings = nullptr);
+                      application::settings::SettingsService* settings = nullptr,
+                      application::github::GitHubService* github = nullptr,
+                      application::planner::PlannerService* planner = nullptr);
     void setWorkspacePath(QString path, std::optional<QUuid> workspaceId = std::nullopt);
     void focusBranch(QString branch);
     void focusCommit(QString commitSha);
@@ -22,6 +28,9 @@ public:
 signals:
     void operationFailed(QString title, QString message);
     void overviewUpdated(QString summary, QStringList details, QString statusLabel, QString statusTone);
+    void openPlannerTaskRequested(QString taskId);
+    void plannerTaskLinked(QString taskId);
+    void githubMonitorTargetChanged(QString workspaceId, QString remoteName, QString owner, QString name);
 protected:
     void showEvent(QShowEvent* event) override;
 private:
@@ -61,5 +70,7 @@ private:
     QListWidget* m_branches = nullptr;
     QPlainTextEdit* m_diff = nullptr;
     QTabWidget* m_tabs = nullptr;
+    QSplitter* m_split = nullptr;
+    GitHubPullRequestsPanel* m_pullRequests = nullptr;
 };
 }

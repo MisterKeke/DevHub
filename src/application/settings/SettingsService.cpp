@@ -37,6 +37,11 @@ SettingsService::SettingsService(ISettingsRepository& repository) : m_repository
         boolean(QStringLiteral("appearance/reducedMotion"), QStringLiteral("Reduce motion"), QStringLiteral("Appearance"), false),
         string(QStringLiteral("appearance/theme"), QStringLiteral("Color theme"), QStringLiteral("Appearance"), QStringLiteral("dark-rose")),
         string(QStringLiteral("git/executable"), QStringLiteral("Git executable override"), QStringLiteral("Git"), {}, true, SettingSensitivity::Sensitive),
+        string(QStringLiteral("github/clientId"), QStringLiteral("GitHub App OAuth Client ID"), QStringLiteral("Integrations"), {}),
+        string(QStringLiteral("github/remote"), QStringLiteral("GitHub repository remote"), QStringLiteral("Integrations"), {}, false, SettingSensitivity::Sensitive),
+        boolean(QStringLiteral("github/monitoringEnabled"), QStringLiteral("Monitor GitHub Pull Requests and checks"), QStringLiteral("Integrations"), false),
+        integer(QStringLiteral("github/refreshIntervalSeconds"), QStringLiteral("GitHub monitoring interval (seconds)"), QStringLiteral("Integrations"), 300, 60, 3600),
+        string(QStringLiteral("github/monitorSnapshot"), QStringLiteral("GitHub monitoring state"), QStringLiteral("Integrations"), {}, false, SettingSensitivity::Sensitive),
         string(QStringLiteral("assistant/executable"), QStringLiteral("Native Codex executable override"), QStringLiteral("Assistant"), {}, false, SettingSensitivity::Sensitive),
         string(QStringLiteral("assistant/model"), QStringLiteral("Preferred text model"), QStringLiteral("Assistant"), {}, false, SettingSensitivity::Sensitive),
         boolean(QStringLiteral("assistant/restoreConversation"), QStringLiteral("Restore last DevHub conversation"), QStringLiteral("Assistant"), true),
@@ -74,6 +79,13 @@ SettingsService::SettingsService(ISettingsRepository& repository) : m_repository
         item.validate = [](const QVariant& value) {
             return QStringList{QStringLiteral("windows-terminal"), QStringLiteral("powershell"), QStringLiteral("cmd"),
                                QStringLiteral("wsl"), QStringLiteral("custom")}.contains(value.toString());
+        };
+    for (auto& item : m_descriptors) if (item.id == QStringLiteral("github/clientId"))
+        item.validate = [](const QVariant& value) {
+            if (value.metaType().id() != QMetaType::QString) return false;
+            const QString clientId = value.toString().trimmed();
+            static const QRegularExpression pattern(QStringLiteral("^Iv(?:1\\.|23)[A-Za-z0-9]+$"));
+            return clientId.isEmpty() || (clientId.size() <= 128 && pattern.match(clientId).hasMatch());
         };
     for (auto& item : m_descriptors) if (item.id == QStringLiteral("appearance/theme"))
         item.validate = [](const QVariant& value) {
@@ -122,6 +134,15 @@ SettingsService::SettingsService(ISettingsRepository& repository) : m_repository
             const QString tag = value.toString();
             for (const auto ch : tag) if (ch.isNull() || ch.category() == QChar::Other_Control) return false;
             return true;
+        };
+    for (auto& item : m_descriptors) if (item.id == QStringLiteral("github/remote")
+        || item.id == QStringLiteral("github/monitoringEnabled")
+        || item.id == QStringLiteral("github/refreshIntervalSeconds")
+        || item.id == QStringLiteral("github/monitorSnapshot"))
+        item.scope = SettingScope::Workspace;
+    for (auto& item : m_descriptors) if (item.id == QStringLiteral("github/monitorSnapshot"))
+        item.validate = [](const QVariant& value) {
+            return value.metaType().id() == QMetaType::QString && value.toString().size() <= 32768;
         };
 }
 
