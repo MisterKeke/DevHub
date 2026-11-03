@@ -5,6 +5,7 @@
 #include <QWidget>
 #include <QUuid>
 #include <optional>
+#include <QVector>
 
 class QComboBox;
 class QLabel;
@@ -48,6 +49,7 @@ private:
     void updateSelectedStatus(const application::github::GitHubPullRequestDetails& details);
     void linkToPlannerTask();
     void notifyMonitorTarget();
+    void updateSummary();
     [[nodiscard]] std::optional<application::github::GitHubRepository> selectedRepository() const;
     [[nodiscard]] QString workspaceKey() const;
 
@@ -65,6 +67,8 @@ private:
     QPushButton* m_openOnGitHub = nullptr;
     QPushButton* m_linkTask = nullptr;
     QLabel* m_message = nullptr;
+    QLabel* m_connectionStatus = nullptr;
+    QVector<QLabel*> m_summaryValues;
     QTableWidget* m_table = nullptr;
     QLabel* m_detailHeading = nullptr;
     QTabWidget* m_detailTabs = nullptr;

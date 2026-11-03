@@ -4,10 +4,15 @@
 #include "../../application/planner/PlannerService.h"
 #include "../../application/settings/SettingsService.h"
 #include "../../domain/planner/PlannerTypes.h"
+#include "../icons/IconLoader.h"
+#include "../theme/ThemePalette.h"
+#include "../theme/ThemeTokens.h"
+#include "../widgets/ReusableWidgets.h"
 #include "../widgets/SafeMarkdownBrowser.h"
 
 #include <QComboBox>
 #include <QDesktopServices>
+#include <QFrame>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -23,6 +28,7 @@
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTextBrowser>
+#include <QSizePolicy>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -33,6 +39,33 @@ namespace {
 QString safeStatus(const application::github::GitHubPullRequest& pullRequest)
 {
     return application::github::pullRequestStatusText(pullRequest);
+}
+
+void setStatusItem(QTableWidgetItem* item, const QString& text)
+{
+    if (!item) return;
+    item->setText(text);
+    item->setTextAlignment(Qt::AlignCenter);
+    auto color = presentation::theme::ColorToken::TextMuted;
+    if (text.compare(QObject::tr("Success"), Qt::CaseInsensitive) == 0
+        || text.compare(QObject::tr("Approved"), Qt::CaseInsensitive) == 0
+        || text.compare(QObject::tr("Merged"), Qt::CaseInsensitive) == 0) {
+        color = presentation::theme::ColorToken::Success;
+    } else if (text.compare(QObject::tr("Failure"), Qt::CaseInsensitive) == 0
+               || text.compare(QObject::tr("Changes requested"), Qt::CaseInsensitive) == 0) {
+        color = presentation::theme::ColorToken::Error;
+    } else if (text.compare(QObject::tr("In progress"), Qt::CaseInsensitive) == 0
+               || text.compare(QObject::tr("Queued"), Qt::CaseInsensitive) == 0
+               || text.compare(QObject::tr("Pending"), Qt::CaseInsensitive) == 0
+               || text.compare(QObject::tr("Open"), Qt::CaseInsensitive) == 0) {
+        color = presentation::theme::ColorToken::Info;
+    } else if (text.compare(QObject::tr("Draft"), Qt::CaseInsensitive) == 0) {
+        color = presentation::theme::ColorToken::Warning;
+    }
+    item->setForeground(presentation::theme::ThemePalette::color(color));
+    QFont font = item->font();
+    font.setWeight(QFont::DemiBold);
+    item->setFont(font);
 }
 
 bool trustedGitHubWebUrl(const QString& value)
@@ -63,53 +96,154 @@ GitHubPullRequestsPanel::GitHubPullRequestsPanel(application::github::GitHubServ
     : QWidget(parent), m_service(service), m_settings(settings), m_planner(planner)
 {
     auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(6, 6, 6, 6);
-    root->setSpacing(8);
-    auto* controls = new QHBoxLayout;
+    root->setContentsMargins(24, 20, 24, 24);
+    root->setSpacing(14);
+
+    auto* pageHeader = new QWidget(this);
+    auto* pageHeaderLayout = new QHBoxLayout(pageHeader);
+    pageHeaderLayout->setContentsMargins(0, 0, 0, 4);
+    pageHeaderLayout->setSpacing(14);
+    auto* pageIcon = new QLabel(pageHeader);
+    pageIcon->setPixmap(presentation::icons::IconLoader::icon(presentation::icons::IconName::PullRequest,
+        presentation::theme::ThemePalette::color(presentation::theme::ColorToken::Accent), 30,
+        devicePixelRatioF()).pixmap(QSize(30, 30)));
+    pageIcon->setFixedSize(40, 40);
+    pageIcon->setAlignment(Qt::AlignCenter);
+    pageIcon->setStyleSheet(QStringLiteral("background: %1; border: 1px solid %2; border-radius: 10px;")
+        .arg(presentation::theme::ThemePalette::color(presentation::theme::ColorToken::ActiveSurface).name(),
+             presentation::theme::ThemePalette::color(presentation::theme::ColorToken::BorderStrong).name()));
+    pageHeaderLayout->addWidget(pageIcon, 0, Qt::AlignTop);
+    auto* headingLayout = new QVBoxLayout;
+    headingLayout->setContentsMargins(0, 0, 0, 0);
+    headingLayout->setSpacing(3);
+    auto* heading = new QLabel(tr("Pull requests & CI"), pageHeader);
+    heading->setObjectName(QStringLiteral("githubDashboardTitle"));
+    heading->setFont(presentation::theme::ThemeTokens::font(presentation::theme::TypographyToken::PageTitle));
+    auto* subtitle = new QLabel(tr("Review changes and investigate workflow results across this workspace."), pageHeader);
+    subtitle->setObjectName(QStringLiteral("githubDashboardSubtitle"));
+    subtitle->setStyleSheet(QStringLiteral("color: %1;")
+        .arg(presentation::theme::ThemePalette::color(presentation::theme::ColorToken::TextMuted).name()));
+    headingLayout->addWidget(heading);
+    headingLayout->addWidget(subtitle);
+    pageHeaderLayout->addLayout(headingLayout, 1);
+    m_connectionStatus = new QLabel(pageHeader);
+    m_connectionStatus->setObjectName(QStringLiteral("githubConnectionBadge"));
+    m_connectionStatus->setAlignment(Qt::AlignCenter);
+    m_connectionStatus->setMinimumHeight(34);
+    pageHeaderLayout->addWidget(m_connectionStatus, 0, Qt::AlignTop);
+    root->addWidget(pageHeader);
+
+    auto* summary = new QHBoxLayout;
+    summary->setSpacing(10);
+    const QStringList summaryTitles{tr("Loaded PRs"), tr("Open"), tr("Merged"), tr("Drafts")};
+    const QStringList summaryHints{tr("in selected results"), tr("in loaded results"), tr("in loaded results"), tr("in loaded results")};
+    const QVector<presentation::theme::ColorToken> summaryAccents{
+        presentation::theme::ColorToken::Accent, presentation::theme::ColorToken::Info,
+        presentation::theme::ColorToken::Success, presentation::theme::ColorToken::Warning};
+    for (qsizetype i = 0; i < summaryTitles.size(); ++i) {
+        auto* card = new QFrame(this);
+        card->setObjectName(QStringLiteral("githubMetricCard"));
+        card->setFrameShape(QFrame::NoFrame);
+        card->setStyleSheet(QStringLiteral("QFrame#githubMetricCard { background: %1; border: 1px solid %2; border-top: 2px solid %3; border-radius: 8px; }")
+            .arg(presentation::theme::ThemePalette::color(presentation::theme::ColorToken::PanelSurface).name(),
+                 presentation::theme::ThemePalette::color(presentation::theme::ColorToken::BorderStrong).name(),
+                 presentation::theme::ThemePalette::color(summaryAccents.at(i)).name()));
+        auto* cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(14, 9, 14, 10);
+        cardLayout->setSpacing(2);
+        auto* title = new QLabel(summaryTitles.at(i), card);
+        title->setStyleSheet(QStringLiteral("color: %1; font-size: 9pt; font-weight: 600;")
+            .arg(presentation::theme::ThemePalette::color(presentation::theme::ColorToken::TextMuted).name()));
+        auto* value = new QLabel(QStringLiteral("—"), card);
+        value->setObjectName(QStringLiteral("githubMetricValue%1").arg(i));
+        value->setStyleSheet(QStringLiteral("font-size: 18pt; font-weight: 600;"));
+        auto* hint = new QLabel(summaryHints.at(i), card);
+        hint->setStyleSheet(QStringLiteral("color: %1; font-size: 8pt;")
+            .arg(presentation::theme::ThemePalette::color(presentation::theme::ColorToken::TextMuted).name()));
+        cardLayout->addWidget(title);
+        cardLayout->addWidget(value);
+        cardLayout->addWidget(hint);
+        summary->addWidget(card, 1);
+        m_summaryValues.push_back(value);
+    }
+    root->addLayout(summary);
+
+    auto* controlsFrame = new QFrame(this);
+    controlsFrame->setObjectName(QStringLiteral("githubDashboardToolbar"));
+    controlsFrame->setFrameShape(QFrame::NoFrame);
+    controlsFrame->setStyleSheet(QStringLiteral("QFrame#githubDashboardToolbar { background: %1; border: 1px solid %2; border-radius: 8px; }")
+        .arg(presentation::theme::ThemePalette::color(presentation::theme::ColorToken::PanelSurface).name(),
+             presentation::theme::ThemePalette::color(presentation::theme::ColorToken::BorderStrong).name()));
+    auto* controls = new QHBoxLayout(controlsFrame);
+    controls->setContentsMargins(12, 9, 12, 9);
+    controls->setSpacing(8);
     m_repository = new QComboBox(this);
     m_repository->setObjectName(QStringLiteral("githubRepositorySelector"));
-    m_repository->setMinimumWidth(210);
+    m_repository->setMinimumWidth(170);
+    m_repository->setAccessibleName(tr("GitHub repository"));
     m_stateFilter = new QComboBox(this);
+    m_stateFilter->setObjectName(QStringLiteral("githubPullRequestStateFilter"));
     m_stateFilter->addItem(tr("Open"), QStringLiteral("open"));
     m_stateFilter->addItem(tr("Closed"), QStringLiteral("closed"));
     m_stateFilter->addItem(tr("All"), QStringLiteral("all"));
+    m_stateFilter->setAccessibleName(tr("Pull Request state"));
     m_search = new QLineEdit(this);
+    m_search->setObjectName(QStringLiteral("githubPullRequestSearch"));
     m_search->setPlaceholderText(tr("Search Pull Requests…"));
     m_search->setClearButtonEnabled(true);
-    m_refresh = new QPushButton(tr("Refresh"), this);
+    m_search->setAccessibleName(tr("Search Pull Requests"));
+    m_refresh = new presentation::widgets::AccentButton(tr("Refresh"), this);
+    m_refresh->setObjectName(QStringLiteral("githubRefreshButton"));
     m_loadMore = new QPushButton(tr("Load more"), this);
+    m_loadMore->setObjectName(QStringLiteral("githubLoadMoreButton"));
     m_loadMore->setEnabled(false);
     controls->addWidget(m_repository, 2);
     controls->addWidget(m_stateFilter);
     controls->addWidget(m_search, 2);
     controls->addWidget(m_refresh);
     controls->addWidget(m_loadMore);
-    root->addLayout(controls);
+    root->addWidget(controlsFrame);
     m_message = new QLabel(tr("Select a GitHub repository to browse Pull Requests."), this);
     m_message->setObjectName(QStringLiteral("githubPullRequestMessage"));
     m_message->setWordWrap(true);
+    m_message->setTextFormat(Qt::PlainText);
+    m_message->setStyleSheet(QStringLiteral("background: %1; border-left: 3px solid %2; border-radius: 6px; padding: 8px 10px; color: %3;")
+        .arg(presentation::theme::ThemePalette::color(presentation::theme::ColorToken::RaisedSurface).name(),
+             presentation::theme::ThemePalette::color(presentation::theme::ColorToken::Info).name(),
+             presentation::theme::ThemePalette::color(presentation::theme::ColorToken::TextSecondary).name()));
     root->addWidget(m_message);
 
     auto* body = new QSplitter(Qt::Horizontal, this);
+    body->setObjectName(QStringLiteral("githubDashboardSplit"));
+    body->setHandleWidth(5);
     m_table = new QTableWidget(body);
     m_table->setObjectName(QStringLiteral("githubPullRequestTable"));
-    m_table->setColumnCount(9);
-    m_table->setHorizontalHeaderLabels({tr("#"), tr("Title"), tr("Author"), tr("Branches"),
-                                        tr("Local branch"), tr("Status"), tr("Review"), tr("Checks"), tr("Updated")});
+    m_table->setColumnCount(7);
+    m_table->setHorizontalHeaderLabels({tr("#"), tr("Pull Request"), tr("Author"), tr("Branches"),
+                                        tr("Status"), tr("Review"), tr("Checks")});
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSortingEnabled(true);
+    m_table->setAlternatingRowColors(true);
+    m_table->setMinimumWidth(410);
     m_table->horizontalHeader()->setStretchLastSection(true);
     m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
     m_table->verticalHeader()->hide();
+    m_table->verticalHeader()->setDefaultSectionSize(38);
 
     auto* right = new QWidget(body);
     auto* detailLayout = new QVBoxLayout(right);
     detailLayout->setContentsMargins(0, 0, 0, 0);
     auto* detailActions = new QHBoxLayout;
     m_detailHeading = new QLabel(tr("Select a Pull Request"), right);
+    m_detailHeading->setObjectName(QStringLiteral("githubDetailHeading"));
     m_detailHeading->setStyleSheet(QStringLiteral("font-weight: 600; font-size: 12pt;"));
     m_openOnGitHub = new QPushButton(tr("Open on GitHub"), right);
     m_openOnGitHub->setEnabled(false);
@@ -121,6 +255,7 @@ GitHubPullRequestsPanel::GitHubPullRequestsPanel(application::github::GitHubServ
     detailLayout->addLayout(detailActions);
 
     m_detailTabs = new QTabWidget(right);
+    m_detailTabs->setDocumentMode(true);
     auto* overviewPage = new QWidget(m_detailTabs);
     auto* overviewLayout = new QVBoxLayout(overviewPage);
     overviewLayout->setContentsMargins(0, 0, 0, 0);
@@ -220,8 +355,9 @@ GitHubPullRequestsPanel::GitHubPullRequestsPanel(application::github::GitHubServ
     detailLayout->addWidget(m_detailTabs, 1);
     body->addWidget(m_table);
     body->addWidget(right);
-    body->setStretchFactor(0, 3);
-    body->setStretchFactor(1, 4);
+    body->setStretchFactor(0, 5);
+    body->setStretchFactor(1, 5);
+    body->setSizes({540, 500});
     root->addWidget(body, 1);
 
     connect(m_refresh, &QPushButton::clicked, this, &GitHubPullRequestsPanel::refresh);
@@ -359,18 +495,33 @@ GitHubPullRequestsPanel::GitHubPullRequestsPanel(application::github::GitHubServ
     connect(m_overview, &QTextBrowser::anchorClicked, this, openTrustedLink);
     connect(m_reviewBody, &QTextBrowser::anchorClicked, this, openTrustedLink);
 
-    connect(&m_service, &application::github::GitHubService::connectionChanged, this,
-        [this](const application::github::GitHubConnection& state) {
-            if (state.state != application::github::GitHubConnection::State::Connected) {
-                m_message->setText(state.message.isEmpty()
-                    ? tr("Connect GitHub in Settings → Integrations → GitHub to use this dashboard.") : state.message);
-                m_refresh->setEnabled(false);
-                m_loadMore->setEnabled(false);
-            } else {
-                m_refresh->setEnabled(selectedRepository().has_value());
-                if (m_message->text().startsWith(tr("Connect GitHub"))) m_message->setText(tr("Select a repository and refresh."));
-            }
-        });
+    const auto updateConnectionBadge = [this](const application::github::GitHubConnection& state) {
+        const bool connected = state.state == application::github::GitHubConnection::State::Connected;
+        const bool pending = state.state == application::github::GitHubConnection::State::Connecting
+            || state.state == application::github::GitHubConnection::State::WaitingForAuthorization
+            || state.state == application::github::GitHubConnection::State::Verifying;
+        const QString accent = presentation::theme::ThemePalette::color(connected
+            ? presentation::theme::ColorToken::Success
+            : pending ? presentation::theme::ColorToken::Warning : presentation::theme::ColorToken::BorderStrong).name();
+        m_connectionStatus->setText(connected
+            ? tr("Connected · %1").arg(state.login.isEmpty() ? tr("GitHub") : state.login)
+            : pending ? tr("Connecting…") : tr("GitHub not connected"));
+        m_connectionStatus->setToolTip(state.message);
+        m_connectionStatus->setStyleSheet(QStringLiteral("QLabel { background: %1; border: 1px solid %2; border-radius: 16px; padding: 6px 10px; font-weight: 600; }")
+            .arg(presentation::theme::ThemePalette::color(presentation::theme::ColorToken::ActiveSurface).name(), accent));
+        if (!connected) {
+            m_message->setText(state.message.isEmpty()
+                ? tr("Connect GitHub in Settings → Integrations → GitHub to use this dashboard.") : state.message);
+            m_refresh->setEnabled(false);
+            m_loadMore->setEnabled(false);
+        } else {
+            m_refresh->setEnabled(selectedRepository().has_value());
+            if (m_message->text().startsWith(tr("Connect GitHub"))) m_message->setText(tr("Select a repository and refresh."));
+            if (selectedRepository() && m_table->rowCount() == 0) refresh();
+        }
+    };
+    connect(&m_service, &application::github::GitHubService::connectionChanged, this, updateConnectionBadge);
+    updateConnectionBadge(m_service.connection());
     connect(&m_service, &application::github::GitHubService::pullRequestsLoaded, this,
         [this](QVector<application::github::GitHubPullRequest> pullRequests, bool hasMore, int page, QString error) {
             if (page != m_currentPage) return;
@@ -378,6 +529,7 @@ GitHubPullRequestsPanel::GitHubPullRequestsPanel(application::github::GitHubServ
             m_loadMore->setEnabled(false);
             if (!error.isEmpty()) {
                 m_message->setText(error);
+                updateSummary();
                 return;
             }
             m_hasMore = hasMore;
@@ -396,17 +548,25 @@ GitHubPullRequestsPanel::GitHubPullRequestsPanel(application::github::GitHubServ
                 auto* number = new QTableWidgetItem(QStringLiteral("#%1").arg(pullRequest.number));
                 number->setData(Qt::UserRole, pullRequest.number);
                 m_table->setItem(row, 0, number);
-                m_table->setItem(row, 1, new QTableWidgetItem(pullRequest.title));
+                auto* title = new QTableWidgetItem(pullRequest.title);
+                title->setToolTip(tr("Updated %1").arg(dateText(pullRequest.updatedAtUtc)));
+                m_table->setItem(row, 1, title);
                 m_table->setItem(row, 2, new QTableWidgetItem(pullRequest.author));
-                m_table->setItem(row, 3, new QTableWidgetItem(QStringLiteral("%1 → %2").arg(pullRequest.headBranch, pullRequest.baseBranch)));
-                m_table->setItem(row, 4, new QTableWidgetItem(
-                    !m_localBranch.isEmpty() && pullRequest.headBranch == m_localBranch ? tr("Current") : QString{}));
-                m_table->setItem(row, 5, new QTableWidgetItem(safeStatus(pullRequest)));
-                m_table->setItem(row, 6, new QTableWidgetItem(tr("Select to load")));
-                m_table->setItem(row, 7, new QTableWidgetItem(tr("Select to load")));
-                m_table->setItem(row, 8, new QTableWidgetItem(dateText(pullRequest.updatedAtUtc)));
+                auto* branches = new QTableWidgetItem(QStringLiteral("%1 → %2").arg(pullRequest.headBranch, pullRequest.baseBranch));
+                branches->setToolTip(!m_localBranch.isEmpty() && pullRequest.headBranch == m_localBranch
+                    ? tr("The Pull Request head matches the current local branch.") : QString{});
+                if (!m_localBranch.isEmpty() && pullRequest.headBranch == m_localBranch)
+                    branches->setText(QStringLiteral("%1 → %2  ·  %3").arg(pullRequest.headBranch, pullRequest.baseBranch, tr("Current")));
+                m_table->setItem(row, 3, branches);
+                m_table->setItem(row, 4, new QTableWidgetItem);
+                setStatusItem(m_table->item(row, 4), safeStatus(pullRequest));
+                m_table->setItem(row, 5, new QTableWidgetItem);
+                setStatusItem(m_table->item(row, 5), tr("Select to load"));
+                m_table->setItem(row, 6, new QTableWidgetItem);
+                setStatusItem(m_table->item(row, 6), tr("Select to load"));
             }
             m_table->setSortingEnabled(sorting);
+            updateSummary();
             m_message->setText(m_pullRequests.isEmpty()
                 ? tr("No Pull Requests match this filter.")
                 : tr("Showing %1 Pull Request(s). Select one to load reviews, changed files, and CI details.")
@@ -498,6 +658,7 @@ void GitHubPullRequestsPanel::setWorkspace(std::optional<QUuid> workspaceId)
     m_repositories.clear();
     m_pullRequests.clear();
     m_table->setRowCount(0);
+    updateSummary();
     m_ciHistoryPage = 0;
     m_ciHistoryHasMore = false;
     m_ciHistoryTable->setRowCount(0);
@@ -531,15 +692,33 @@ void GitHubPullRequestsPanel::setLocalBranch(QString branch)
         const auto pullRequest = std::find_if(m_pullRequests.cbegin(), m_pullRequests.cend(), [number](const auto& pr) {
             return pr.number == number;
         });
-        if (pullRequest != m_pullRequests.cend())
-            m_table->item(row, 4)->setText(!m_localBranch.isEmpty() && pullRequest->headBranch == m_localBranch
-                ? tr("Current") : QString{});
+        if (pullRequest != m_pullRequests.cend()) {
+            auto* branches = m_table->item(row, 3);
+            if (!branches) continue;
+            const bool current = !m_localBranch.isEmpty() && pullRequest->headBranch == m_localBranch;
+            branches->setText(current
+                ? QStringLiteral("%1 → %2  ·  %3").arg(pullRequest->headBranch, pullRequest->baseBranch, tr("Current"))
+                : QStringLiteral("%1 → %2").arg(pullRequest->headBranch, pullRequest->baseBranch));
+            branches->setToolTip(current ? tr("The Pull Request head matches the current local branch.") : QString{});
+        }
     }
 }
 
 void GitHubPullRequestsPanel::setRepositories(QVector<application::github::GitHubRepository> repositories)
 {
     const QString previous = selectedRepository() ? selectedRepository()->remoteName : QString{};
+    const bool changed = repositories != m_repositories;
+    if (changed) {
+        m_service.cancelDashboardRequests();
+        m_pullRequests.clear();
+        m_table->setRowCount(0);
+        m_selectedNumber = 0;
+        m_detailHeading->setText(tr("Select a Pull Request"));
+        m_overview->setSourceText(QString{});
+        m_openOnGitHub->setEnabled(false);
+        m_linkTask->setEnabled(false);
+        updateSummary();
+    }
     m_repositories = std::move(repositories);
     m_ciHistoryPage = 0;
     m_ciHistoryHasMore = false;
@@ -595,6 +774,7 @@ void GitHubPullRequestsPanel::refresh()
     m_service.cancelDashboardRequests();
     m_pullRequests.clear();
     m_table->setRowCount(0);
+    updateSummary();
     m_ciHistoryPage = 0;
     m_ciHistoryHasMore = false;
     m_ciHistoryTable->setRowCount(0);
@@ -748,11 +928,25 @@ void GitHubPullRequestsPanel::updateSelectedStatus(const application::github::Gi
     for (int row = 0; row < m_table->rowCount(); ++row) {
         auto* number = m_table->item(row, 0);
         if (number && number->data(Qt::UserRole).toInt() == details.pullRequest.number) {
-            m_table->item(row, 6)->setText(reviewStatus);
-            m_table->item(row, 7)->setText(checkStatus);
+            setStatusItem(m_table->item(row, 5), reviewStatus);
+            setStatusItem(m_table->item(row, 6), checkStatus);
             break;
         }
     }
+}
+
+void GitHubPullRequestsPanel::updateSummary()
+{
+    if (m_summaryValues.size() < 4) return;
+    const auto count = [this](const auto& predicate) {
+        return std::count_if(m_pullRequests.cbegin(), m_pullRequests.cend(), predicate);
+    };
+    m_summaryValues[0]->setText(QString::number(m_pullRequests.size()));
+    m_summaryValues[1]->setText(QString::number(count([](const auto& pr) {
+        return pr.state.compare(QStringLiteral("open"), Qt::CaseInsensitive) == 0 && !pr.merged;
+    })));
+    m_summaryValues[2]->setText(QString::number(count([](const auto& pr) { return pr.merged; })));
+    m_summaryValues[3]->setText(QString::number(count([](const auto& pr) { return pr.draft; })));
 }
 
 void GitHubPullRequestsPanel::filterRows()

@@ -191,7 +191,7 @@ Rectangle {
                     }
                 }
                 Repeater {
-                    model: [qsTr("Overview"), qsTr("Git"), qsTr("Services"), qsTr("Ports"), qsTr("Logs"), qsTr("Database"), qsTr("Notes"), qsTr("Files"), qsTr("Assistant"), qsTr("Build & Test")]
+                    model: [qsTr("Overview"), qsTr("Git"), qsTr("Services"), qsTr("Ports"), qsTr("Logs"), qsTr("Database"), qsTr("Notes"), qsTr("Files"), qsTr("Assistant"), qsTr("Build & Test"), qsTr("GitHub")]
                     delegate: Rectangle {
                         required property string modelData
                         required property int index
@@ -210,7 +210,7 @@ Rectangle {
                             Item { Layout.fillWidth: !root.moduleNavigationExpanded }
                             Text {
                                 font.family: Theme.fontFamily
-                                text: ["⌂", "⑂", "▷", "◉", "≡", "▤", "▧", "▱", "✦", "⚒"][index]
+                                text: ["⌂", "⑂", "▷", "◉", "≡", "▤", "▧", "▱", "✦", "⚒", "⇄"][index]
                                 color: root.selectedModule === moduleIndex ? Theme.onAccent : root.info
                                 font.pixelSize: 18; Layout.preferredWidth: 22; horizontalAlignment: Text.AlignHCenter
                             }

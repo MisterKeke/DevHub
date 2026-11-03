@@ -11,6 +11,7 @@
 #include "../workspaces/WorkspaceListModel.h"
 #include "../workspaces/WorkspaceListView.h"
 #include "../git/GitPage.h"
+#include "../git/GitHubPullRequestsPanel.h"
 #include "../services/ServicePage.h"
 #include "../ports/PortPage.h"
 #include "../logs/LogsPage.h"
@@ -325,6 +326,9 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::Project,
                                                               ThemePalette::color(ColorToken::TextSecondary),
                                                               18), tr("Build & Test")));
+    moduleList->addItem(new QListWidgetItem(IconLoader::icon(IconName::PullRequest,
+                                                              ThemePalette::color(ColorToken::TextSecondary),
+                                                              18), tr("GitHub")));
     moduleList->setItemDelegate(new ModuleNavigationDelegate(moduleList));
     moduleList->item(9)->setSizeHint(QSize(120, 46));
     moduleList->setCurrentRow(0);
@@ -334,9 +338,11 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     const QStringList navigationIds{QStringLiteral("nav.overview"), QStringLiteral("nav.git"),
         QStringLiteral("nav.services"), QStringLiteral("nav.ports"), QStringLiteral("nav.logs"),
         QStringLiteral("nav.database"), QStringLiteral("nav.notes"), QStringLiteral("nav.files"),
-        QStringLiteral("nav.settings"), QStringLiteral("nav.assistant"), QStringLiteral("nav.build-test")};
+        QStringLiteral("nav.settings"), QStringLiteral("nav.assistant"), QStringLiteral("nav.build-test"),
+        QStringLiteral("nav.github")};
     const QStringList navigationTitles{tr("Overview"), tr("Git"), tr("Services"), tr("Ports"),
-        tr("Logs"), tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant"), tr("Build & Test")};
+        tr("Logs"), tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant"),
+        tr("Build & Test"), tr("GitHub")};
     for (int row = 0; row < navigationIds.size(); ++row) {
         if (row == presentation::assistant::AssistantNavigation::Index) {
             presentation::assistant::AssistantNavigation::registerCommand(*m_commandRegistry,
@@ -532,9 +538,17 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     connect(m_plannerImportController, &devhub::presentation::overview::planner::PlannerImportController::tasksImported,
         m_plannerController, &devhub::presentation::overview::planner::PlannerController::refresh);
     m_pageHost->addWidget(m_overviewPage);
-    auto* gitPage = new devhub::presentation::git::GitPage(m_scheduler, m_pageHost, &m_settingsService,
-                                                            m_githubService, &plannerService);
-    connect(gitPage, &devhub::presentation::git::GitPage::githubMonitorTargetChanged, this,
+    auto* gitPage = new devhub::presentation::git::GitPage(m_scheduler, m_pageHost, &m_settingsService);
+    auto* githubPage = new devhub::presentation::git::GitHubPullRequestsPanel(
+        *m_githubService, &m_settingsService, &plannerService, m_pageHost);
+    connect(gitPage, &devhub::presentation::git::GitPage::githubRepositoriesChanged, githubPage,
+        [githubPage](QVector<application::github::GitHubRepository> repositories,
+                     const QString& error, const QString& localBranch) {
+            githubPage->setRepositories(std::move(repositories));
+            githubPage->setRepositoryError(error);
+            githubPage->setLocalBranch(localBranch);
+        });
+    connect(githubPage, &devhub::presentation::git::GitHubPullRequestsPanel::githubMonitorTargetChanged, this,
         [this](const QString& workspaceId, const QString& remoteName, const QString& owner, const QString& name) {
             if (workspaceId.isEmpty() || owner.isEmpty() || name.isEmpty()) {
                 m_githubMonitor->clearTarget();
@@ -555,7 +569,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             gitPage->focusBranch(branch);
             selectQuickModule(1);
         });
-    connect(gitPage, &devhub::presentation::git::GitPage::openPlannerTaskRequested, this,
+    connect(githubPage, &devhub::presentation::git::GitHubPullRequestsPanel::openPlannerTaskRequested, this,
         [this](const QString& taskId) {
             if (!m_workspaceContext.activeWorkspace()) return;
             const QString workspaceId = m_workspaceContext.activeWorkspace()->id().toString();
@@ -564,9 +578,10 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
             m_plannerController->setCollapsed(false);
             m_plannerController->requestOpenTask(taskId);
         });
-    connect(gitPage, &devhub::presentation::git::GitPage::plannerTaskLinked,
+    connect(githubPage, &devhub::presentation::git::GitHubPullRequestsPanel::plannerTaskLinked,
             m_plannerController, &devhub::presentation::overview::planner::PlannerController::refresh);
     m_pageHost->addWidget(gitPage);
+    m_pageHost->addWidget(githubPage);
     auto* servicePage = new devhub::presentation::services::ServicePage(serviceRepository, serviceCoordinator, m_pageHost);
     m_servicePage = servicePage;
     m_pageHost->addWidget(servicePage);
@@ -939,7 +954,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     connect(portPage, &devhub::presentation::ports::PortPage::openWorkspaceRequested,
             this, [this](const QString& workspaceId) { activateWorkspace(workspaceId); });
     connect(&m_workspaceContext, &application::workspaces::WorkspaceContext::workspaceChanged,
-            this, [this, gitPage, servicePage, logsPage, databasePage, filesPage, &portMonitor](const QString& workspaceId, const QString& path) {
+            this, [this, gitPage, githubPage, servicePage, logsPage, databasePage, filesPage, &portMonitor](const QString& workspaceId, const QString& path) {
         cancelPendingPlannerServiceStarts();
         refreshPlannerServiceOptions(workspaceId);
         refreshPlannerBuildOptions(workspaceId);
@@ -1020,6 +1035,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
                 m_overviewComposer->removeSection(id);
         }
         gitPage->setWorkspacePath(path, active ? std::optional<QUuid>{QUuid::fromString(active->id().toString())} : std::nullopt);
+        githubPage->setWorkspace(active ? std::optional<QUuid>{QUuid::fromString(active->id().toString())} : std::nullopt);
         servicePage->setWorkspace(workspaceId, path);
         logsPage->setWorkspace(workspaceId, path);
         if (m_buildTestPage) m_buildTestPage->setWorkspace(workspaceId, path);
@@ -1277,7 +1293,7 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
         emit shellChanged();
     });
     m_modulePages = {m_overviewPage, gitPage, servicePage, portPage, logsPage,
-                     databasePage, m_notesPage, filesPage, settingsPage, m_assistantPage, m_buildTestPage};
+                     databasePage, m_notesPage, filesPage, settingsPage, m_assistantPage, m_buildTestPage, githubPage};
 
     auto* quickView = new QQuickView;
     quickView->setResizeMode(QQuickView::SizeRootObjectToView);
@@ -1304,7 +1320,8 @@ MainWindow::MainWindow(application::authentication::SessionController& session,
     reloadWorkspaces();
     const int restoredPage = m_settingsService.value(QStringLiteral("general/restoreLastPage")).toBool()
         ? QSettings().value(QStringLiteral("window/lastPage"), 0).toInt() : 0;
-    if ((restoredPage > 0 && restoredPage < 8) || restoredPage == 9 || restoredPage == 10) selectQuickModule(restoredPage);
+    if ((restoredPage > 0 && restoredPage < 8) || restoredPage == 9 || restoredPage == 10 || restoredPage == 11)
+        selectQuickModule(restoredPage);
 }
 
 void MainWindow::restoreWorkspaceSelection()
@@ -1397,7 +1414,8 @@ void MainWindow::selectQuickModule(int index)
     if (index == 9) m_assistantPage->activate();
     m_moduleWindow->setWindowTitle(tr("DevHub — %1").arg(QStringList{
         tr("Overview"), tr("Git"), tr("Services"), tr("Ports"), tr("Logs"),
-        tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant"), tr("Build & Test")}.at(index)));
+        tr("Database"), tr("Notes"), tr("Files"), tr("Settings"), tr("Assistant"), tr("Build & Test"),
+        tr("GitHub")}.at(index)));
     m_moduleWindow->show();
     // Clamp the complete decorated window to the current monitor's work area.
     if (auto* targetScreen = screen()) {

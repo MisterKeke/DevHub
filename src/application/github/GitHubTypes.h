@@ -146,6 +146,8 @@ struct GitHubMonitorSnapshot final
 } // namespace devhub::application::github
 
 Q_DECLARE_METATYPE(devhub::application::github::GitHubConnection)
+Q_DECLARE_METATYPE(devhub::application::github::GitHubRepository)
+Q_DECLARE_METATYPE(QVector<devhub::application::github::GitHubRepository>)
 Q_DECLARE_METATYPE(devhub::application::github::GitHubPullRequest)
 Q_DECLARE_METATYPE(QVector<devhub::application::github::GitHubPullRequest>)
 Q_DECLARE_METATYPE(devhub::application::github::GitHubPullRequestDetails)

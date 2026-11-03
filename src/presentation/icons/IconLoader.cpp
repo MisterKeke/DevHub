@@ -48,6 +48,9 @@ QString svgSource(IconName name)
     case IconName::Git:
         shape = QStringLiteral("<circle cx='6' cy='5' r='2'/><circle cx='18' cy='19' r='2'/><circle cx='18' cy='5' r='2'/><path d='M6 7v10a2 2 0 0 0 2 2h8M16 5H9a3 3 0 0 0-3 3'/>");
         break;
+    case IconName::PullRequest:
+        shape = QStringLiteral("<circle cx='6' cy='5' r='2'/><circle cx='6' cy='19' r='2'/><circle cx='18' cy='7' r='2'/><path d='M6 7v10M18 9a6 6 0 0 1-6 6H8M13 12l-3 3 3 3'/>");
+        break;
     case IconName::Services:
         shape = QStringLiteral("<path d='M5 4h14v16H5z'/><path d='m10 8 6 4-6 4z'/>");
         break;

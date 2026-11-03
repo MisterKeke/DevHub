@@ -1,12 +1,9 @@
 #include "GitPage.h"
-#include "GitHubPullRequestsPanel.h"
 #include "../../domain/errors/AppError.h"
 #include "../../application/git/GitExecutableLocator.h"
 #include "../../application/git/GitService.h"
 #include "../../application/settings/SettingsService.h"
 #include "../../application/github/GitHubRepositoryResolver.h"
-#include "../../application/github/GitHubService.h"
-#include "../../application/planner/PlannerService.h"
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
@@ -38,9 +35,7 @@ struct GitPageSnapshot final {
 };
 }
 GitPage::GitPage(application::tasks::TaskScheduler& scheduler, QWidget* parent,
-                 application::settings::SettingsService* settings,
-                 application::github::GitHubService* github,
-                 application::planner::PlannerService* planner)
+                 application::settings::SettingsService* settings)
     : QWidget(parent), m_scheduler(scheduler), m_settings(settings) {
     auto* layout = new QVBoxLayout(this); layout->setContentsMargins(24, 20, 24, 24);
     auto* top = new QHBoxLayout(); auto* heading = new QLabel(tr("Git"), this);
@@ -70,7 +65,6 @@ GitPage::GitPage(application::tasks::TaskScheduler& scheduler, QWidget* parent,
     previewActions->addStretch(); previewActions->addWidget(workingDiff); previewActions->addWidget(stagedDiff);
     layout->addLayout(previewActions);
     auto* split = new QSplitter(Qt::Horizontal, this);
-    m_split = split;
     auto* tabs = new QTabWidget(split);
     m_tabs = tabs;
     m_status = new QListWidget(tabs); m_status->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -84,22 +78,6 @@ GitPage::GitPage(application::tasks::TaskScheduler& scheduler, QWidget* parent,
     historyLayout->addWidget(m_loadMore);
     m_branches = new QListWidget(tabs);
     tabs->addTab(m_status, tr("Changes")); tabs->addTab(historyTab, tr("History")); tabs->addTab(m_branches, tr("Branches"));
-    if (github) {
-        m_pullRequests = new GitHubPullRequestsPanel(*github, m_settings, planner, tabs);
-        tabs->addTab(m_pullRequests, tr("Pull Requests"));
-        connect(m_pullRequests, &GitHubPullRequestsPanel::openPlannerTaskRequested,
-                this, &GitPage::openPlannerTaskRequested);
-        connect(m_pullRequests, &GitHubPullRequestsPanel::plannerTaskLinked,
-                this, &GitPage::plannerTaskLinked);
-        connect(m_pullRequests, &GitHubPullRequestsPanel::githubMonitorTargetChanged,
-                this, &GitPage::githubMonitorTargetChanged);
-        connect(tabs, &QTabWidget::currentChanged, this, [this, tabs](int index) {
-            const bool pullRequestsSelected = m_pullRequests && tabs->widget(index) == m_pullRequests;
-            m_diff->setVisible(!pullRequestsSelected);
-            if (pullRequestsSelected) m_split->setSizes({1, 0});
-            else m_split->setSizes({1, 2});
-        });
-    }
     m_diff = new QPlainTextEdit(split); m_diff->setReadOnly(true); m_diff->setPlaceholderText(tr("Select a commit or refresh to inspect changes."));
     split->addWidget(tabs); split->addWidget(m_diff); split->setStretchFactor(0, 1); split->setStretchFactor(1, 2);
     layout->addWidget(split, 1);
@@ -163,7 +141,6 @@ void GitPage::setWorkspacePath(QString path, std::optional<QUuid> workspaceId) {
     setBusy(false);
     m_path = std::move(path);
     m_workspaceId = std::move(workspaceId);
-    if (m_pullRequests) m_pullRequests->setWorkspace(m_workspaceId);
     m_status->clear(); m_history->clear(); m_branches->clear(); m_diff->clear();
     m_loadMore->setText(tr("Load older commits"));
     m_loadMore->setEnabled(false);
@@ -434,6 +411,7 @@ void GitPage::refresh() {
     application::git::GitExecutableLocator locator; const auto executable = locator.locate();
     if (!executable) {
         m_state->setText(executable.error().userMessage);
+        emit githubRepositoriesChanged({}, executable.error().userMessage, {});
         emit overviewUpdated(executable.error().userMessage, {}, tr("Git unavailable"), QStringLiteral("error"));
         return;
     }
@@ -481,6 +459,7 @@ void GitPage::refresh() {
             }
             auto result = std::get<shared::common::Result<GitPageSnapshot>>(std::move(outcome));
             if (!result) {
+                emit githubRepositoriesChanged({}, result.error().userMessage, {});
                 m_state->setText(result.error().userMessage);
                 if (!m_operationFeedback.isEmpty()) { m_partialErrors->setText(m_operationFeedback); m_partialErrors->show(); }
                 return;
@@ -489,10 +468,7 @@ void GitPage::refresh() {
             m_status->clear(); m_history->clear(); m_branches->clear(); m_diff->clear();
             m_partialErrors->clear(); m_partialErrors->hide();
             if (!snapshot.status.isRepository) {
-                if (m_pullRequests) {
-                    m_pullRequests->setRepositories({});
-                    m_pullRequests->setLocalBranch({});
-                }
+                emit githubRepositoriesChanged({}, snapshot.remotesError, {});
                 m_state->setText(m_requestedBranch.isEmpty()
                     ? tr("This workspace is not a Git repository.")
                     : tr("Associated branch ‘%1’ is unavailable. No checkout was performed.").arg(m_requestedBranch));
@@ -501,11 +477,8 @@ void GitPage::refresh() {
                 emit overviewUpdated(tr("This folder is not a Git repository."), {}, tr("Not a repo"), QStringLiteral("warning"));
                 return;
             }
-            if (m_pullRequests) {
-                m_pullRequests->setRepositories(application::github::GitHubRepositoryResolver::fromRemotes(snapshot.remotes));
-                m_pullRequests->setRepositoryError(snapshot.remotesError);
-                m_pullRequests->setLocalBranch(snapshot.status.branch);
-            }
+            emit githubRepositoriesChanged(application::github::GitHubRepositoryResolver::fromRemotes(snapshot.remotes),
+                                           snapshot.remotesError, snapshot.status.branch);
             const auto& state = snapshot.status;
             const QString branchName = state.branch.isEmpty() ? tr("detached HEAD") : state.branch;
             QStringList details{tr("Branch  %1").arg(branchName)};
